@@ -1,0 +1,168 @@
+//! Building a segment image. Deterministic by construction (claim C2): the
+//! input is treated as a *set*, sorted by content, so two surveys that found
+//! the same graph write byte-identical bytes regardless of discovery order.
+use crate::{
+    checksum, lang_tag, relation_tag, zoc_tag, ChartError, DatumId, Section, FORMAT_EPOCH,
+    HEADER_LEN, MAGIC, SECTION_COUNT, SECTION_ENTRY_LEN,
+};
+
+/// A definition to intern: identity, name, and the adapter that found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Def {
+    /// Content identity — the ordinal is derived from this and nothing else.
+    pub datum: DatumId,
+    /// Fully qualified human name at survey time (mutable; not identity).
+    pub callsign: String,
+    /// Language adapter, if the survey named one.
+    pub lang: Option<grid_wire::Lang>,
+}
+
+/// An edge to store. Edges naming an unknown datum are dropped by [`build`]:
+/// a segment is closed, so a dangling ordinal cannot be represented.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Edge {
+    /// Source definition.
+    pub src: DatumId,
+    /// Destination definition.
+    pub dst: DatumId,
+    /// Typed edge kind.
+    pub relation: grid_wire::Relation,
+    /// Evidence grade.
+    pub zoc: grid_wire::Zoc,
+}
+
+/// Serialize defs and edges into a validated segment image.
+///
+/// Duplicate defs collapse by datum (first callsign wins after sorting, which
+/// is content order, so the choice is deterministic); duplicate edges collapse
+/// entirely. Edges whose endpoints are not both present are dropped.
+///
+/// # Errors
+/// [`ChartError::TooLarge`] if the graph exceeds what u32 ordinals address.
+pub fn build(defs: &[Def], edges: &[Edge]) -> Result<Vec<u8>, ChartError> {
+    let mut defs: Vec<&Def> = defs.iter().collect();
+    defs.sort_unstable_by(|a, b| {
+        a.datum
+            .cmp(&b.datum)
+            .then_with(|| a.callsign.cmp(&b.callsign))
+    });
+    defs.dedup_by(|a, b| a.datum == b.datum);
+    let def_count = u32::try_from(defs.len()).map_err(|_| ChartError::TooLarge)?;
+
+    let ordinal = |d: &DatumId| -> Option<u32> {
+        defs.binary_search_by(|probe| probe.datum.cmp(d))
+            .ok()
+            .and_then(|i| u32::try_from(i).ok())
+    };
+
+    // (src, dst, relation, zoc) as ordinals, sorted so CSR rows are contiguous
+    // and the byte image is a function of the edge *set*.
+    let mut rows: Vec<(u32, u32, u16)> = edges
+        .iter()
+        .filter_map(|e| {
+            let attrs = (u16::from(relation_tag(e.relation)) << 8) | u16::from(zoc_tag(e.zoc));
+            Some((ordinal(&e.src)?, ordinal(&e.dst)?, attrs))
+        })
+        .collect();
+    rows.sort_unstable();
+    rows.dedup();
+    let edge_count = u32::try_from(rows.len()).map_err(|_| ChartError::TooLarge)?;
+
+    let out = &rows;
+    let mut inc: Vec<(u32, u32, u16)> = rows.iter().map(|&(s, d, a)| (d, s, a)).collect();
+    inc.sort_unstable();
+
+    let sections: [Vec<u8>; SECTION_COUNT] = [
+        defs.iter().flat_map(|d| d.datum.0).collect(),
+        csr_offsets(def_count, out.iter().map(|r| r.0)),
+        out.iter().flat_map(|r| r.1.to_le_bytes()).collect(),
+        out.iter().flat_map(|r| r.2.to_le_bytes()).collect(),
+        csr_offsets(def_count, inc.iter().map(|r| r.0)),
+        inc.iter().flat_map(|r| r.1.to_le_bytes()).collect(),
+        inc.iter().flat_map(|r| r.2.to_le_bytes()).collect(),
+        csr_byte_offsets(defs.iter().map(|d| d.callsign.len()))?,
+        defs.iter()
+            .flat_map(|d| d.callsign.as_bytes().iter().copied())
+            .collect(),
+        defs.iter().map(|d| lang_tag(d.lang)).collect(),
+    ];
+
+    let table_len = SECTION_COUNT * SECTION_ENTRY_LEN;
+    let mut image = Vec::with_capacity(HEADER_LEN + table_len);
+    image.extend_from_slice(MAGIC);
+    image.extend_from_slice(&FORMAT_EPOCH.to_le_bytes());
+    let count = u32::try_from(SECTION_COUNT).map_err(|_| ChartError::TooLarge)?;
+    image.extend_from_slice(&count.to_le_bytes());
+    image.extend_from_slice(&def_count.to_le_bytes());
+    image.extend_from_slice(&edge_count.to_le_bytes());
+    image.resize(HEADER_LEN, 0); // reserved + checksum, filled in below
+
+    let mut offset = HEADER_LEN + table_len;
+    for s in &sections {
+        let at = u64::try_from(offset).map_err(|_| ChartError::TooLarge)?;
+        let len = u64::try_from(s.len()).map_err(|_| ChartError::TooLarge)?;
+        image.extend_from_slice(&at.to_le_bytes());
+        image.extend_from_slice(&len.to_le_bytes());
+        offset += s.len();
+    }
+    for s in &sections {
+        image.extend_from_slice(s);
+    }
+    let sum = checksum(&image);
+    image
+        .get_mut(32..64)
+        .ok_or(ChartError::Truncated)?
+        .copy_from_slice(&sum);
+    Ok(image)
+}
+
+/// Row starts for `count` rows over an ascending stream of row indexes.
+fn csr_offsets(count: u32, rows: impl Iterator<Item = u32>) -> Vec<u8> {
+    let mut counts = vec![0u32; count as usize];
+    for r in rows {
+        if let Some(c) = counts.get_mut(r as usize) {
+            *c += 1;
+        }
+    }
+    let mut out = Vec::with_capacity((count as usize + 1) * 4);
+    let mut acc = 0u32;
+    for c in counts {
+        out.extend_from_slice(&acc.to_le_bytes());
+        acc += c;
+    }
+    out.extend_from_slice(&acc.to_le_bytes());
+    out
+}
+
+/// Row starts for a concatenated byte arena.
+fn csr_byte_offsets(lens: impl Iterator<Item = usize>) -> Result<Vec<u8>, ChartError> {
+    let mut out = Vec::new();
+    let mut acc = 0u32;
+    for len in lens {
+        out.extend_from_slice(&acc.to_le_bytes());
+        acc = acc
+            .checked_add(u32::try_from(len).map_err(|_| ChartError::TooLarge)?)
+            .ok_or(ChartError::TooLarge)?;
+    }
+    out.extend_from_slice(&acc.to_le_bytes());
+    Ok(out)
+}
+
+impl Section {
+    /// Section name, for diagnostics.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Datums => "datums",
+            Self::OutOffsets => "out_offsets",
+            Self::OutTargets => "out_targets",
+            Self::OutAttrs => "out_attrs",
+            Self::InOffsets => "in_offsets",
+            Self::InTargets => "in_targets",
+            Self::InAttrs => "in_attrs",
+            Self::CallsignOffsets => "callsign_offsets",
+            Self::CallsignBytes => "callsign_bytes",
+            Self::Langs => "langs",
+        }
+    }
+}

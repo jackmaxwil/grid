@@ -37,6 +37,45 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-fuzz --locked
       - run: cargo fuzz build normalize
+      - run: cargo fuzz build segment
+
+  # C1 evidence: the one unsafe block in grid, under the tools that can see
+  # through it. MIRI interprets everything except the mmap itself; ASan runs
+  # the real mapping against the real allocator.
+  chart-io-sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@v2
+      # MIRI cannot execute mmap, so it runs the byte-interpretation crate —
+      # which is where an adversarial image would actually cause UB.
+      # The adversarial suite is the whole attack surface in one binary;
+      # proptest under MIRI is minutes of interpreter for the same coverage.
+      - run: cargo +nightly miri test -p grid-chart --test adversarial
+        env:
+          MIRIFLAGS: -Zmiri-strict-provenance
+      - run: cargo +nightly test -p grid-chart-io --target x86_64-unknown-linux-gnu
+        env:
+          RUSTFLAGS: -Zsanitizer=address
+          RUSTDOCFLAGS: -Zsanitizer=address
+
+  # Crash safety is a claim about a race, so it is evidenced by running the
+  # race many times, not by argument. PR time runs a short loop (in the normal
+  # test job); this is the soak.
+  fault-injection:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.0"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p grid-chart-io --release --test crash_safety -- --nocapture
+        env:
+          GRID_FAULT_ITERS: "10000"
 
   deny:
     runs-on: ubuntu-latest
@@ -51,9 +90,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: C5 grep-gate — unsafe is confined to chart-io
-        run: |
-          if grep -rn '\bunsafe\b' crates --include='*.rs' | grep -v '^crates/chart-io/'; then
-            echo "unsafe code outside chart-io"; exit 1
-          fi
+        run: ./scripts/check-unsafe-confined.sh
       - name: ASSURANCE.md claims all have evidence links
         run: ./scripts/check-assurance-links.sh
