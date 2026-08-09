@@ -7,7 +7,7 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 |---|---|---|---|
 | C1 | no input to `chart-io` causes UB | segment.rs adversarial.rs + ci:miri+asan | 4 |
 | C2 | same (source, epoch) ⇒ same bytes | determinism.rs store.rs corpus.rs + incremental≡full | 4–5 |
-| C3 | every walk terminates within fuel | Kani fuel-decrease harness | 9 |
+| C3 | every walk terminates within fuel | proofs.rs walk.rs + ci:kani | 9 |
 | C4 | no cache hit without established closure | closure.rs (cache) conformance.rs | 7 |
 | C5 | two writers only (survey, edit.apply); unsafe confined to `chart-io` | check-unsafe-confined.sh | 0+ |
 | C6 | a datum ignores formatting, comments and local renaming; `span_hash` does not | properties.rs determinism.rs | 2 |
