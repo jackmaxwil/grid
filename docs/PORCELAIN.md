@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 1.1.0
+version: 1.2.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -15,7 +15,7 @@ document.
 | `snapshot` | id, stats (`defs N  edges N  reread N  <duration>`) |
 | `def` | glyph, callsign, hash transition (`old→new` or new hash) |
 | `ref` | callsign, datum prefix (`grid resolve` — a definition that exists, not one that changed) |
-| `edge` | glyph or verdict role, `src -relation-> dst`, evidence or context |
+| `edge` | glyph, verdict role, or evidence grade (query results), `src -relation-> dst`, evidence or context |
 | `test` | role, test id, `expected=actual` |
 | `inv` | status, invariant id |
 | `path` | callsign, hop count, weakest evidence |
@@ -26,6 +26,11 @@ document.
 | `warn` | callsign, message |
 | `conflict` | callsign, hash transition |
 | `done` / `todo` | promise fraction / promise record |
+
+A `done` record from `grid todo` carries the overall fraction, then the
+per-kind split (`edges 2/3 · defs 1/1 · tests 0/1`). A `done` record from
+`edit apply` is not emitted: applied edits are `def` records, conflicts are
+`conflict` records.
 
 Verdict roles on `edge` records: `match`, `miss`, `surplus`, `tolerated`.
 

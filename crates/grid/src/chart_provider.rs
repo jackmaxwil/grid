@@ -29,6 +29,13 @@ pub enum Error {
     /// Repo configuration under `.grid` is present but unreadable. A broken
     /// rule file must not be mistaken for an absence of rules.
     Config(String),
+    /// A query needs a snapshot and the store has never held one.
+    NoSnapshot,
+    /// A snapshot other than the live one was named. The engine holds
+    /// exactly one live epoch; anything else cannot be answered from it.
+    NotLive(String),
+    /// A named track does not exist or does not parse.
+    Track(String),
 }
 
 impl std::fmt::Display for Error {
@@ -39,7 +46,9 @@ impl std::fmt::Display for Error {
             Self::NoSnapshotForRev(rev) => {
                 write!(f, "no snapshot for rev {rev}: run `grid survey` first")
             }
-            Self::Config(msg) => f.write_str(msg),
+            Self::Config(msg) | Self::Track(msg) => f.write_str(msg),
+            Self::NoSnapshot => f.write_str("no snapshot published: run `grid survey` first"),
+            Self::NotLive(id) => write!(f, "snapshot {id} is not the live epoch"),
         }
     }
 }
@@ -129,6 +138,14 @@ impl ChartDelta {
     #[must_use]
     pub fn current(&self) -> Option<SnapshotId> {
         (!self.head.segments().is_empty()).then(|| wire_id(self.head.snapshot_id()))
+    }
+
+    /// The live epoch itself, for read-only queries that walk segments
+    /// (scope, uses). Mutation stays behind `publish`: this hands out a
+    /// read view, and `Epoch` exposes nothing else.
+    #[must_use]
+    pub fn head(&self) -> &Arc<Epoch> {
+        &self.head
     }
 
     /// The rev the live epoch was surveyed at.
@@ -287,7 +304,7 @@ impl DeltaProvider for ChartDelta {
 /// `validate` matches `pkg.TagContract.validate` but not `revalidate`: a
 /// suffix that starts mid-name is not a name, and matching it would resolve a
 /// locator to a definition the user did not ask for.
-fn suffix_matches(callsign: &str, want: &str) -> bool {
+pub(crate) fn suffix_matches(callsign: &str, want: &str) -> bool {
     callsign == want
         || callsign
             .strip_suffix(want)

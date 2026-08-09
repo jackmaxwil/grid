@@ -14,6 +14,23 @@ grid track new|show|lint the planning loop
 grid serve [socket]      unix socket, newline-framed JSON-RPC
 ```
 
+Agent verbs (stage 1–2, socket-first — the daemon serves `grid.scope`,
+`grid.todo` and `grid.edit.apply`):
+
+```
+grid scope <pattern>... [--depth N]  context pack around an intended edit
+grid todo <track> [head]             the gate verdict as a worklist
+grid edit apply <edits.json|->       CAS writes; conflicts are exit 4
+grid uses <name>                     who reaches X, proven edges only
+grid explain <word|@prefix>          what any token in this output means
+```
+
+`edit apply` addresses *definitions* (`name` or `name@prefix`, CAS on
+`base_datum`); an absent base is a creation whose target is a repo-relative
+path that must not exist — also grid's own config bootstrap, per D6. One
+boundary to know: an import line has no datum, so adding an import is not an
+`edit apply` edit at this wave.
+
 Records on stdout (`docs/PORCELAIN.md`), hints on stderr (`GRID_HINTS=0`
 silences), `--json` for the wire result verbatim. Exit codes are uniform
 across verbs: `0` pass · `1` internal · `2` bad input · `3` divergence ·

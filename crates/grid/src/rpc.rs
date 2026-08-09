@@ -2,8 +2,8 @@
 use grid_wire::methods::{
     CacheCheckParams, CacheRecordParams, CacheRecordResult, CacheRecordResultRejectedItem,
     DeltaParams, DeltaResult, GateCheckParams, GateCheckResult, ResolveParams, ResolveResult,
-    SnapshotCurrentResult, SurveyRunParams, SurveyRunResult, TrackLintParams, TrackLintResult,
-    VersionResult,
+    ScopeParams, ScopeResult, SnapshotCurrentResult, SurveyRunParams, SurveyRunResult, TodoParams,
+    TodoResult, TrackLintParams, TrackLintResult, VersionResult,
 };
 use grid_wire::{
     CacheCheckResult, CacheHit, CacheHitVerdict, CacheResultEntryVerdict, GitRev, Snapshot,
@@ -345,4 +345,317 @@ pub fn cache_record(
         }
     }
     Ok(CacheRecordResult { recorded, rejected })
+}
+
+/// Open the chart against the epoch a request names.
+///
+/// `None` means the live epoch; a rev is surveyed on demand (which makes it
+/// live); a snapshot id must *be* the live one — the engine holds exactly
+/// one live epoch, the same rule `grid.cache.check` states.
+fn open_for(
+    snapshot: Option<&SnapshotOrRev>,
+    root: &std::path::Path,
+) -> Result<ChartDelta, chart_provider::Error> {
+    if let Some(target @ SnapshotOrRev::GitRev { .. }) = snapshot {
+        Chart::new(root).ensure(target)?;
+    }
+    let chart = ChartDelta::open(root)?;
+    if let Some(SnapshotOrRev::Snapshot { snapshot }) = snapshot {
+        if chart.current().as_ref() != Some(snapshot) {
+            return Err(chart_provider::Error::NotLive(snapshot.0.clone()));
+        }
+    }
+    Ok(chart)
+}
+
+/// `grid.scope` — the context pack around a set of callsigns: the matching
+/// definitions, the chart edges touching them, and the standing invariants
+/// whose patterns reach them. Signatures and bodies are deliberately absent
+/// (wire contract, `ScopePack`): the segment does not carry them, and the
+/// agent pulls bodies itself, at body cost, when it needs them.
+///
+/// Two fields answer empty at this wave and that is the honest answer, not a
+/// gap: `anchors` because nothing stores anchors yet, and `churn` because
+/// the leg log that would count edits does not exist until a later wave.
+///
+/// # Errors
+/// [`chart_provider::Error::NoSnapshot`] when the store has never been
+/// surveyed — a pack against nothing is not a pack. Other variants as in
+/// [`open_for`] and the invariant load.
+pub fn scope(
+    params: &ScopeParams,
+    root: &std::path::Path,
+) -> Result<ScopeResult, chart_provider::Error> {
+    let chart = open_for(params.snapshot.as_ref(), root)?;
+    let Some(snapshot) = chart.current() else {
+        return Err(chart_provider::Error::NoSnapshot);
+    };
+    let all = live_defs(&chart);
+    let matched: Vec<String> = all
+        .iter()
+        .filter(|(_, callsign, _)| {
+            params
+                .callsigns
+                .iter()
+                .any(|p| grid_xte::pattern::matches(&p.0, callsign))
+        })
+        .map(|(datum, _, _)| datum.clone())
+        .collect();
+    let in_scope = expand(&chart, matched, params.depth.unwrap_or(0));
+
+    let defs: Vec<grid_wire::DefRef> = all
+        .iter()
+        .filter(|(datum, _, _)| in_scope.contains(datum))
+        .map(|(datum, callsign, lang)| grid_wire::DefRef {
+            datum: grid_wire::Datum(datum.clone()),
+            callsign: Some(grid_wire::Callsign(callsign.clone())),
+            lang: *lang,
+            signature: None,
+            materialization: None,
+        })
+        .collect();
+    let (in_edges, out_edges) = incident_edges(&chart, &in_scope);
+
+    // In-scope invariants: the standing rules whose patterns name a scoped
+    // definition. Grounded in defs, not pattern algebra: a rule that matches
+    // nothing in scope is not in scope, whatever the patterns claim.
+    let callsigns: Vec<&str> = defs
+        .iter()
+        .filter_map(|d| d.callsign.as_ref().map(|c| c.0.as_str()))
+        .collect();
+    let invariants: Vec<grid_wire::Invariant> = standing::load(root)
+        .map_err(chart_provider::Error::Config)?
+        .into_iter()
+        .filter(|inv| {
+            let rule = match &inv.rule {
+                grid_wire::InvariantRule::ForbidEdge { forbid_edge } => forbid_edge,
+                grid_wire::InvariantRule::RequireEdge { require_edge } => require_edge,
+            };
+            [&rule.src, &rule.dst].into_iter().any(|pattern| {
+                callsigns
+                    .iter()
+                    .any(|c| grid_xte::pattern::matches(&pattern.0, c))
+            })
+        })
+        .collect();
+
+    Ok(ScopeResult {
+        snapshot,
+        defs,
+        in_edges,
+        out_edges,
+        invariants,
+        anchors: Vec::new(),
+        churn: Vec::new(),
+    })
+}
+
+/// Every definition in the live epoch: (datum, callsign, lang), in segment
+/// order — which is content order, so everything derived from it is
+/// deterministic by construction (C2).
+fn live_defs(chart: &ChartDelta) -> Vec<(String, String, Option<grid_wire::Lang>)> {
+    let mut all = Vec::new();
+    for segment in chart.head().segments() {
+        for ord in 0..segment.def_count() {
+            let ord = grid_chart::Ordinal(ord);
+            if let (Some(datum), Some(callsign)) = (segment.datum(ord), segment.callsign(ord)) {
+                all.push((datum.to_string(), callsign.to_owned(), segment.lang(ord)));
+            }
+        }
+    }
+    all
+}
+
+/// The matched set plus `depth` BFS layers over edges in both directions.
+/// Depth zero is the definitions the patterns name, no neighbours — the
+/// pack's edges still say what touches them.
+fn expand(chart: &ChartDelta, matched: Vec<String>, depth: u64) -> Vec<String> {
+    let mut in_scope = matched;
+    let mut frontier = in_scope.clone();
+    for _ in 0..depth {
+        let mut next = Vec::new();
+        for segment in chart.head().segments() {
+            for ord in 0..segment.def_count() {
+                let ord = grid_chart::Ordinal(ord);
+                let Some(datum) = segment.datum(ord) else {
+                    continue;
+                };
+                if !frontier.contains(&datum.to_string()) {
+                    continue;
+                }
+                for neighbour in segment
+                    .out_edges(ord)
+                    .chain(segment.in_edges(ord))
+                    .filter_map(|n| segment.datum(n.other))
+                {
+                    let neighbour = neighbour.to_string();
+                    if !in_scope.contains(&neighbour) && !next.contains(&neighbour) {
+                        next.push(neighbour);
+                    }
+                }
+            }
+        }
+        in_scope.extend(next.iter().cloned());
+        frontier = next;
+    }
+    in_scope
+}
+
+/// The chart edges touching a datum set, from the set's perspective: an
+/// edge whose source is in scope is an out-edge, whose destination is in
+/// scope is an in-edge — an edge wholly inside is both, and that is not a
+/// contradiction. Both lists sort by (src, relation, dst): same chart, same
+/// pack, every time.
+fn incident_edges(
+    chart: &ChartDelta,
+    in_scope: &[String],
+) -> (Vec<grid_wire::Edge>, Vec<grid_wire::Edge>) {
+    let mut in_edges = Vec::new();
+    let mut out_edges = Vec::new();
+    for segment in chart.head().segments() {
+        for ord in 0..segment.def_count() {
+            let ord = grid_chart::Ordinal(ord);
+            let Some(src) = segment.datum(ord) else {
+                continue;
+            };
+            let src = src.to_string();
+            for n in segment.out_edges(ord) {
+                let Some(dst) = segment.datum(n.other) else {
+                    continue;
+                };
+                let dst = dst.to_string();
+                let edge = grid_wire::Edge {
+                    src: grid_wire::Datum(src.clone()),
+                    relation: n.relation,
+                    dst: grid_wire::Datum(dst.clone()),
+                    zoc: n.zoc,
+                    via: None,
+                };
+                if in_scope.contains(&src) {
+                    out_edges.push(edge.clone());
+                }
+                if in_scope.contains(&dst) {
+                    in_edges.push(edge);
+                }
+            }
+        }
+    }
+    let by_endpoint = |a: &grid_wire::Edge, b: &grid_wire::Edge| {
+        (&a.src.0, a.relation as u8, &a.dst.0).cmp(&(&b.src.0, b.relation as u8, &b.dst.0))
+    };
+    out_edges.sort_by(by_endpoint);
+    in_edges.sort_by(by_endpoint);
+    (in_edges, out_edges)
+}
+
+/// `grid.todo` — the gate verdict rendered as a worklist: what the track
+/// promised, split into made-good and pending. This is a *view* over the
+/// same judgment `grid.gate.check` computes (CLI plan §5) — the delta, the
+/// verdict, and this list can never disagree, because they are one engine.
+///
+/// `head` defaults to the live snapshot: the worklist question is "what is
+/// left *now*", and now is what was last surveyed.
+///
+/// # Errors
+/// [`chart_provider::Error::Track`] when the track id names nothing,
+/// [`chart_provider::Error::NoSnapshot`] when nothing has been surveyed, and
+/// the usual provider errors for a delta that cannot be computed.
+pub fn todo(
+    params: &TodoParams,
+    root: &std::path::Path,
+) -> Result<TodoResult, chart_provider::Error> {
+    let track = crate::track::load(&params.track.0).map_err(chart_provider::Error::Track)?;
+    let track = standing::fold(
+        &track,
+        standing::load(root).map_err(chart_provider::Error::Config)?,
+    );
+    let mut chart = Chart::new(root);
+    chart.ensure(&track.base)?;
+    let head = match &params.head {
+        Some(head) => head.clone(),
+        None => SnapshotOrRev::Snapshot {
+            snapshot: ChartDelta::open(root)?
+                .current()
+                .ok_or(chart_provider::Error::NoSnapshot)?,
+        },
+    };
+    if let SnapshotOrRev::GitRev { .. } = head {
+        chart.ensure(&head)?;
+    }
+    let provider = ChartDelta::open(root)?;
+    let made_good = provider.made_good(&track.base, &head)?;
+    let verdict = grid_xte::verdict(&track, &made_good, &provider);
+    let (defs_done, defs_pending) = grid_xte::def_progress(&track, &made_good);
+    // A test is done when its comparison came back ok; anything else —
+    // failed, skipped, never run — is still work.
+    let mut tests_done = Vec::new();
+    let mut tests_pending = Vec::new();
+    for comparison in &verdict.tests {
+        if comparison.ok {
+            tests_done.push(comparison.test.clone());
+        } else {
+            tests_pending.push(comparison.test.clone());
+        }
+    }
+
+    let done = defs_done.len() + verdict.matched.len() + tests_done.len();
+    let total =
+        track.delta.defs.len() + track.delta.edges.len() + track.tests.as_ref().map_or(0, Vec::len);
+    Ok(TodoResult {
+        track_id: grid_wire::TrackId(track.track_id.clone()),
+        defs_done,
+        defs_pending,
+        edges_done: verdict.matched,
+        edges_pending: verdict.missing,
+        tests_done,
+        tests_pending,
+        fraction: grid_wire::TodoListFraction {
+            num: done as u64,
+            den: total as u64,
+        },
+    })
+}
+
+/// `grid uses` (CLI) — who reaches a name: the resolved definitions plus the
+/// live chart's *proven* inbound edges. Only proven, at this wave and on
+/// principle: "who can reach X" answered with a maybe-edge is how an agent
+/// talks itself into a safe-looking blast radius. The verb grows a walker
+/// later; the filter does not move.
+///
+/// # Errors
+/// [`chart_provider::Error`] if the store cannot be opened.
+pub fn uses(
+    params: &ResolveParams,
+    root: &std::path::Path,
+) -> Result<(ResolveResult, Vec<grid_wire::Edge>), chart_provider::Error> {
+    let chart = ChartDelta::open(root)?;
+    let defs = chart.resolve(&params.locator);
+    let mut edges = Vec::new();
+    for def in &defs {
+        let Some(want) = grid_chart::DatumId::parse(&def.datum.0) else {
+            continue;
+        };
+        for segment in chart.head().segments() {
+            let Some(ord) = segment.ordinal(&want) else {
+                continue;
+            };
+            for n in segment.in_edges(ord) {
+                if n.zoc != grid_wire::Zoc::Proven {
+                    continue;
+                }
+                let Some(src) = segment.datum(n.other) else {
+                    continue;
+                };
+                edges.push(grid_wire::Edge {
+                    src: grid_wire::Datum(src.to_string()),
+                    relation: n.relation,
+                    dst: def.datum.clone(),
+                    zoc: n.zoc,
+                    via: None,
+                });
+            }
+        }
+    }
+    edges.sort_by(|a, b| (&a.src.0, a.relation as u8).cmp(&(&b.src.0, b.relation as u8)));
+    Ok((defs, edges))
 }
