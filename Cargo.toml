@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/datum",
+    "crates/survey",
+    "crates/chart",
+    "crates/chart-io",
+    "crates/wake",
+    "crates/leadline",
+    "crates/xte",
+    "crates/wire",
+    "crates/grid",
+]
+
+[workspace.package]
+edition = "2021"
+license = "Proprietary"
+
+[workspace.lints.rust]
+unsafe_code = { level = "forbid", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+
+[profile.release]
+lto = true
+codegen-units = 1
