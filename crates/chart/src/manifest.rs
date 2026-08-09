@@ -34,6 +34,17 @@ impl SnapshotId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Take a snapshot id from the wire.
+    ///
+    /// No validation: an id that never named a snapshot simply fails to
+    /// resolve against the store, which is the same answer as a well-formed
+    /// id for a snapshot that was never published. Parsing it here would move
+    /// that refusal earlier without making it stronger.
+    #[must_use]
+    pub fn from_wire(s: &str) -> Self {
+        Self(s.to_owned())
+    }
 }
 
 impl std::fmt::Display for SnapshotId {
