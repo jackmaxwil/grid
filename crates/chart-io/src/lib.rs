@@ -73,6 +73,8 @@ pub enum StoreError {
         /// Segment file name from the manifest.
         name: String,
     },
+    /// No snapshot with this id was ever published to this store.
+    UnknownSnapshot(SnapshotId),
 }
 
 impl std::fmt::Display for StoreError {
@@ -81,6 +83,7 @@ impl std::fmt::Display for StoreError {
             Self::Io(e) => write!(f, "{e}"),
             Self::Chart(e) => write!(f, "{e}"),
             Self::ChecksumMismatch { name } => write!(f, "segment {name} does not match manifest"),
+            Self::UnknownSnapshot(id) => write!(f, "unknown snapshot {id}"),
         }
     }
 }
@@ -222,17 +225,92 @@ impl Store {
             worktree_diff_hash,
             segments,
         };
-        write_atomic(
-            &self.dir,
-            &self.dir.join(MANIFEST),
-            &manifest.canonical_bytes(),
-            MANIFEST_TMP,
-        )?;
+        let bytes = manifest.canonical_bytes();
+        // Retain the manifest under its own snapshot id before publishing it.
+        // A snapshot id is the hash of these bytes (D5), so this file is
+        // content-addressed too: republishing an identical state rewrites
+        // nothing, and a gate can still reach a base snapshot after head has
+        // moved on. Written first, so the live manifest never names a snapshot
+        // that cannot be reopened.
+        let retained = self.dir.join(retained_name(&manifest.snapshot_id()));
+        if !retained.exists() {
+            write_atomic(&self.dir, &retained, &bytes, "snap.tmp")?;
+        }
+        write_atomic(&self.dir, &self.dir.join(MANIFEST), &bytes, MANIFEST_TMP)?;
         let epoch = load_epoch(&self.dir, manifest)?;
         let id = epoch.snapshot_id().clone();
         self.epoch.store(Arc::new(epoch));
         Ok(id)
     }
+
+    /// Reopen a previously published snapshot by id.
+    ///
+    /// This is what makes a gate between two snapshots possible: `head` is
+    /// usually the live epoch, but `base` is a state the store has moved past.
+    /// Segments are content-addressed and never deleted in place, so a
+    /// retained manifest still names files that are there.
+    ///
+    /// # Errors
+    /// [`StoreError::UnknownSnapshot`] if no such snapshot was published here.
+    pub fn epoch_of(&self, id: &SnapshotId) -> Result<Arc<Epoch>, StoreError> {
+        // The live epoch is the common case and is already in memory.
+        let live = self.load();
+        if live.snapshot_id() == id {
+            return Ok(live);
+        }
+        let bytes = match fs::read(self.dir.join(retained_name(id))) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(StoreError::UnknownSnapshot(id.clone()))
+            }
+            Err(e) => return Err(e.into()),
+        };
+        Ok(Arc::new(load_epoch(&self.dir, Manifest::parse(&bytes)?)?))
+    }
+
+    /// The most recent retained snapshot surveyed at `rev`, if any.
+    ///
+    /// CI holds a rev, not a snapshot id, so this is the lookup the gate
+    /// actually performs. Retained manifests record the rev they were
+    /// surveyed at; scanning them is bounded by the number of published
+    /// snapshots, and the live epoch is checked by the caller first.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store directory cannot be read.
+    pub fn epoch_for_rev(&self, rev: &str) -> Result<Option<Arc<Epoch>>, StoreError> {
+        let mut best: Option<(std::time::SystemTime, Manifest)> = None;
+        for entry in fs::read_dir(&self.dir)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if !name.starts_with("snap-") || !name.ends_with(".manifest") {
+                continue;
+            }
+            let Ok(bytes) = fs::read(entry.path()) else {
+                continue;
+            };
+            // A manifest that no longer parses is not a candidate; it is also
+            // not a reason to fail a lookup for some other rev.
+            let Ok(manifest) = Manifest::parse(&bytes) else {
+                continue;
+            };
+            if manifest.git_rev != rev {
+                continue;
+            }
+            let at = entry.metadata()?.modified()?;
+            if best.as_ref().is_none_or(|(prior, _)| at > *prior) {
+                best = Some((at, manifest));
+            }
+        }
+        best.map(|(_, m)| load_epoch(&self.dir, m).map(Arc::new))
+            .transpose()
+    }
+}
+
+/// File name a snapshot's manifest is retained under. The id is
+/// `snap:b3:<hex>`, and `:` is not a portable path character.
+fn retained_name(id: &SnapshotId) -> String {
+    format!("{}.manifest", id.as_str().replace(':', "-"))
 }
 
 fn hex(bytes: &[u8; 32]) -> String {
