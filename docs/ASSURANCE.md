@@ -11,6 +11,7 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 | C4 | no cache hit without established closure | adversarial closure proptest | 7 |
 | C5 | two writers only (survey, edit.apply); unsafe confined to `chart-io` | grep-gate | 0+ |
 | C6 | a datum ignores formatting, comments and local renaming; `span_hash` does not | properties.rs determinism.rs | 2 |
+| C7 | the normalizer never panics on arbitrary bytes and never disagrees with itself | normalize.rs | 2+ |
 
 ## Dependency justification
 

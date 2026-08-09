@@ -1,8 +1,8 @@
 //! Determinism smoke over a real corpus: hashing a whole tree twice must
-//! yield identical sets. Cortana is the plan's named corpus, but grid is its
-//! own repo, so the tree is named by `GRID_CORPUS` (CI points it at a
-//! checkout); without it the test is a no-op rather than a false green on an
-//! empty tree.
+//! yield identical sets. The plan names `packages/cortana`, but grid is its
+//! own repo, so the tree is `GRID_CORPUS` when set (CI or a local buildhost
+//! checkout) and grid's own `scripts/` otherwise — never nothing, so the
+//! test cannot silently pass on an empty tree.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -49,10 +49,8 @@ fn hash_tree(files: &[PathBuf]) -> BTreeMap<String, String> {
 
 #[test]
 fn hashing_a_real_tree_twice_is_identical() {
-    let Ok(root) = std::env::var("GRID_CORPUS") else {
-        eprintln!("GRID_CORPUS unset; determinism smoke skipped");
-        return;
-    };
+    let root = std::env::var("GRID_CORPUS")
+        .unwrap_or_else(|_| format!("{}/../../scripts", env!("CARGO_MANIFEST_DIR")));
     let mut files = Vec::new();
     python_files(Path::new(&root), &mut files);
     assert!(!files.is_empty(), "GRID_CORPUS={root} has no Python files");

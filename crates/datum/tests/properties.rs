@@ -193,3 +193,24 @@ fn nested_definitions_get_dotted_callsigns() {
 fn invalid_source_is_an_error() {
     assert!(normalize("def f(:\n").is_err());
 }
+
+/// D7: the datum we emit must satisfy the wire contract's `Datum` pattern
+/// (`^b3:[0-9a-f]{64}$`) — identities computed here cross the socket as-is.
+#[test]
+fn datum_matches_wire_pattern() {
+    let datum = normalize("def f(x):\n    return x\n")
+        .unwrap()
+        .datum
+        .to_string();
+    assert!(datum.starts_with("b3:"));
+    let hex = &datum[3..];
+    assert_eq!(hex.len(), 64);
+    assert!(hex
+        .chars()
+        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    // Definitions carry the same guarantee on both of their hashes.
+    let def = &definitions("def f(x):\n    return x\n").unwrap()[0];
+    for id in [def.datum.as_str(), def.span_hash.as_str()] {
+        assert!(id.starts_with("b3:") && id[3..].len() == 64);
+    }
+}

@@ -14,7 +14,7 @@ members = [
 
 [workspace.package]
 edition = "2021"
-license = "Proprietary"
+license = "LicenseRef-Proprietary"
 
 [workspace.lints.rust]
 unsafe_code = { level = "forbid", priority = -1 }
