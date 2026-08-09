@@ -133,9 +133,11 @@ fn error_line(id: &Value, code: i32, message: &str) -> String {
 fn chart_error(e: &crate::chart_provider::Error) -> (i32, String) {
     use crate::chart_provider::Error as E;
     let code = match e {
-        E::NoSnapshotForRev(_) | E::Store(_) => WireError::UnknownSnapshot.code(),
+        E::NoSnapshotForRev(_) | E::Store(_) | E::NotLive(_) => WireError::UnknownSnapshot.code(),
+        E::NoSnapshot => WireError::NoSnapshot.code(),
         E::Survey(_) => WireError::SurveyFailed.code(),
         E::Config(_) => WireError::InvalidTrack.code(),
+        E::Track(_) => WireError::UnknownTrack.code(),
     };
     (code, e.to_string())
 }
@@ -216,6 +218,26 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
             rpc::cache_record(&params, root)
                 .map(|v| encode(&v))
                 .map_err(|e| (WireError::UnknownSnapshot.code(), e))
+        }
+        "grid.scope" => {
+            let params = serde_json::from_value(params).map_err(bad_params)?;
+            rpc::scope(&params, root)
+                .map(|v| encode(&v))
+                .map_err(|e| chart_error(&e))
+        }
+        "grid.todo" => {
+            let params = serde_json::from_value(params).map_err(bad_params)?;
+            rpc::todo(&params, root)
+                .map(|v| encode(&v))
+                .map_err(|e| chart_error(&e))
+        }
+        "grid.edit.apply" => {
+            let params = serde_json::from_value(params).map_err(bad_params)?;
+            // Every refusal here is bad input: a stale base is not an error
+            // but a conflict item in the result (D6's typed conflict).
+            crate::edit::apply(&params, root)
+                .map(|out| encode(&out.wire))
+                .map_err(|e| (-32602, e.to_string()))
         }
         other => Err((-32601, format!("no such method: {other}"))),
     }

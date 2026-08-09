@@ -564,3 +564,228 @@ fn the_contract_example_shape_is_served() {
     assert!(result["hits"].is_array());
     assert!(result["misses"].is_array());
 }
+
+/// Write a track file into the repo's store and return its id.
+fn write_track(dir: &Path, id: &str, track: &Value) -> String {
+    let tracks = dir.join(".grid/tracks");
+    std::fs::create_dir_all(&tracks).expect("mkdir tracks");
+    std::fs::write(tracks.join(format!("{id}.json")), track.to_string()).expect("write track");
+    format!("track:{id}")
+}
+
+/// The wave 6 fixture: two functions, one caller, and an imported-but-
+/// unused callee — so the promised edge can be built by editing a
+/// definition alone (an import line has no datum; `edit apply` addresses
+/// definitions).
+fn repo_with_an_unused_import() -> tempfile::TempDir {
+    let dir = repo();
+    let write = |path: &str, body: &str| {
+        let full = dir.path().join(path);
+        std::fs::create_dir_all(full.parent().expect("parent")).expect("mkdir");
+        std::fs::write(full, body).expect("write");
+    };
+    write("pkg/__init__.py", "");
+    write(
+        "pkg/util.py",
+        "def helper():\n    return 1\n\ndef extra():\n    return 2\n",
+    );
+    write(
+        "pkg/main.py",
+        "from pkg.util import helper, extra\n\ndef sweep():\n    helper()\n",
+    );
+    let ok = Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(dir.path())
+        .output()
+        .expect("git add")
+        .status
+        .success();
+    assert!(ok);
+    let ok = Command::new("git")
+        .args(["commit", "-qm", "three"])
+        .current_dir(dir.path())
+        .env("GIT_AUTHOR_NAME", "grid")
+        .env("GIT_AUTHOR_EMAIL", "grid@example.invalid")
+        .env("GIT_COMMITTER_NAME", "grid")
+        .env("GIT_COMMITTER_EMAIL", "grid@example.invalid")
+        .output()
+        .expect("git commit")
+        .status
+        .success();
+    assert!(ok);
+    dir
+}
+
+#[test]
+fn scope_example_shape_is_served_over_the_socket() {
+    let contract = contract();
+    let dir = repo_with_an_unused_import();
+    let daemon = Daemon::start(dir.path());
+    let surveyed = daemon.call("grid.survey.run", &json!({}));
+    let snapshot = surveyed["result"]["snapshot_id"].clone();
+
+    let mut params = example_params(&contract, "grid.scope");
+    params["callsigns"] = json!(["pkg.util.**"]);
+    let response = daemon.call("grid.scope", &params);
+    let result = &response["result"];
+    assert!(response.get("error").is_none(), "scope errored: {response}");
+    let typed: Result<grid_wire::ScopePack, _> = serde_json::from_value(result.clone());
+    let pack = typed.expect("the answer is a wire ScopePack, not a lookalike");
+    assert_eq!(pack.snapshot.0, snapshot.as_str().expect("snapshot id"));
+    assert_eq!(pack.defs.len(), 2, "helper and extra: {pack:?}");
+    // The pack saw the caller reaching in: one inbound proven edge each.
+    assert_eq!(pack.in_edges.len(), 1, "sweep reaches helper: {pack:?}");
+}
+
+#[test]
+fn todo_is_the_gate_verdict_as_a_worklist_over_the_socket() {
+    let contract = contract();
+    let dir = repo_with_an_unused_import();
+    let daemon = Daemon::start(dir.path());
+    let surveyed = daemon.call("grid.survey.run", &json!({}));
+    let base = surveyed["result"]["snapshot_id"].clone();
+    write_track(
+        dir.path(),
+        "todo",
+        &json!({
+            "track_id": "track:todo/v1",
+            "base": {"snapshot": base},
+            "delta": {
+                "defs": [{"action": "modify", "callsign": "pkg.main.sweep"}],
+                "edges": [{"action": "add", "src": "pkg.main.sweep",
+                           "relation": "calls", "dst": "pkg.util.extra"}]
+            }
+        }),
+    );
+
+    let mut params = example_params(&contract, "grid.todo");
+    params["track"] = json!("track:todo");
+    let response = daemon.call("grid.todo", &params);
+    let result = &response["result"];
+    assert!(response.get("error").is_none(), "todo errored: {response}");
+    let typed: Result<grid_wire::TodoList, _> = serde_json::from_value(result.clone());
+    let list = typed.expect("the answer is a wire TodoList");
+    // Nothing built yet: everything pending, fraction at zero.
+    assert_eq!(list.edges_pending.len(), 1);
+    assert_eq!(list.defs_pending.len(), 1);
+    assert_eq!(list.fraction.num, 0);
+    assert_eq!(list.fraction.den, 2);
+}
+
+#[test]
+fn edit_apply_example_is_served_and_conflicts_are_typed_over_the_socket() {
+    let contract = contract();
+    let dir = repo_with_an_unused_import();
+    let daemon = Daemon::start(dir.path());
+    daemon.call("grid.survey.run", &json!({}));
+
+    // The datum the example's handle pins, for the fixture's own `sweep`.
+    let resolved = daemon.call(
+        "grid.resolve",
+        &json!({"locator": {"callsign": "pkg.main.sweep"}}),
+    );
+    let base = resolved["result"][0]["datum"].as_str().expect("datum");
+
+    let mut params = example_params(&contract, "grid.edit.apply");
+    params["edits"][0]["target"] = json!("pkg.main.sweep");
+    params["edits"][0]["base_datum"] = json!(base);
+    params["edits"][0]["new_text"] = json!("def sweep():\n    helper()\n    extra()\n");
+    let response = daemon.call("grid.edit.apply", &params);
+    let result = &response["result"];
+    assert!(
+        response.get("error").is_none(),
+        "edit.apply errored: {response}"
+    );
+    let typed: Result<grid_wire::EditResult, _> = serde_json::from_value(result.clone());
+    let applied = typed.expect("the answer is a wire EditResult");
+    assert_eq!(applied.applied.len(), 1, "one edit landed: {applied:?}");
+    assert!(applied.conflicts.is_empty());
+
+    // Replaying the same edit is now stale: the answer is a typed conflict
+    // whose `now` is the identity the first apply returned.
+    let replay = daemon.call("grid.edit.apply", &params);
+    let conflict: grid_wire::EditResult =
+        serde_json::from_value(replay["result"].clone()).expect("typed conflict");
+    assert!(conflict.applied.is_empty());
+    assert_eq!(conflict.conflicts.len(), 1);
+    assert_eq!(
+        conflict.conflicts[0].now, applied.applied[0],
+        "the conflict's now is the datum the first edit produced"
+    );
+}
+
+#[test]
+fn the_agent_loop_runs_over_the_socket_with_no_human_file_edits() {
+    // The wave's accept criterion: plan, track, implement via edit.apply,
+    // gate — the whole loop as socket calls.
+    let dir = repo_with_an_unused_import();
+    let daemon = Daemon::start(dir.path());
+
+    // Plan: survey, author the track against that snapshot, lint it.
+    let base = daemon.call("grid.survey.run", &json!({}))["result"]["snapshot_id"].clone();
+    let track = json!({
+        "track_id": "track:loop-v1",
+        "base": {"snapshot": base},
+        "delta": {
+            "defs": [{"action": "modify", "callsign": "pkg.main.sweep"}],
+            "edges": [{"action": "add", "src": "pkg.main.sweep",
+                       "relation": "calls", "dst": "pkg.util.extra"}]
+        }
+    });
+    let lint = daemon.call("grid.track.lint", &json!({"track": track}));
+    assert!(
+        lint["result"]["errors"]
+            .as_array()
+            .expect("errors")
+            .is_empty(),
+        "the plan is possible: {lint}"
+    );
+
+    // Gate before implementing: hold, with the promised edge itemized.
+    let held = daemon.call(
+        "grid.gate.check",
+        &json!({"track": track, "head": {"snapshot": base}}),
+    );
+    assert_eq!(held["result"]["gate"], "hold");
+    assert_eq!(
+        held["result"]["missing"].as_array().expect("missing").len(),
+        1
+    );
+
+    // Implement: one CAS edit, no human file edits.
+    let resolved = daemon.call(
+        "grid.resolve",
+        &json!({"locator": {"callsign": "pkg.main.sweep"}}),
+    );
+    let base_datum = resolved["result"][0]["datum"].as_str().expect("datum");
+    let applied = daemon.call(
+        "grid.edit.apply",
+        &json!({"edits": [{
+            "target": "pkg.main.sweep",
+            "base_datum": base_datum,
+            "new_text": "def sweep():\n    helper()\n    extra()\n"
+        }]}),
+    );
+    assert_eq!(
+        applied["result"]["applied"]
+            .as_array()
+            .expect("applied")
+            .len(),
+        1,
+        "the edit landed: {applied}"
+    );
+
+    // Gate at the resurveyed worktree: pass, and the worklist agrees.
+    let resurveyed = daemon.call("grid.survey.run", &json!({}))["result"]["snapshot_id"].clone();
+    let passed = daemon.call(
+        "grid.gate.check",
+        &json!({"track": track, "head": {"snapshot": resurveyed}}),
+    );
+    assert_eq!(
+        passed["result"]["gate"], "pass",
+        "the promised edge is now made good: {passed}"
+    );
+    write_track(dir.path(), "loop", &track);
+    let todo = daemon.call("grid.todo", &json!({"track": "track:loop"}));
+    assert_eq!(todo["result"]["fraction"], json!({"num": 2, "den": 2}));
+}

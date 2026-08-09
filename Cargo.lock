@@ -191,6 +191,7 @@ dependencies = [
  "grid-cache",
  "grid-chart",
  "grid-chart-io",
+ "grid-datum",
  "grid-survey",
  "grid-wire",
  "grid-xte",

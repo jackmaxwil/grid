@@ -136,6 +136,25 @@ pub fn check<P: DeltaProvider>(
     Ok(verdict(track, &made_good, provider))
 }
 
+/// Def promises split by whether the `MadeGood` made them good.
+///
+/// The gate's `defs_unaccounted` answers the other direction (which changes
+/// no promise covers); this is the promise-side view `grid.todo` renders, so
+/// the worklist and the verdict are two readings of one judgment, never two
+/// engines (CLI plan §5: `todo` is a *view* over the gate).
+#[must_use]
+pub fn def_progress(
+    track: &Track,
+    made_good: &MadeGood,
+) -> (Vec<TrackDefPromise>, Vec<TrackDefPromise>) {
+    track
+        .delta
+        .defs
+        .iter()
+        .cloned()
+        .partition(|p| made_good.defs.iter().any(|d| covers(p, d)))
+}
+
 /// The pure core: a verdict over a delta already in hand.
 #[must_use]
 pub fn verdict<P: DeltaProvider>(track: &Track, made_good: &MadeGood, provider: &P) -> XteVerdict {

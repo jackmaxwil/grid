@@ -13,7 +13,7 @@ use grid_wire::{
 use grid_xte::lint::{relation_name, render_edge};
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "1.1.0";
+pub const VERSION: &str = "1.2.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -349,6 +349,153 @@ pub fn cache_record(result: &CacheRecordResult) -> String {
     record(&mut out, "done", &[&format!("{stored}/{total}")]);
     for item in &result.rejected {
         record(&mut out, "warn", &[&item.datum.0, &item.reason]);
+    }
+    out
+}
+
+/// An edge arrow for a chart edge (not a change): same shape as
+/// `edge_arrow`, but nothing was added or removed — the edge *is*.
+fn chart_edge_arrow(edge: &grid_wire::Edge, name: &NameOf) -> String {
+    let show = |d: &grid_wire::Datum| name(d).unwrap_or_else(|| format!("@{}", short(d)));
+    format!(
+        "{} -{}-> {}",
+        show(&edge.src),
+        relation_name(edge.relation),
+        show(&edge.dst)
+    )
+}
+
+/// `edge` records whose first column is the evidence grade, for query
+/// results (`scope`, `uses`): these edges are neither changes (no glyph)
+/// nor verdicts (no role), and the grammar's evidence column moves to the
+/// front for exactly that case (PORCELAIN.md, edge record).
+fn edge_records(out: &mut String, edges: &[grid_wire::Edge], name: &NameOf) {
+    for edge in edges {
+        record(
+            out,
+            "edge",
+            &[&role(zoc_name(edge.zoc)), &chart_edge_arrow(edge, name)],
+        );
+    }
+}
+
+/// Render a scope pack: `ref` records for the definitions (they exist;
+/// nothing changed), `edge` records for the chart around them, and `inv`
+/// records for the standing rules in scope. Anchors and churn print nothing
+/// while their stores do not exist — an empty section is a true answer, but
+/// a record type with no records is not a column shift.
+#[must_use]
+pub fn scope(pack: &grid_wire::ScopePack, name: &NameOf) -> String {
+    let mut out = refs(&pack.defs);
+    // An edge wholly inside the scope is both an in-edge and an out-edge;
+    // print it once.
+    let mut edges = pack.in_edges.clone();
+    edges.extend(
+        pack.out_edges
+            .iter()
+            .filter(|e| !pack.in_edges.contains(e))
+            .cloned(),
+    );
+    edges.sort_by(|a, b| {
+        (&a.src.0, a.relation as u8, &a.dst.0).cmp(&(&b.src.0, b.relation as u8, &b.dst.0))
+    });
+    edge_records(&mut out, &edges, name);
+    for inv in &pack.invariants {
+        record(&mut out, "inv", &["standing", &inv.id]);
+    }
+    out
+}
+
+/// Render `grid uses`: the proven inbound edges of what the name resolved
+/// to, evidence first.
+#[must_use]
+pub fn uses(edges: &[grid_wire::Edge], name: &NameOf) -> String {
+    let mut out = String::new();
+    edge_records(&mut out, edges, name);
+    out
+}
+
+/// Render a worklist: one `done` record carrying the overall fraction and
+/// the per-kind split (the CLI plan's `done 3/5 promises · edges 2/3 ·
+/// defs 1/1 · tests 0/1`, split at the column boundary), then every pending
+/// promise rendered exactly as the track store renders a fresh one — a
+/// promise is the same work whether it is being planned or chased.
+#[must_use]
+pub fn todo(list: &grid_wire::TodoList) -> String {
+    let mut out = String::new();
+    let split = |done: usize, pending: usize| format!("{done}/{}", done + pending);
+    let detail = format!(
+        "edges {} · defs {} · tests {}",
+        split(list.edges_done.len(), list.edges_pending.len()),
+        split(list.defs_done.len(), list.defs_pending.len()),
+        split(list.tests_done.len(), list.tests_pending.len()),
+    );
+    record(
+        &mut out,
+        "done",
+        &[
+            &format!("{}/{}", list.fraction.num, list.fraction.den),
+            &detail,
+        ],
+    );
+    for d in &list.defs_pending {
+        let action = match d.action {
+            grid_wire::TrackDefPromiseAction::Add => "+",
+            grid_wire::TrackDefPromiseAction::Remove => "-",
+            grid_wire::TrackDefPromiseAction::Modify => "~",
+        };
+        record(&mut out, "def", &[action, &d.callsign.0]);
+    }
+    for e in &list.edges_pending {
+        let glyph = match e.action {
+            grid_wire::TrackEdgePromiseAction::Add => "+",
+            grid_wire::TrackEdgePromiseAction::Remove => "-",
+            grid_wire::TrackEdgePromiseAction::Move => ">",
+        };
+        record(&mut out, "edge", &[glyph, &promise_arrow(e)]);
+    }
+    for t in &list.tests_pending {
+        record(&mut out, "todo", &["test", t]);
+    }
+    out
+}
+
+/// Render applied edits as `def` records: `~` with the datum transition for
+/// a replacement, `+` for what a creation brought into being. A created
+/// file that defines nothing prints its path — the path is the change.
+#[must_use]
+pub fn edit_applied(edits: &[crate::edit::EditDetail]) -> String {
+    let mut out = String::new();
+    for detail in edits {
+        match detail {
+            crate::edit::EditDetail::Modified { callsign, was, now } => record(
+                &mut out,
+                "def",
+                &["~", callsign, &format!("{}→{}", short(was), short(now))],
+            ),
+            crate::edit::EditDetail::CreatedDef { callsign, now } => {
+                record(&mut out, "def", &["+", callsign, &short(now)]);
+            }
+            crate::edit::EditDetail::CreatedFile { path } => {
+                record(&mut out, "def", &["+", path]);
+            }
+        }
+    }
+    out
+}
+
+/// Render CAS conflicts: the target as typed, then `was→now` — the stale
+/// read and the identity that replaced it, both pasteable.
+#[must_use]
+pub fn edit_conflicts(conflicts: &[grid_wire::EditResultConflictsItem]) -> String {
+    let mut out = String::new();
+    for c in conflicts {
+        let was = c.was.as_ref().map_or_else(|| "?".to_string(), short);
+        record(
+            &mut out,
+            "conflict",
+            &[&c.target, &format!("{was}→{}", short(&c.now))],
+        );
     }
     out
 }
