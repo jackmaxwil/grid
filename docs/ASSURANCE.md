@@ -22,6 +22,7 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 
 | C13 | an incremental survey and a full one produce the same segment bytes | determinism.rs corpus.rs | 5 |
 | C14 | every recorded edge is one the language's own binding rules establish; an unresolvable or ambiguous name yields no edge | refs.rs determinism.rs | 5 |
+| C15 | an edit addressed at a stale coordinate conflicts and writes nothing; it never lands against moved code | edit_apply.rs | 6 |
 
 
 ## Dependency justification
@@ -53,6 +54,14 @@ Every dependency in `Cargo.lock` gets a line here saying why it is in the TCB.
   closure walk's graph, and the verdict log is `std::fs` — an append-only line
   file needs no database, and a database would be state a partial write could
   corrupt.
+
+- Wave 6 (`grid` agent verbs): no new dependencies. The write path reuses
+  `grid-datum`'s parser — an edit's new identity is computed by the same
+  normalization the survey would compute, so a post-edit survey can only
+  agree — and file discovery stays `git ls-files` via `grid-survey`.
+  `serde_json` becomes a *build* dependency of `grid` (the explain corpus is
+  generated from the wire contract at build time); it has been in the TCB
+  since Wave 1, so the lockfile gains no package.
 
 The segment format is the other compatibility surface: images are prefixed
 `GRIDSEG\0` and carry a `FORMAT_EPOCH`, and the manifest carries the same

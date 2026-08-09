@@ -632,3 +632,156 @@ fn a_bad_cache_kind_is_bad_input() {
     assert_eq!(code(&out), 2);
     assert!(stdout(&out).is_empty(), "errors go to stderr, not stdout");
 }
+
+#[test]
+fn scope_prints_defs_edges_and_invariants_as_records() {
+    let dir = repo_with_a_call();
+    // A standing invariant that reaches the scoped name, and one that does
+    // not: only the first is in scope.
+    std::fs::create_dir_all(dir.path().join(".grid")).expect("mkdir");
+    std::fs::write(
+        dir.path().join(".grid/invariants.json"),
+        serde_json::json!([
+            {"id": "util-pure", "rule": {"forbid_edge": {
+                "src": "pkg.util.**", "relation": "calls", "dst": "pkg.main.**"}}},
+            {"id": "unrelated", "rule": {"forbid_edge": {
+                "src": "nowhere.**", "relation": "calls", "dst": "elsewhere.**"}}}
+        ])
+        .to_string(),
+    )
+    .expect("write invariants");
+    grid(dir.path(), &["survey"]);
+
+    let out = grid(dir.path(), &["scope", "pkg.util.extra"]);
+    assert_eq!(code(&out), 0, "stdout:\n{}", stdout(&out));
+    let text = stdout(&out);
+    let tags: Vec<&str> = text.lines().map(|l| columns(l)[0]).collect();
+    assert!(tags.contains(&"ref"), "a def record: {text}");
+    assert!(tags.contains(&"edge"), "an edge record: {text}");
+    assert!(tags.contains(&"inv"), "an invariant record: {text}");
+    // The edge record's first column is the evidence grade, and the arrow is
+    // callsign-space.
+    let edge = text
+        .lines()
+        .find(|l| columns(l)[0] == "edge")
+        .expect("edge");
+    let fields = columns(edge);
+    assert_eq!(fields[1], "proven");
+    assert!(
+        edge.contains("pkg.main.sweep -calls-> pkg.util.extra"),
+        "{edge}"
+    );
+    // Only the invariant whose pattern reaches the scope is listed.
+    let inv = text.lines().find(|l| columns(l)[0] == "inv").expect("inv");
+    assert!(inv.contains("util-pure"), "{inv}");
+    assert!(!text.contains("unrelated"), "{text}");
+}
+
+#[test]
+fn uses_answers_who_reaches_a_name_with_proven_edges_only() {
+    let dir = repo_with_a_call();
+    grid(dir.path(), &["survey"]);
+    let out = grid(dir.path(), &["uses", "extra"]);
+    assert_eq!(code(&out), 0);
+    let text = stdout(&out);
+    let fields = columns(text.lines().next().expect("an edge record"));
+    assert_eq!(fields[0], "edge");
+    assert_eq!(fields[1], "proven");
+    assert!(
+        text.contains("pkg.main.sweep -calls-> pkg.util.extra"),
+        "{text}"
+    );
+
+    // An unknown name is bad input, not an empty answer.
+    let out = grid(dir.path(), &["uses", "no_such_name"]);
+    assert_eq!(code(&out), 2);
+}
+
+#[test]
+fn uses_on_an_ambiguous_name_lists_pasteable_commands() {
+    let dir = repo_with_a_call();
+    // A second `sweep` makes the short name ambiguous.
+    std::fs::write(
+        dir.path().join("pkg/other.py"),
+        "def sweep():\n    return 0\n",
+    )
+    .expect("write");
+    let add = Command::new("git")
+        .args(["add", "pkg/other.py"])
+        .current_dir(dir.path())
+        .output()
+        .expect("git add");
+    assert!(add.status.success());
+    grid(dir.path(), &["survey"]);
+    let out = grid(dir.path(), &["uses", "sweep"]);
+    assert_eq!(code(&out), 2);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("grid uses pkg.main.sweep"), "{err}");
+    assert!(err.contains("grid uses pkg.other.sweep"), "{err}");
+}
+
+#[test]
+fn todo_renders_the_fraction_then_the_pending_promises() {
+    let dir = repo_with_a_call();
+    let track = write_track(
+        dir.path(),
+        "todo",
+        &json!({
+            "track_id": "track:todo-v1",
+            "base": {"git_rev": "HEAD~1"},
+            "delta": {
+                "defs": [{"action": "add", "callsign": "pkg.util.extra"}],
+                "edges": [
+                    {"action": "add", "src": "pkg.main.sweep",
+                     "relation": "calls", "dst": "pkg.util.extra"},
+                    {"action": "add", "src": "pkg.main.sweep",
+                     "relation": "calls", "dst": "pkg.util.never_built"}
+                ]
+            }
+        }),
+    );
+    let out = grid(dir.path(), &["todo", track.to_str().expect("path"), "HEAD"]);
+    assert_eq!(code(&out), 0, "a worklist is a report, not a verdict");
+    let text = stdout(&out);
+    let first = columns(text.lines().next().expect("the fraction record"));
+    assert_eq!(first[0], "done");
+    // Two promises made good (one def, one edge), one edge pending: 2/3.
+    assert_eq!(first[1], "2/3", "{text}");
+    assert!(text.contains("edges 1/2 · defs 1/1 · tests 0/0"), "{text}");
+    // The pending promise prints as the same record a fresh track would show.
+    let pending: Vec<&str> = text.lines().filter(|l| l.contains("never_built")).collect();
+    assert_eq!(pending.len(), 1, "{text}");
+    assert_eq!(columns(pending[0])[0], "edge");
+}
+
+#[test]
+fn explain_answers_from_the_generated_corpus() {
+    let dir = repo();
+    let out = grid(dir.path(), &["explain", "hold"]);
+    assert_eq!(code(&out), 0);
+    let text = stdout(&out);
+    assert!(text.starts_with("hold — "), "{text}");
+    assert!(text.contains("diverge"), "{text}");
+
+    // A wire word the ontology does not name still answers, from the
+    // contract's own description.
+    let out = grid(dir.path(), &["explain", "callsignpattern"]);
+    assert_eq!(code(&out), 0);
+
+    // An unknown token is bad input with a hint, not a shrug.
+    let out = grid(dir.path(), &["explain", "xyzzy"]);
+    assert_eq!(code(&out), 2);
+}
+
+#[test]
+fn explain_handle_names_the_definition_the_prefix_pins() {
+    let dir = repo_with_a_call();
+    grid(dir.path(), &["survey"]);
+    let resolved = grid(dir.path(), &["resolve", "extra", "--json"]);
+    let defs: serde_json::Value = serde_json::from_str(&stdout(&resolved)).expect("json");
+    let datum = defs[0]["datum"].as_str().expect("datum");
+    let prefix = &datum[3..7];
+    let out = grid(dir.path(), &["explain", &format!("@{prefix}")]);
+    assert_eq!(code(&out), 0);
+    assert!(stdout(&out).contains("pkg.util.extra"), "{}", stdout(&out));
+}

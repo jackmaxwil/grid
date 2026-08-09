@@ -6,6 +6,12 @@
 //! `grid.gate.check`. Bare `grid` is the everyday verb: what changed, and does
 //! it match the promise.
 //!
+//! Wave 6 adds the stage-1/2 agent verbs: `grid scope`, `grid todo` (a view
+//! over the gate verdict, not a second delta engine), `grid edit apply` (the
+//! CAS write path, D6's second writer), `grid uses` (proven inbound edges)
+//! and `grid explain` (help generated from the wire contract and
+//! `docs/ONTOLOGY.md` at build time).
+//!
 //! Two output modes, one vocabulary: porcelain records (`docs/PORCELAIN.md`)
 //! by default, the wire result verbatim under `--json`. stdout carries
 //! records; stderr carries hints and the first-run banner (`GRID_HINTS=0`
@@ -13,6 +19,8 @@
 //! 2 bad input, 3 divergence, 4 stale coordinate.
 
 mod chart_provider;
+mod edit;
+mod explain;
 mod porcelain;
 mod rpc;
 mod serve;
@@ -28,6 +36,7 @@ mod exit {
     pub const INTERNAL: u8 = 1;
     pub const BAD_INPUT: u8 = 2;
     pub const DIVERGENCE: u8 = 3;
+    pub const STALE: u8 = 4;
 }
 
 const PITCH: &str = "what your code promises vs what it does";
@@ -79,6 +88,11 @@ fn main() -> ExitCode {
         Some((&"gate", args)) => gate(args, json),
         Some((&"track", args)) => track::main(args, json),
         Some((&"cache", args)) => cache(args, json),
+        Some((&"scope", args)) => scope(args, json),
+        Some((&"todo", args)) => todo(args, json),
+        Some((&"edit", args)) => edit(args, json),
+        Some((&"uses", args)) => uses(args, json),
+        Some((&"explain", args)) => explain::main(args),
         Some((&"serve", args)) => serve::main(args),
         Some((other, _)) => {
             hint(&format!(
@@ -104,6 +118,20 @@ fn version(json: bool) -> u8 {
     }
 }
 
+/// A `SnapshotOrRev` as typed: `snap:b3:...` is a snapshot id, anything else
+/// is a git rev. Track bases and gate heads both accept both.
+fn snapshot_or_rev(typed: &str) -> grid_wire::SnapshotOrRev {
+    if typed.starts_with("snap:") {
+        grid_wire::SnapshotOrRev::Snapshot {
+            snapshot: grid_wire::SnapshotId(typed.to_string()),
+        }
+    } else {
+        grid_wire::SnapshotOrRev::GitRev {
+            git_rev: grid_wire::GitRev(typed.to_string()),
+        }
+    }
+}
+
 /// `grid gate <track-file|track-id> [<head-rev>]` — check a track against the
 /// delta at head. Exit 3 on hold: the gate verdict *is* the exit code, so CI
 /// needs no output parsing.
@@ -119,9 +147,7 @@ fn gate(args: &[&str], json: bool) -> u8 {
             return exit::BAD_INPUT;
         }
     };
-    let head = grid_wire::SnapshotOrRev::GitRev {
-        git_rev: grid_wire::GitRev((*tail.first().unwrap_or(&"HEAD")).to_string()),
-    };
+    let head = snapshot_or_rev(tail.first().unwrap_or(&"HEAD"));
 
     let params = grid_wire::methods::GateCheckParams { track, head };
     match rpc::gate_check(&params, std::path::Path::new(".")) {
@@ -388,6 +414,203 @@ fn resolve(args: &[&str], json: bool) -> u8 {
             // An empty result is exit 0 with no records: "nothing is called
             // that" is an answer (PORCELAIN.md).
             print!("{}", porcelain::refs(&defs));
+            exit::OK
+        }
+    }
+}
+
+/// `grid scope <callsign-pattern>... [--depth N]` — the context pack around
+/// an intended edit: what matches, what touches it, what rules reach it.
+/// Bodies are deliberately absent; the agent pulls those itself.
+fn scope(args: &[&str], json: bool) -> u8 {
+    let mut patterns = Vec::new();
+    let mut depth = None;
+    let mut rest = args;
+    while let Some((arg, tail)) = rest.split_first() {
+        if *arg == "--depth" {
+            let Some(n) = tail.first().and_then(|n| n.parse::<u64>().ok()) else {
+                hint("usage: grid scope <pattern>... [--depth N]");
+                return exit::BAD_INPUT;
+            };
+            depth = Some(n);
+            rest = &tail[1..];
+            continue;
+        }
+        patterns.push(grid_wire::CallsignPattern((*arg).to_string()));
+        rest = tail;
+    }
+    if patterns.is_empty() {
+        hint("usage: grid scope <pattern>... [--depth N]");
+        return exit::BAD_INPUT;
+    }
+    let params = grid_wire::methods::ScopeParams {
+        callsigns: patterns,
+        depth,
+        snapshot: None,
+    };
+    match rpc::scope(&params, root()) {
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            exit::BAD_INPUT
+        }
+        Ok(pack) => {
+            if json {
+                return emit_json(&pack);
+            }
+            print!("{}", porcelain::scope(&pack, &namer()));
+            exit::OK
+        }
+    }
+}
+
+/// `grid todo <track> [<head-rev|snap:id>]` — the gate verdict as a
+/// worklist. Always exit 0 when it answers: remaining work is a report, not
+/// a failure — the gate is the verb that holds.
+fn todo(args: &[&str], json: bool) -> u8 {
+    let Some((id, tail)) = args.split_first() else {
+        hint("usage: grid todo <track> [<head-rev>]");
+        return exit::BAD_INPUT;
+    };
+    let head = tail.first().map(|h| snapshot_or_rev(h));
+    let params = grid_wire::methods::TodoParams {
+        track: grid_wire::TrackId((*id).to_string()),
+        head,
+    };
+    match rpc::todo(&params, root()) {
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            exit::BAD_INPUT
+        }
+        Ok(list) => {
+            if json {
+                return emit_json(&list);
+            }
+            print!("{}", porcelain::todo(&list));
+            exit::OK
+        }
+    }
+}
+
+/// `grid edit apply <file|->` — the CAS write path. Edits are JSON
+/// (`EditApplyParams`) from a file or stdin; conflicts are `conflict`
+/// records and exit 4, and the recovery is re-resolving the `now`
+/// coordinates and retrying the whole request.
+fn edit(args: &[&str], json: bool) -> u8 {
+    let Some((&"apply", rest)) = args.split_first() else {
+        hint("usage: grid edit apply <edits.json|->");
+        return exit::BAD_INPUT;
+    };
+    let Some(source) = rest.first() else {
+        hint("usage: grid edit apply <edits.json|->");
+        return exit::BAD_INPUT;
+    };
+    let text = if *source == "-" {
+        use std::io::Read as _;
+        let mut buf = String::new();
+        if std::io::stdin().read_to_string(&mut buf).is_err() {
+            hint("grid: cannot read edits from stdin");
+            return exit::BAD_INPUT;
+        }
+        buf
+    } else {
+        match std::fs::read_to_string(source) {
+            Ok(text) => text,
+            Err(e) => {
+                hint(&format!("grid: cannot read {source}: {e}"));
+                return exit::BAD_INPUT;
+            }
+        }
+    };
+    let params: grid_wire::methods::EditApplyParams = match serde_json::from_str(&text) {
+        Ok(params) => params,
+        Err(e) => {
+            hint(&format!("grid: edits are not valid EditApplyParams: {e}"));
+            return exit::BAD_INPUT;
+        }
+    };
+    match edit::apply(&params, root()) {
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            exit::BAD_INPUT
+        }
+        Ok(outcome) => {
+            let stale = !outcome.wire.conflicts.is_empty();
+            if json {
+                let failure = emit_json(&outcome.wire);
+                return if failure == exit::OK && stale {
+                    exit::STALE
+                } else {
+                    failure
+                };
+            }
+            print!("{}", porcelain::edit_applied(&outcome.edits));
+            print!("{}", porcelain::edit_conflicts(&outcome.wire.conflicts));
+            for conflict in &outcome.wire.conflicts {
+                // The recovery is the conflict itself: `now` is the current
+                // identity, so a retry with it as the base cannot go stale.
+                hint(&format!(
+                    "hint: {} moved — retry with base_datum {}",
+                    conflict.target, conflict.now.0
+                ));
+            }
+            if stale {
+                exit::STALE
+            } else {
+                exit::OK
+            }
+        }
+    }
+}
+
+/// `grid uses <name>` — who reaches X: the proven inbound edges of the one
+/// definition the name resolves to. Ambiguity is a list of pasteable
+/// commands, per the CLI plan's error doctrine.
+fn uses(args: &[&str], json: bool) -> u8 {
+    let Some(name) = args.first() else {
+        hint("usage: grid uses <name|name@prefix>");
+        return exit::BAD_INPUT;
+    };
+    let locator = if name.contains('@') {
+        grid_wire::Locator::Handle {
+            handle: grid_wire::Handle((*name).to_string()),
+        }
+    } else {
+        grid_wire::Locator::Callsign {
+            callsign: grid_wire::Callsign((*name).to_string()),
+        }
+    };
+    let params = grid_wire::methods::ResolveParams {
+        locator,
+        snapshot: None,
+    };
+    match rpc::uses(&params, root()) {
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            exit::BAD_INPUT
+        }
+        Ok((defs, edges)) => {
+            match defs.as_slice() {
+                [] => {
+                    hint(&format!("grid: nothing is called `{name}`"));
+                    return exit::BAD_INPUT;
+                }
+                [_, _, ..] => {
+                    let mut msg = "ambiguous — did you mean:".to_string();
+                    for def in &defs {
+                        if let Some(callsign) = &def.callsign {
+                            msg.push_str("\n  grid uses ");
+                            msg.push_str(&callsign.0);
+                        }
+                    }
+                    hint(&msg);
+                    return exit::BAD_INPUT;
+                }
+                [_] => {}
+            }
+            if json {
+                return emit_json(&edges);
+            }
+            print!("{}", porcelain::uses(&edges, &namer()));
             exit::OK
         }
     }
