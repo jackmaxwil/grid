@@ -5,7 +5,7 @@
 //! `grep '^edge  miss'` is the explanation and `awk` is the parser. Nothing
 //! here writes to stderr: hints are the caller's business.
 
-use grid_wire::methods::CacheRecordResult;
+use grid_wire::methods::{CacheRecordResult, WakeIngestResult};
 use grid_wire::{
     CacheCheckResult, CacheHitVerdict, DefChangeAction, EdgeChange, LintResult,
     TestComparisonActual, TestComparisonExpected, TrackEdgePromise, XteVerdict, XteVerdictGate,
@@ -13,7 +13,7 @@ use grid_wire::{
 use grid_xte::lint::{relation_name, render_edge};
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "1.1.0";
+pub const VERSION: &str = "1.2.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -349,6 +349,57 @@ pub fn cache_record(result: &CacheRecordResult) -> String {
     record(&mut out, "done", &[&format!("{stored}/{total}")]);
     for item in &result.rejected {
         record(&mut out, "warn", &[&item.datum.0, &item.reason]);
+    }
+    out
+}
+
+/// `done` / `warn` records for a wake ingest: how much of the trace became
+/// edges, and every symbol that did not (C15 — returned, never dropped).
+#[must_use]
+pub fn wake_ingest(result: &WakeIngestResult, total: u64) -> String {
+    let mut out = String::new();
+    record(
+        &mut out,
+        "done",
+        &[&format!("{}/{}", result.resolved, total)],
+    );
+    for symbol in &result.unresolved_symbols {
+        record(&mut out, "warn", &[symbol, "unresolved"]);
+    }
+    out
+}
+/// `fork` / `edge` records for a wake diff: where the traces parted, then
+/// what each does that the other never did. Handles are datum-short because a
+/// wake is addressed by content, like a cache verdict.
+#[must_use]
+pub fn wake_diff(diff: &grid_wire::WakeDiff) -> String {
+    let mut out = String::new();
+    if let Some(fork) = &diff.first_divergence {
+        let callee =
+            |c: &Option<grid_wire::Datum>| c.as_ref().map_or_else(|| "-".to_string(), short);
+        record(
+            &mut out,
+            "fork",
+            &[
+                &short(&fork.caller),
+                &callee(&fork.green_callee),
+                &callee(&fork.red_callee),
+            ],
+        );
+    }
+    let arrow = |e: &grid_wire::Edge| {
+        format!(
+            "{} -{}-> {}",
+            short(&e.src),
+            relation_name(e.relation),
+            short(&e.dst)
+        )
+    };
+    for e in &diff.removed {
+        record(&mut out, "edge", &["-", &arrow(e), zoc_name(e.zoc)]);
+    }
+    for e in &diff.added {
+        record(&mut out, "edge", &["+", &arrow(e), zoc_name(e.zoc)]);
     }
     out
 }

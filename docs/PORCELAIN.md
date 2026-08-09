@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 1.1.0
+version: 1.2.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -21,6 +21,7 @@ document.
 | `path` | callsign, hop count, weakest evidence |
 | `hop` | relation, target, evidence |
 | `hit` | callsign, verdict, recorded time |
+| `fork` | caller, green callee (`-` if the trace had no hop there), red callee |
 | `miss` | callsign, reason |
 | `pass` / `hold` | track id, snapshot id (first record of gate output) |
 | `warn` | callsign, message |

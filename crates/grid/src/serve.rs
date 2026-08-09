@@ -217,6 +217,24 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
                 .map(|v| encode(&v))
                 .map_err(|e| (WireError::UnknownSnapshot.code(), e))
         }
+        "grid.wake.ingest" => {
+            let params = serde_json::from_value(params).map_err(bad_params)?;
+            rpc::wake_ingest(&params, root)
+                .map(|v| encode(&v))
+                .map_err(|e| (WireError::UnknownSnapshot.code(), e))
+        }
+        "grid.wake.diff" => {
+            let params = serde_json::from_value(params).map_err(bad_params)?;
+            rpc::wake_diff(&params, root)
+                .map(|v| encode(&v))
+                .map_err(|e| {
+                    let code = match e {
+                        rpc::WakeDiffError::UnknownWake(_) => WireError::UnknownWake.code(),
+                        rpc::WakeDiffError::Store(_) => WireError::CorruptSegment.code(),
+                    };
+                    (code, e.to_string())
+                })
+        }
         other => Err((-32601, format!("no such method: {other}"))),
     }
 }

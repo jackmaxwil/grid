@@ -564,3 +564,94 @@ fn the_contract_example_shape_is_served() {
     assert!(result["hits"].is_array());
     assert!(result["misses"].is_array());
 }
+
+fn wake_json(wake_id: &str, hops: &[(&str, &str)]) -> Value {
+    json!({
+        "wake_id": wake_id,
+        "git_rev": "4f2c9e1",
+        "observations": hops.iter().map(|(caller, callee)| json!({
+            "caller": { "datum": caller },
+            "callee": { "datum": callee },
+        })).collect::<Vec<_>>(),
+    })
+}
+#[test]
+#[allow(clippy::similar_names)] // caller/callee are the domain words
+fn wake_ingest_and_diff_are_served_over_the_socket() {
+    let dir = repo();
+    seed_chart(dir.path());
+    let daemon = Daemon::start(dir.path());
+    let (caller, callee) = (
+        "b3:1111111111111111111111111111111111111111111111111111111111111111",
+        "b3:2222222222222222222222222222222222222222222222222222222222222222",
+    );
+    // A symbol endpoint resolves against the same chart `grid.resolve` uses.
+    let response = daemon.call(
+        "grid.wake.ingest",
+        &json!({ "wake": {
+            "wake_id": "wake:g",
+            "git_rev": "4f2c9e1",
+            "observations": [{ "caller": { "symbol": "caller" }, "callee": { "datum": callee } }],
+        }}),
+    );
+    let result = &response["result"];
+    assert_eq!(result["resolved"], 1, "got {response}");
+    assert_eq!(result["observed_edges"], 1);
+    assert_eq!(result["unresolved_symbols"], json!([]));
+    // Red calls back; the diff must find the fork and the added edge.
+    daemon.call(
+        "grid.wake.ingest",
+        &json!({ "wake": wake_json("wake:r", &[(caller, callee), (callee, caller)]) }),
+    );
+    let response = daemon.call(
+        "grid.wake.diff",
+        &json!({ "green": "wake:g", "red": "wake:r" }),
+    );
+    let diff = &response["result"];
+    // After the shared first hop, red continues callee -> caller: the fork's
+    // caller is the callee, and its red callee is the original caller.
+    assert_eq!(diff["first_divergence"]["caller"], callee, "got {response}");
+    assert_eq!(diff["first_divergence"]["red_callee"], caller);
+    assert!(
+        diff["first_divergence"].get("green_callee").is_none(),
+        "green had no second hop: {response}"
+    );
+    assert_eq!(diff["added"].as_array().expect("added").len(), 1);
+    assert_eq!(diff["added"][0]["zoc"], "observed");
+    assert_eq!(diff["removed"].as_array().expect("removed").len(), 0);
+}
+#[test]
+fn an_unknown_wake_id_is_the_contracts_error() {
+    let dir = repo();
+    seed_chart(dir.path());
+    let daemon = Daemon::start(dir.path());
+    let response = daemon.call(
+        "grid.wake.diff",
+        &json!({ "green": "wake:nope", "red": "wake:alsono" }),
+    );
+    assert_eq!(
+        response["error"]["code"],
+        serde_json::json!(-32008),
+        "got {response}"
+    );
+}
+#[test]
+fn ingest_resolved_nothing_is_counts_not_silence() {
+    let dir = repo();
+    seed_chart(dir.path());
+    let daemon = Daemon::start(dir.path());
+    let response = daemon.call(
+        "grid.wake.ingest",
+        &json!({ "wake": {
+            "wake_id": "wake:u",
+            "git_rev": "4f2c9e1",
+            "observations": [
+                { "caller": { "symbol": "no.such" }, "callee": { "symbol": "nor.this" } },
+            ],
+        }}),
+    );
+    let result = &response["result"];
+    assert_eq!(result["resolved"], 0, "got {response}");
+    assert_eq!(result["observed_edges"], 0);
+    assert_eq!(result["unresolved_symbols"], json!(["no.such", "nor.this"]));
+}
