@@ -154,6 +154,18 @@ fn dispatch(request: &Value, root: &Path) -> Result<Value, (i32, String)> {
                 .map(|v| encode(&v))
                 .map_err(|e| (WireError::UnknownSnapshot.code(), e.to_string()))
         }
+        "grid.cache.check" => {
+            let params = serde_json::from_value(params).map_err(bad_params)?;
+            rpc::cache_check(&params, root)
+                .map(|v| encode(&v))
+                .map_err(|e| (WireError::UnknownSnapshot.code(), e))
+        }
+        "grid.cache.record" => {
+            let params = serde_json::from_value(params).map_err(bad_params)?;
+            rpc::cache_record(&params, root)
+                .map(|v| encode(&v))
+                .map_err(|e| (WireError::UnknownSnapshot.code(), e))
+        }
         other => Err((-32601, format!("no such method: {other}"))),
     }
 }

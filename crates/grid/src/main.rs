@@ -68,6 +68,7 @@ fn main() -> ExitCode {
         Some((&"version", _)) => version(json),
         Some((&"gate", args)) => gate(args, json),
         Some((&"track", args)) => track::main(args, json),
+        Some((&"cache", args)) => cache(args, json),
         Some((&"serve", args)) => serve::main(args),
         Some((other, _)) => {
             hint(&format!(
@@ -138,6 +139,120 @@ fn gate(args: &[&str], json: bool) -> u8 {
             }
             code
         }
+    }
+}
+
+/// `grid cache check <kind> <env-hash> <datum>...` and
+/// `grid cache record <kind> <env-hash> <datum>=<pass|fail>...`.
+///
+/// The CI shape: `check` prints `miss` records for what must run, `record`
+/// stores the verdicts afterwards. Both call the same rpc functions the daemon
+/// serves, so a CI wired through the CLI and one wired through the socket
+/// cannot disagree.
+fn cache(args: &[&str], json: bool) -> u8 {
+    let root = std::path::Path::new(".");
+    match args.split_first() {
+        Some((&"check", rest)) => {
+            let Some((kind, env, datums)) = cache_args(rest) else {
+                hint("usage: grid cache check <lint|typecheck|test> <env-hash> <datum>...");
+                return exit::BAD_INPUT;
+            };
+            let request = grid_wire::CacheCheckRequest {
+                kind: match kind {
+                    "lint" => grid_wire::CacheCheckRequestKind::Lint,
+                    "typecheck" => grid_wire::CacheCheckRequestKind::Typecheck,
+                    "test" => grid_wire::CacheCheckRequestKind::Test,
+                    other => {
+                        hint(&format!("grid: unknown cache kind `{other}`"));
+                        return exit::BAD_INPUT;
+                    }
+                },
+                env_hash: env.to_string(),
+                snapshot: None,
+                datums: datums
+                    .iter()
+                    .map(|d| grid_wire::Datum((*d).to_string()))
+                    .collect(),
+            };
+            let params = grid_wire::methods::CacheCheckParams { request };
+            match rpc::cache_check(&params, root) {
+                Ok(result) => {
+                    if json {
+                        return emit_json(&result);
+                    }
+                    print!("{}", porcelain::cache_check(&result));
+                    exit::OK
+                }
+                Err(e) => {
+                    hint(&format!("grid: {e}"));
+                    exit::BAD_INPUT
+                }
+            }
+        }
+        Some((&"record", rest)) => {
+            let Some((kind, env, entries)) = cache_args(rest) else {
+                hint("usage: grid cache record <lint|typecheck|test> <env-hash> <datum>=<pass|fail>...");
+                return exit::BAD_INPUT;
+            };
+            let kind = match kind {
+                "lint" => grid_wire::methods::CacheRecordKind::Lint,
+                "typecheck" => grid_wire::methods::CacheRecordKind::Typecheck,
+                "test" => grid_wire::methods::CacheRecordKind::Test,
+                other => {
+                    hint(&format!("grid: unknown cache kind `{other}`"));
+                    return exit::BAD_INPUT;
+                }
+            };
+            let mut results = Vec::with_capacity(entries.len());
+            for entry in entries {
+                let (datum, verdict) = entry.split_once('=').unwrap_or((entry, "pass"));
+                results.push(grid_wire::CacheResultEntry {
+                    datum: grid_wire::Datum(datum.to_string()),
+                    verdict: match verdict {
+                        "pass" => grid_wire::CacheResultEntryVerdict::Pass,
+                        "fail" => grid_wire::CacheResultEntryVerdict::Fail,
+                        other => {
+                            hint(&format!(
+                                "grid: verdict must be pass or fail, got `{other}`"
+                            ));
+                            return exit::BAD_INPUT;
+                        }
+                    },
+                });
+            }
+            let params = grid_wire::methods::CacheRecordParams {
+                kind,
+                env_hash: env.to_string(),
+                snapshot: None,
+                wake_id: None,
+                results,
+            };
+            match rpc::cache_record(&params, root) {
+                Ok(result) => {
+                    if json {
+                        return emit_json(&result);
+                    }
+                    print!("{}", porcelain::cache_record(&result));
+                    exit::OK
+                }
+                Err(e) => {
+                    hint(&format!("grid: {e}"));
+                    exit::BAD_INPUT
+                }
+            }
+        }
+        _ => {
+            hint("usage: grid cache check|record <kind> <env-hash> <datum>...");
+            exit::BAD_INPUT
+        }
+    }
+}
+
+/// `<kind> <env-hash> <rest>...`, or nothing if the shape is wrong.
+fn cache_args<'a>(args: &'a [&'a str]) -> Option<(&'a str, &'a str, &'a [&'a str])> {
+    match args {
+        [kind, env, rest @ ..] if !rest.is_empty() => Some((kind, env, rest)),
+        _ => None,
     }
 }
 
