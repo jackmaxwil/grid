@@ -8,7 +8,7 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 | C1 | no input to `chart-io` causes UB | segment.rs adversarial.rs + ci:miri+asan | 4 |
 | C2 | same (source, epoch) ⇒ same bytes | determinism.rs store.rs corpus.rs + incremental≡full | 4–5 |
 | C3 | every walk terminates within fuel | Kani fuel-decrease harness | 9 |
-| C4 | no cache hit without established closure | adversarial closure proptest | 7 |
+| C4 | no cache hit without established closure | closure.rs (cache) conformance.rs | 7 |
 | C5 | two writers only (survey, edit.apply); unsafe confined to `chart-io` | check-unsafe-confined.sh | 0+ |
 | C6 | a datum ignores formatting, comments and local renaming; `span_hash` does not | properties.rs determinism.rs | 2 |
 | C7 | the normalizer never panics on arbitrary bytes and never disagrees with itself | normalize.rs | 2+ |
@@ -48,6 +48,11 @@ Every dependency in `Cargo.lock` gets a line here saying why it is in the TCB.
   fault-injection loop. `chart` itself pulls only `blake3` (checksums, snapshot
   ids) and `grid-wire` (the vocabulary it stores), so the crate an adversarial
   image reaches is `forbid(unsafe_code)` with a two-dependency TCB.
+- Wave 7 (`cache`): no new dependencies. `blake3` freezes the key (the same
+  hash the rest of the engine is identified by), `grid-chart` supplies the
+  closure walk's graph, and the verdict log is `std::fs` — an append-only line
+  file needs no database, and a database would be state a partial write could
+  corrupt.
 
 The segment format is the other compatibility surface: images are prefixed
 `GRIDSEG\0` and carry a `FORMAT_EPOCH`, and the manifest carries the same

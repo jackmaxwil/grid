@@ -5,6 +5,7 @@ members = [
     "crates/survey",
     "crates/chart",
     "crates/chart-io",
+    "crates/cache",
     "crates/wake",
     "crates/leadline",
     "crates/xte",

@@ -1,16 +1,15 @@
-//! The method layer: one function per wire method, shared verbatim by the CLI
-//! and the daemon.
-//!
-//! The CLI is not a second implementation of the daemon — both call these
-//! functions, so `grid gate --json` and a `grid.gate.check` request over the
-//! socket cannot drift.
-
+//! Method layer shared by CLI and daemon.
 use grid_wire::methods::{
+    CacheCheckParams, CacheRecordParams, CacheRecordResult, CacheRecordResultRejectedItem,
     DeltaParams, DeltaResult, GateCheckParams, GateCheckResult, ResolveParams, ResolveResult,
     SnapshotCurrentResult, SurveyRunParams, SurveyRunResult, TrackLintParams, TrackLintResult,
     VersionResult,
 };
-use grid_wire::{GitRev, Snapshot, SnapshotId, SnapshotOrRev, SnapshotStats};
+use grid_wire::{
+    CacheCheckResult, CacheHit, CacheHitVerdict, CacheResultEntryVerdict, GitRev, Snapshot,
+    SnapshotId, SnapshotOrRev, SnapshotStats,
+};
+
 use grid_xte::DeltaProvider as _;
 
 use crate::chart_provider::{self, ChartDelta};
@@ -213,4 +212,137 @@ pub fn resolve(
     root: &std::path::Path,
 ) -> Result<ResolveResult, chart_provider::Error> {
     Ok(ChartDelta::open(root)?.resolve(&params.locator))
+}
+
+/// Where the cache log and the chart store live under a repo root. Both are
+/// engine state, so both sit under `.grid/`.
+fn cache_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join(".grid/cache/verdicts")
+}
+
+fn chart_dir(root: &std::path::Path) -> std::path::PathBuf {
+    root.join(".grid/chart")
+}
+
+/// Open the live epoch. An empty store is not an error — it is a snapshot with
+/// no defs, against which every cache check misses and every record is
+/// rejected, which is the honest answer before a survey has run.
+fn epoch(root: &std::path::Path) -> Result<std::sync::Arc<grid_chart_io::Epoch>, String> {
+    grid_chart_io::Store::open(chart_dir(root))
+        .map(|store| store.load())
+        .map_err(|e| e.to_string())
+}
+
+/// `grid.cache.check` — look up frozen verdicts for a set of datums.
+///
+/// A datum is a hit only if its closure, recomputed against the live chart
+/// *now*, keys to something recorded. Anything else is a miss: an unknown
+/// datum, an unresolvable closure, and an absent key are all just "run it".
+///
+/// # Errors
+/// Returns a message when the chart store or the cache log cannot be read. A
+/// cache that cannot be read is an error, not a universal miss: silently
+/// missing would hide a broken store behind a slow CI.
+pub fn cache_check(
+    params: &CacheCheckParams,
+    root: &std::path::Path,
+) -> Result<CacheCheckResult, String> {
+    let epoch = epoch(root)?;
+    let request = &params.request;
+    // The request may name a snapshot; the engine holds exactly one live
+    // epoch, so a request for any other snapshot cannot be answered from it.
+    if let Some(want) = &request.snapshot {
+        if want.0 != epoch.snapshot_id().as_str() {
+            return Err(format!("snapshot {} is not the live epoch", want.0));
+        }
+    }
+    let cache = grid_cache::Cache::open(cache_path(root)).map_err(|e| e.to_string())?;
+    let chart = grid_cache::Chart::new(epoch.segments());
+    let kind = grid_cache::Kind::from(request.kind);
+
+    let mut hits = Vec::new();
+    let mut misses = Vec::new();
+    for datum in &request.datums {
+        let hit = grid_chart::DatumId::parse(&datum.0)
+            .and_then(|id| chart.key(id, kind, &request.env_hash).ok())
+            .and_then(|key| cache.get(key).cloned());
+        match hit {
+            Some(entry) => hits.push(CacheHit {
+                datum: datum.clone(),
+                verdict: match entry.verdict {
+                    grid_cache::Verdict::Pass => CacheHitVerdict::Pass,
+                    grid_cache::Verdict::Fail => CacheHitVerdict::Fail,
+                },
+                recorded_at: entry.recorded_at,
+                wake_id: entry.wake_id,
+            }),
+            None => misses.push(datum.clone()),
+        }
+    }
+    Ok(CacheCheckResult {
+        snapshot: grid_wire::SnapshotId(epoch.snapshot_id().as_str().to_string()),
+        hits,
+        misses,
+    })
+}
+
+/// `grid.cache.record` — freeze keys and store verdicts.
+///
+/// Freezing happens here, at record time, against the chart the verdict was
+/// produced on. A definition whose closure cannot be fully established is
+/// rejected with a reason rather than stored under a partial key (claim C4):
+/// a partial key is precisely how a stale verdict outlives the change it
+/// depended on.
+///
+/// # Errors
+/// Returns a message when the chart store or the cache log cannot be written.
+pub fn cache_record(
+    params: &CacheRecordParams,
+    root: &std::path::Path,
+) -> Result<CacheRecordResult, String> {
+    let epoch = epoch(root)?;
+    if let Some(want) = &params.snapshot {
+        if want.0 != epoch.snapshot_id().as_str() {
+            return Err(format!("snapshot {} is not the live epoch", want.0));
+        }
+    }
+    let mut cache = grid_cache::Cache::open(cache_path(root)).map_err(|e| e.to_string())?;
+    let chart = grid_cache::Chart::new(epoch.segments());
+    let kind = grid_cache::Kind::from(params.kind);
+    let recorded_at = grid_cache::now_rfc3339();
+
+    let mut recorded = 0u64;
+    let mut rejected = Vec::new();
+    for entry in &params.results {
+        let Some(id) = grid_chart::DatumId::parse(&entry.datum.0) else {
+            rejected.push(CacheRecordResultRejectedItem {
+                datum: entry.datum.clone(),
+                reason: "not a b3 datum handle".to_string(),
+            });
+            continue;
+        };
+        match chart.key(id, kind, &params.env_hash) {
+            Ok(key) => {
+                cache
+                    .put(
+                        key,
+                        grid_cache::Entry {
+                            verdict: match entry.verdict {
+                                CacheResultEntryVerdict::Pass => grid_cache::Verdict::Pass,
+                                CacheResultEntryVerdict::Fail => grid_cache::Verdict::Fail,
+                            },
+                            recorded_at: recorded_at.clone(),
+                            wake_id: params.wake_id.clone(),
+                        },
+                    )
+                    .map_err(|e| e.to_string())?;
+                recorded += 1;
+            }
+            Err(reject) => rejected.push(CacheRecordResultRejectedItem {
+                datum: entry.datum.clone(),
+                reason: reject.to_string(),
+            }),
+        }
+    }
+    Ok(CacheRecordResult { recorded, rejected })
 }

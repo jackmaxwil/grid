@@ -205,6 +205,18 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
                 .map(|r| encode(&r))
                 .map_err(|e| chart_error(&e))
         }
+        "grid.cache.check" => {
+            let params = serde_json::from_value(params).map_err(bad_params)?;
+            rpc::cache_check(&params, root)
+                .map(|v| encode(&v))
+                .map_err(|e| (WireError::UnknownSnapshot.code(), e))
+        }
+        "grid.cache.record" => {
+            let params = serde_json::from_value(params).map_err(bad_params)?;
+            rpc::cache_record(&params, root)
+                .map(|v| encode(&v))
+                .map_err(|e| (WireError::UnknownSnapshot.code(), e))
+        }
         other => Err((-32601, format!("no such method: {other}"))),
     }
 }
