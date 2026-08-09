@@ -4,7 +4,22 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+[dependencies]
+arc-swap = "1"
+grid-chart = { path = "../chart", version = "0.1.0" }
+grid-wire = { path = "../wire", version = "0.1.0" }
+memmap2 = "0.9"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+
 # THE ONLY unsafe crate. Overrides the workspace forbid so that mmap can land
-# here and only here; every unsafe block is justified in ASSURANCE.md.
+# here and only here; the one unsafe block is justified in ASSURANCE.md and at
+# its call site.
 [lints.rust]
 unsafe_code = "deny"
+missing_docs = "deny"
