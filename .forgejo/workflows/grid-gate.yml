@@ -1,0 +1,44 @@
+name: grid-gate
+
+# Grid lives in its own repo (apex/grid); this workflow is the whole gate.
+# packages/grid/** in the monorepo is gitignored, so beelink's workspace-gate
+# never sees grid content — a grid PR runs exactly this workflow.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.0"
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo fmt --check
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # C5 evidence: no unsafe outside chart-io, and chart-io is the only crate
+  # permitted to ever contain it.
+  assurance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: C5 grep-gate — unsafe is confined to chart-io
+        run: |
+          if grep -rn '\bunsafe\b' crates --include='*.rs' | grep -v '^crates/chart-io/'; then
+            echo "unsafe code outside chart-io"; exit 1
+          fi
+      - name: ASSURANCE.md claims all have evidence links
+        run: ./scripts/check-assurance-links.sh
