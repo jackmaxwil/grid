@@ -57,3 +57,25 @@ jobs:
           fi
       - name: ASSURANCE.md claims all have evidence links
         run: ./scripts/check-assurance-links.sh
+
+  # From wave 3 on, grid gates its own PRs: the plan's ground rule, and the
+  # best corpus we own. The track is hand-written in .grid/tracks and names
+  # what this branch promised to change; exit 3 means the diff diverged from
+  # it. Self-hosting is a bootstrap hazard by design — the buildhost gate keeps
+  # its human override producer for the case where a grid bug blocks a grid
+  # fix.
+  self-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: grid gates grid
+        run: |
+          track=$(ls .grid/tracks/*.json 2>/dev/null | head -1)
+          [ -n "$track" ] || { echo "no track: a grid PR carries one"; exit 1; }
+          cargo run -q -p grid -- gate "$track" HEAD

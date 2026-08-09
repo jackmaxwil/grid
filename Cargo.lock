@@ -178,6 +178,13 @@ dependencies = [
 [[package]]
 name = "grid"
 version = "0.1.0"
+dependencies = [
+ "grid-wire",
+ "grid-xte",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "grid-chart"
@@ -220,6 +227,11 @@ dependencies = [
 [[package]]
 name = "grid-xte"
 version = "0.1.0"
+dependencies = [
+ "grid-wire",
+ "proptest",
+ "serde_json",
+]
 
 [[package]]
 name = "heck"
