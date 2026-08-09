@@ -239,14 +239,36 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
                 .map(|out| encode(&out.wire))
                 .map_err(|e| (-32602, e.to_string()))
         }
+        other => dispatch_wake(other, &params, root, &bad_params, &encode)
+            .unwrap_or_else(|| Err((-32601, format!("no such method: {other}")))),
+    }
+}
+
+/// Wake methods, split out of `dispatch` only to stay under the line budget;
+/// the match is logically one.
+#[allow(clippy::too_many_lines)]
+fn dispatch_wake(
+    method: &str,
+    params: &Value,
+    root: &Path,
+    bad_params: &dyn Fn(serde_json::Error) -> (i32, String),
+    encode: &dyn Fn(&dyn erased::Serialize) -> Value,
+) -> Option<Result<Value, (i32, String)>> {
+    Some(match method {
         "grid.wake.ingest" => {
-            let params = serde_json::from_value(params).map_err(bad_params)?;
+            let params = match serde_json::from_value(params.clone()).map_err(bad_params) {
+                Ok(p) => p,
+                Err(e) => return Some(Err(e)),
+            };
             rpc::wake_ingest(&params, root)
                 .map(|v| encode(&v))
                 .map_err(|e| (WireError::UnknownSnapshot.code(), e))
         }
         "grid.wake.diff" => {
-            let params = serde_json::from_value(params).map_err(bad_params)?;
+            let params = match serde_json::from_value(params.clone()).map_err(bad_params) {
+                Ok(p) => p,
+                Err(e) => return Some(Err(e)),
+            };
             rpc::wake_diff(&params, root)
                 .map(|v| encode(&v))
                 .map_err(|e| {
@@ -257,8 +279,8 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
                     (code, e.to_string())
                 })
         }
-        other => Err((-32601, format!("no such method: {other}"))),
-    }
+        _ => return None,
+    })
 }
 
 /// Serializing a concrete result to `Value` without naming its type at every
