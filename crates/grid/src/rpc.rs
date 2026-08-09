@@ -3,7 +3,8 @@ use grid_wire::methods::{
     CacheCheckParams, CacheRecordParams, CacheRecordResult, CacheRecordResultRejectedItem,
     DeltaParams, DeltaResult, GateCheckParams, GateCheckResult, ResolveParams, ResolveResult,
     ScopeParams, ScopeResult, SnapshotCurrentResult, SurveyRunParams, SurveyRunResult, TodoParams,
-    TodoResult, TrackLintParams, TrackLintResult, VersionResult,
+    TodoResult, TrackLintParams, TrackLintResult, VersionResult, WakeDiffParams, WakeIngestParams,
+    WakeIngestResult,
 };
 use grid_wire::{
     CacheCheckResult, CacheHit, CacheHitVerdict, CacheResultEntryVerdict, GitRev, Snapshot,
@@ -658,4 +659,75 @@ pub fn uses(
     }
     edges.sort_by(|a, b| (&a.src.0, a.relation as u8).cmp(&(&b.src.0, b.relation as u8)));
     Ok((defs, edges))
+}
+
+/// `grid.wake.ingest` — resolve a test-run wake against the live chart,
+/// retain it, and report what it meant.
+///
+/// Resolution is the `grid.resolve` rule (unique dotted-suffix), so the name
+/// a user can resolve is the name a wake can. What cannot resolve is
+/// returned, never dropped (C15): an observed edge always names two datums
+/// that could be pointed at.
+///
+/// # Errors
+/// Returns a message when the chart store or the wake log cannot be read or
+/// written. Ingesting into an unsurveyed repo is an error even for an
+/// all-datum wake: symbol resolution must never silently see an empty chart.
+pub fn wake_ingest(
+    params: &WakeIngestParams,
+    root: &std::path::Path,
+) -> Result<WakeIngestResult, String> {
+    let epoch = epoch(root)?;
+    let ingested = grid_wake::ingest(epoch.segments(), &params.wake);
+    let store = grid_wake::Store::open(wake_dir(root)).map_err(|e| e.to_string())?;
+    store
+        .put(&params.wake, &ingested)
+        .map_err(|e| e.to_string())?;
+    #[allow(clippy::cast_possible_truncation)]
+    let observed_edges = ingested.edges.len() as u64;
+    Ok(WakeIngestResult {
+        observed_edges,
+        resolved: ingested.resolved,
+        unresolved_symbols: ingested.unresolved_symbols,
+    })
+}
+/// Why `grid.wake.diff` could not answer.
+#[derive(Debug)]
+pub enum WakeDiffError {
+    /// A named wake was never ingested under that id.
+    UnknownWake(String),
+    /// The retention log could not be read or is corrupt — suspect, the way a
+    /// corrupt segment is, not silently empty.
+    Store(String),
+}
+impl std::fmt::Display for WakeDiffError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownWake(id) => write!(f, "unknown wake id {id}: ingest it first"),
+            Self::Store(msg) => f.write_str(msg),
+        }
+    }
+}
+/// `grid.wake.diff` — two retained traces compared at call granularity.
+///
+/// # Errors
+/// [`WakeDiffError::UnknownWake`] when either id names nothing retained;
+/// [`WakeDiffError::Store`] when the log itself fails.
+pub fn wake_diff(
+    params: &WakeDiffParams,
+    root: &std::path::Path,
+) -> Result<grid_wire::WakeDiff, WakeDiffError> {
+    let store =
+        grid_wake::Store::open(wake_dir(root)).map_err(|e| WakeDiffError::Store(e.to_string()))?;
+    let load = |id: &grid_wire::WakeId| {
+        store
+            .get(&id.0)
+            .map_err(|e| WakeDiffError::Store(e.to_string()))?
+            .ok_or_else(|| WakeDiffError::UnknownWake(id.0.clone()))
+    };
+    let (green, red) = (load(&params.green)?, load(&params.red)?);
+    Ok(grid_wake::diff(&green, &red))
+}
+fn wake_dir(root: &std::path::Path) -> std::path::PathBuf {
+    root.join(".grid/wakes")
 }
