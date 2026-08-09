@@ -1,7 +1,7 @@
 //! grid-wire - versioned external schemas; the only public vocabulary.
 //!
 //! GENERATED from docs/wire-v0.openrpc.json by scripts/gen-wire.py - do not
-//! edit by hand. deny_unknown_fields everywhere: unknown keys are a wire
+//! edit by hand. `deny_unknown_fields` everywhere: unknown keys are a wire
 //! error, never silently dropped.
 
 pub mod errors;

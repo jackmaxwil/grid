@@ -1,14 +1,17 @@
 //! Method param and result types, one per wire method. GENERATED.
 
-use super::*;
 use serde::{Deserialize, Serialize};
 
+use super::{
+    Anchor, BisectResult, CacheCheckRequest, CacheCheckResult, CacheResultEntry, CallsignPattern,
+    CarriedAnchor, Datum, DefRef, EditResult, EditSpec, Estimate, GitRev, LeadlineQuery,
+    LeadlineResult, LintResult, Locator, MadeGood, ReviewPack, ScopePack, Snapshot, SnapshotId,
+    SnapshotOrRev, Suspects, TodoList, Track, TrackId, Wake, WakeDiff, WakeId, XteVerdict,
+};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct VersionParams {
-
-}
+pub struct VersionParams {}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -23,9 +26,7 @@ pub struct VersionResult {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SnapshotCurrentParams {
-
-}
+pub struct SnapshotCurrentParams {}
 
 pub type SnapshotCurrentResult = Snapshot;
 

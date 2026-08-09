@@ -4,7 +4,10 @@
 use serde_json::{json, Map, Value};
 
 fn contract() -> Value {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/wire-v0.openrpc.json");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/wire-v0.openrpc.json"
+    );
     serde_json::from_str(&std::fs::read_to_string(path).expect("read contract"))
         .expect("parse contract")
 }
@@ -83,21 +86,34 @@ fn every_contract_example_roundtrips() {
             example_count += 1;
         }
     }
-    assert_eq!(example_count, 20, "one example per method, per the contract corpus");
+    assert_eq!(
+        example_count, 20,
+        "one example per method, per the contract corpus"
+    );
 }
 
 #[test]
 fn mutated_example_fails() {
     let c = contract();
-    let m = c["methods"].as_array().unwrap()
-        .iter().find(|m| m["name"] == "grid.cache.check").unwrap();
+    let m = c["methods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["name"] == "grid.cache.check")
+        .unwrap();
     let mut v = m["examples"][0]["params"][0]["value"].clone();
-    v.as_object_mut().unwrap().insert("bogus_key".into(), json!(1));
-    assert!(serde_json::from_value::<grid_wire::CacheCheckRequest>(v).is_err(),
-        "unknown key must be rejected (deny_unknown_fields)");
+    v.as_object_mut()
+        .unwrap()
+        .insert("bogus_key".into(), json!(1));
+    assert!(
+        serde_json::from_value::<grid_wire::CacheCheckRequest>(v).is_err(),
+        "unknown key must be rejected (deny_unknown_fields)"
+    );
 
     let mut v2 = m["examples"][0]["params"][0]["value"].clone();
     v2.as_object_mut().unwrap().remove("env_hash");
-    assert!(serde_json::from_value::<grid_wire::CacheCheckRequest>(v2).is_err(),
-        "missing required key must be rejected");
+    assert!(
+        serde_json::from_value::<grid_wire::CacheCheckRequest>(v2).is_err(),
+        "missing required key must be rejected"
+    );
 }
