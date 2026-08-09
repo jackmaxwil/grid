@@ -266,3 +266,153 @@ fn an_unknown_verb_is_bad_input() {
     assert_eq!(code(&out), 2);
     assert!(stdout(&out).is_empty());
 }
+
+/// Publish a chart with a caller and its proven callee, so the cache verbs
+/// have real closures to key over.
+fn seed_chart(dir: &Path, callee_byte: u8) -> (String, String) {
+    use grid_chart::{build, DatumId, Def, Edge};
+
+    let caller = DatumId([0x11; 32]);
+    let target = DatumId([callee_byte; 32]);
+    let image = build(
+        &[
+            Def {
+                datum: caller,
+                callsign: "app.caller".into(),
+                lang: None,
+            },
+            Def {
+                datum: target,
+                callsign: "app.callee".into(),
+                lang: None,
+            },
+        ],
+        &[Edge {
+            src: caller,
+            dst: target,
+            relation: grid_wire::Relation::Calls,
+            zoc: grid_wire::Zoc::Proven,
+        }],
+    )
+    .expect("build");
+    let mut store = grid_chart_io::Store::open(dir.join(".grid/chart")).expect("store");
+    store.publish("HEAD", None, &[image]).expect("publish");
+    (caller.to_string(), target.to_string())
+}
+
+#[test]
+fn cache_miss_then_record_then_hit() {
+    // The CI loop the wave is for: check, run what missed, record, and the
+    // next run hits.
+    let dir = repo();
+    let (caller, _) = seed_chart(dir.path(), 0x22);
+    let env = "env:b3:aa";
+
+    let cold = grid(dir.path(), &["cache", "check", "test", env, &caller]);
+    assert_eq!(code(&cold), 0, "a miss is not a failure");
+    let line = stdout(&cold);
+    let fields = columns(line.lines().next().expect("a record"));
+    assert_eq!(fields[0], "miss");
+    assert_eq!(fields[1], caller);
+
+    let recorded = grid(
+        dir.path(),
+        &["cache", "record", "test", env, &format!("{caller}=pass")],
+    );
+    assert_eq!(code(&recorded), 0);
+    assert_eq!(
+        columns(stdout(&recorded).lines().next().unwrap())[..2],
+        ["done", "1/1"]
+    );
+
+    let warm = stdout(&grid(dir.path(), &["cache", "check", "test", env, &caller]));
+    let fields = columns(warm.lines().next().expect("a record"));
+    assert_eq!(fields[0], "hit");
+    assert_eq!(fields[1], caller);
+    assert_eq!(fields[2], "pass");
+}
+
+#[test]
+fn a_callee_change_invalidates_the_caller_but_not_its_lint() {
+    // The wave's acceptance criterion, at the CLI: a synthetic callee change
+    // invalidates its callers for kinds whose closure covers the callee, and
+    // only those kinds.
+    let dir = repo();
+    let (caller, _) = seed_chart(dir.path(), 0x22);
+    let env = "env:b3:aa";
+
+    for kind in ["test", "lint"] {
+        let out = grid(
+            dir.path(),
+            &["cache", "record", kind, env, &format!("{caller}=pass")],
+        );
+        assert_eq!(code(&out), 0);
+    }
+
+    // Same caller, different callee: republish the chart with the callee moved.
+    seed_chart(dir.path(), 0x33);
+
+    let test_check = stdout(&grid(dir.path(), &["cache", "check", "test", env, &caller]));
+    assert!(
+        test_check.starts_with("miss"),
+        "a test verdict must not survive its callee changing: {test_check}"
+    );
+    let lint_check = stdout(&grid(dir.path(), &["cache", "check", "lint", env, &caller]));
+    assert!(
+        lint_check.starts_with("hit"),
+        "lint reads one span, so a callee change cannot invalidate it: {lint_check}"
+    );
+}
+
+#[test]
+fn an_unresolvable_closure_is_warned_about_and_not_recorded() {
+    let dir = repo();
+    seed_chart(dir.path(), 0x22);
+    let stranger = format!("b3:{}", "ab".repeat(32));
+
+    let out = grid(
+        dir.path(),
+        &[
+            "cache",
+            "record",
+            "test",
+            "env:b3:aa",
+            &format!("{stranger}=pass"),
+        ],
+    );
+    // Refusing to store is the cache working, so the exit code is success.
+    assert_eq!(code(&out), 0);
+    let text = stdout(&out);
+    let mut lines = text.lines();
+    assert_eq!(columns(lines.next().expect("done"))[..2], ["done", "0/1"]);
+    let warn = columns(lines.next().expect("a warn record"));
+    assert_eq!(warn[0], "warn");
+    assert_eq!(warn[1], stranger);
+}
+
+#[test]
+fn cache_json_is_the_wire_result_verbatim() {
+    let dir = repo();
+    let (caller, _) = seed_chart(dir.path(), 0x22);
+    let out = grid(
+        dir.path(),
+        &["cache", "check", "--json", "test", "env:b3:aa", &caller],
+    );
+    assert_eq!(code(&out), 0);
+    let value: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
+    assert_eq!(value["misses"][0], json!(caller));
+    assert!(value["snapshot"]
+        .as_str()
+        .is_some_and(|s| s.starts_with("snap:b3:")));
+}
+
+#[test]
+fn a_bad_cache_kind_is_bad_input() {
+    let dir = repo();
+    let out = grid(
+        dir.path(),
+        &["cache", "check", "typo", "env:b3:aa", "b3:00"],
+    );
+    assert_eq!(code(&out), 2);
+    assert!(stdout(&out).is_empty(), "errors go to stderr, not stdout");
+}

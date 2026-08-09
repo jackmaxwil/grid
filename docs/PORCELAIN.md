@@ -40,7 +40,9 @@ Verdict roles on `edge` records: `match`, `miss`, `surplus`, `tolerated`.
 
 Callsigns are the default identity — stable-length, human-unique. `@prefix`
 datum handles appear only where identity beyond the name matters: hash
-columns, ambiguity errors, cross-time references. Input accepts any unique
+columns, ambiguity errors, cross-time references. `hit` and `miss` records are
+such a case: a cache verdict is addressed by content across time, so their
+first column is the datum handle, not a callsign that may since have moved. Input accepts any unique
 name suffix or `name@prefix` (git short-SHA auto-lengthening).
 
 ## Exit codes (uniform across verbs)

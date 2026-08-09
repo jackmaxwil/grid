@@ -7,9 +7,10 @@
 
 use std::fmt::Write as _;
 
+use grid_wire::methods::CacheRecordResult;
 use grid_wire::{
-    DefChangeAction, EdgeChange, LintResult, TestComparisonActual, TestComparisonExpected,
-    TrackEdgePromise, XteVerdict, XteVerdictGate,
+    CacheCheckResult, CacheHitVerdict, DefChangeAction, EdgeChange, LintResult,
+    TestComparisonActual, TestComparisonExpected, TrackEdgePromise, XteVerdict, XteVerdictGate,
 };
 use grid_xte::lint::{relation_name, render_edge};
 
@@ -198,6 +199,41 @@ pub fn lint(result: &LintResult) -> String {
     let mut out = String::new();
     for finding in result.errors.iter().chain(&result.warnings) {
         record(&mut out, "warn", &[&finding.promise, &finding.reason]);
+    }
+    out
+}
+
+/// `hit` / `miss` records for a cache check (PORCELAIN.md): callsign column
+/// carries the datum handle, because a cache check is addressed by identity
+/// and a callsign would be ambiguous across time.
+#[must_use]
+pub fn cache_check(result: &CacheCheckResult) -> String {
+    let mut out = String::new();
+    for hit in &result.hits {
+        let verdict = match hit.verdict {
+            CacheHitVerdict::Pass => "pass",
+            CacheHitVerdict::Fail => "fail",
+        };
+        record(&mut out, "hit", &[&hit.datum.0, verdict, &hit.recorded_at]);
+    }
+    for datum in &result.misses {
+        // One reason, always: a miss means run it. Distinguishing "no key" from
+        // "unresolvable closure" here would invite treating one as cacheable.
+        record(&mut out, "miss", &[&datum.0, "not recorded"]);
+    }
+    out
+}
+
+/// `done` for what was stored, `warn` per refusal. A rejection is not an
+/// error — it is the cache declining to lie — so it prints and exits 0.
+#[must_use]
+pub fn cache_record(result: &CacheRecordResult) -> String {
+    let mut out = String::new();
+    let stored = result.recorded.to_string();
+    let total = (result.recorded + result.rejected.len() as u64).to_string();
+    record(&mut out, "done", &[&format!("{stored}/{total}")]);
+    for item in &result.rejected {
+        record(&mut out, "warn", &[&item.datum.0, &item.reason]);
     }
     out
 }

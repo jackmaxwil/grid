@@ -188,10 +188,24 @@ dependencies = [
 name = "grid"
 version = "0.1.0"
 dependencies = [
+ "grid-cache",
+ "grid-chart",
+ "grid-chart-io",
  "grid-wire",
  "grid-xte",
  "serde",
  "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "grid-cache"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "grid-chart",
+ "grid-wire",
+ "proptest",
  "tempfile",
 ]
 
