@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 1.0.0
+version: 1.1.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -14,6 +14,7 @@ document.
 |---|---|
 | `snapshot` | id, stats (`defs N  edges N  reread N  <duration>`) |
 | `def` | glyph, callsign, hash transition (`old→new` or new hash) |
+| `ref` | callsign, datum prefix (`grid resolve` — a definition that exists, not one that changed) |
 | `edge` | glyph or verdict role, `src -relation-> dst`, evidence or context |
 | `test` | role, test id, `expected=actual` |
 | `inv` | status, invariant id |

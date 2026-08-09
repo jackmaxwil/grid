@@ -191,3 +191,63 @@ fn two_stores_over_the_same_tree_agree() {
     let idb = sb.publish("deadbeef", None, &flipped).unwrap();
     assert_eq!(ida, idb);
 }
+
+#[test]
+fn a_superseded_snapshot_can_still_be_reopened() {
+    // The gate compares base to head, and base is by definition a state the
+    // store has moved past. Without retention there is nothing to compare to.
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let base = store.publish("rev1", None, &[image(2)]).unwrap();
+    let head = store.publish("rev2", None, &[image(5)]).unwrap();
+    assert_ne!(base, head);
+
+    let reopened = store.epoch_of(&base).unwrap();
+    assert_eq!(reopened.snapshot_id(), &base);
+    assert_eq!(reopened.manifest().git_rev, "rev1");
+    // And the live epoch is still head, unaffected by the lookup.
+    assert_eq!(store.load().snapshot_id(), &head);
+}
+
+#[test]
+fn reopening_a_snapshot_survives_a_reopened_store() {
+    // Retention is on disk, not in memory: a daemon restart between base and
+    // head must not lose the base.
+    let dir = tempfile::tempdir().unwrap();
+    let base = {
+        let mut store = Store::open(dir.path()).unwrap();
+        let base = store.publish("rev1", None, &[image(2)]).unwrap();
+        store.publish("rev2", None, &[image(5)]).unwrap();
+        base
+    };
+    let store = Store::open(dir.path()).unwrap();
+    assert_eq!(store.epoch_of(&base).unwrap().manifest().git_rev, "rev1");
+}
+
+#[test]
+fn an_unpublished_snapshot_id_is_an_error_not_a_wrong_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let bogus = grid_chart::Manifest {
+        git_rev: "never-published".into(),
+        worktree_diff_hash: None,
+        segments: Vec::new(),
+    }
+    .snapshot_id();
+    assert!(matches!(
+        store.epoch_of(&bogus),
+        Err(StoreError::UnknownSnapshot(_))
+    ));
+}
+
+#[test]
+fn republishing_an_identical_state_is_idempotent_including_retention() {
+    // D5: the id is the content, so this is the same snapshot, not a second
+    // one that happens to look alike.
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let first = store.publish("rev1", None, &[image(3)]).unwrap();
+    let again = store.publish("rev1", None, &[image(3)]).unwrap();
+    assert_eq!(first, again);
+    assert_eq!(store.epoch_of(&first).unwrap().snapshot_id(), &first);
+}

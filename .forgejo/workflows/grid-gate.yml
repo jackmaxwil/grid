@@ -37,6 +37,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-fuzz --locked
       - run: cargo fuzz build normalize
+      - run: cargo fuzz build references
       - run: cargo fuzz build segment
 
   # C1 evidence: the one unsafe block in grid, under the tools that can see

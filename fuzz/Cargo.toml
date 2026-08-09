@@ -21,6 +21,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "references"
+path = "fuzz_targets/references.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "segment"
 path = "fuzz_targets/segment.rs"
 test = false

@@ -188,6 +188,9 @@ dependencies = [
 name = "grid"
 version = "0.1.0"
 dependencies = [
+ "grid-chart",
+ "grid-chart-io",
+ "grid-survey",
  "grid-wire",
  "grid-xte",
  "serde",
@@ -232,6 +235,13 @@ version = "0.1.0"
 [[package]]
 name = "grid-survey"
 version = "0.1.0"
+dependencies = [
+ "blake3",
+ "grid-chart",
+ "grid-datum",
+ "grid-wire",
+ "tempfile",
+]
 
 [[package]]
 name = "grid-wake"

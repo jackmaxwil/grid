@@ -5,8 +5,6 @@
 //! `grep '^edge  miss'` is the explanation and `awk` is the parser. Nothing
 //! here writes to stderr: hints are the caller's business.
 
-use std::fmt::Write as _;
-
 use grid_wire::{
     DefChangeAction, EdgeChange, LintResult, TestComparisonActual, TestComparisonExpected,
     TrackEdgePromise, XteVerdict, XteVerdictGate,
@@ -14,14 +12,19 @@ use grid_wire::{
 use grid_xte::lint::{relation_name, render_edge};
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "1.0.0";
+pub const VERSION: &str = "1.1.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
 fn record(out: &mut String, tag: &str, columns: &[&str]) {
     // Tags are padded to the width of the longest tag so columns line up for
     // a human; runs of spaces are one separator for a machine either way.
-    let _ = write!(out, "{tag:<8}");
+    // A tag at or over that width still gets a separator, or `snapshot` and
+    // its first column would run together into one token.
+    out.push_str(tag);
+    for _ in 0..8usize.saturating_sub(tag.len()).max(2) {
+        out.push(' ');
+    }
     let mut first = true;
     for col in columns {
         if !first {
@@ -49,14 +52,27 @@ const fn def_glyph(action: DefChangeAction) -> &'static str {
     }
 }
 
-fn edge_arrow(change: &EdgeChange) -> String {
+/// An edge arrow in callsign space.
+///
+/// Callsigns are the default identity (PORCELAIN.md display policy), so an
+/// arrow prints names whenever the chart can supply them. A datum the chart
+/// cannot name falls back to `@<prefix>`, which is still a coordinate a user
+/// can paste back in — never a bare 64-hex digest, which is neither readable
+/// nor typeable.
+fn edge_arrow(change: &EdgeChange, name: &NameOf) -> String {
+    let show = |d: &grid_wire::Datum| name(d).unwrap_or_else(|| format!("@{}", short(d)));
     format!(
         "{} -{}-> {}",
-        change.edge.src.0,
+        show(&change.edge.src),
         relation_name(change.edge.relation),
-        change.edge.dst.0
+        show(&change.edge.dst)
     )
 }
+
+/// How the renderer asks the chart what a datum is called. `None` means the
+/// chart has no name for it, which is a real answer: a datum can outlive the
+/// name it had.
+pub type NameOf<'a> = dyn Fn(&grid_wire::Datum) -> Option<String> + 'a;
 
 /// Promise arrows drop the leading action word: the verdict role column
 /// already says what happened to the promise.
@@ -97,7 +113,7 @@ const fn actual_name(a: TestComparisonActual) -> &'static str {
 /// Render a gate verdict. The first record is `pass` or `hold` with the track
 /// and snapshot; every divergence follows as its own record.
 #[must_use]
-pub fn verdict(v: &XteVerdict) -> String {
+pub fn verdict(v: &XteVerdict, name: &NameOf) -> String {
     let mut out = String::new();
     let head = grid_xte::snapshot_display(&v.head);
     let tag = match v.gate {
@@ -118,14 +134,18 @@ pub fn verdict(v: &XteVerdict) -> String {
         record(
             &mut out,
             "edge",
-            &[&role("surplus"), &edge_arrow(c), zoc_name(c.edge.zoc)],
+            &[&role("surplus"), &edge_arrow(c, name), zoc_name(c.edge.zoc)],
         );
     }
     for c in &v.tolerated {
         record(
             &mut out,
             "edge",
-            &[&role("tolerated"), &edge_arrow(c), zoc_name(c.edge.zoc)],
+            &[
+                &role("tolerated"),
+                &edge_arrow(c, name),
+                zoc_name(c.edge.zoc),
+            ],
         );
     }
     for d in &v.defs_unaccounted {
@@ -198,6 +218,101 @@ pub fn lint(result: &LintResult) -> String {
     let mut out = String::new();
     for finding in result.errors.iter().chain(&result.warnings) {
         record(&mut out, "warn", &[&finding.promise, &finding.reason]);
+    }
+    out
+}
+
+/// Short display form of a datum: `b3:9f2c...` -> `9f2c`.
+///
+/// The display policy is that callsigns are identity and hashes appear only
+/// where identity beyond the name matters — a `def` record's transition column
+/// is exactly that place, so it gets the prefix and nothing else does.
+fn short(datum: &grid_wire::Datum) -> String {
+    datum
+        .0
+        .rsplit_once(':')
+        .map_or(datum.0.as_str(), |(_, hex)| hex)
+        .chars()
+        .take(4)
+        .collect()
+}
+
+/// Render a snapshot as the single `snapshot` record the grammar defines:
+/// id, then the stats block.
+#[must_use]
+pub fn snapshot(s: &grid_wire::Snapshot, run: Option<(u64, std::time::Duration)>) -> String {
+    let mut out = String::new();
+    // Displayed identity is the rev, never the raw content id (CLI plan §2).
+    let id = format!("@{}", s.git_rev.0);
+    // The full stats block is `defs N  edges N  reread N  <duration>`. The
+    // last two describe the run rather than the snapshot, so they appear only
+    // when a run just happened — reporting a snapshot read back from the
+    // store would have nothing truthful to put there.
+    let stats = match run {
+        Some((reread, elapsed)) => format!(
+            "defs {}  edges {}  reread {reread}  {}ms",
+            s.stats.defs,
+            s.stats.edges,
+            elapsed.as_millis()
+        ),
+        None => format!("defs {}  edges {}", s.stats.defs, s.stats.edges),
+    };
+    record(&mut out, "snapshot", &[&id, &stats]);
+    out
+}
+
+/// Render a delta as `def` and `edge` records.
+///
+/// This is the reference render from the CLI plan: a glyph column, the
+/// callsign, and a trailing column that is the datum transition for a def and
+/// the evidence grade for an edge.
+#[must_use]
+pub fn diff(made_good: &grid_wire::MadeGood, name: &NameOf) -> String {
+    let mut out = String::new();
+    for d in &made_good.defs {
+        // `old→new` when both exist, otherwise the one that does: an added
+        // definition has no before, a removed one has no after.
+        let transition = match (&d.before, &d.after) {
+            (Some(before), Some(after)) => format!("{}→{}", short(before), short(after)),
+            (None, Some(after)) | (Some(after), None) => short(after),
+            (None, None) => String::new(),
+        };
+        record(
+            &mut out,
+            "def",
+            &[def_glyph(d.action), &d.callsign.0, &transition],
+        );
+    }
+    for e in &made_good.edges {
+        let glyph = match e.action {
+            grid_wire::EdgeChangeAction::Added => "+",
+            grid_wire::EdgeChangeAction::Removed => "-",
+            grid_wire::EdgeChangeAction::Moved => ">",
+        };
+        // A moved edge's trailing column is where it came from; anything else
+        // reports the evidence that establishes it.
+        let context = e.moved_from.as_ref().map_or_else(
+            || zoc_name(e.edge.zoc).to_owned(),
+            |from| format!("from {}", short(&from.src)),
+        );
+        record(&mut out, "edge", &[glyph, &edge_arrow(e, name), &context]);
+    }
+    out
+}
+
+/// Render resolved definitions as `ref` records: callsign, then the datum
+/// prefix that distinguishes them when the callsign does not.
+///
+/// `ref` rather than `def` because a `def` record's first column is a change
+/// glyph, and a resolved definition did not change — it exists. Overloading
+/// `def` here would shift every later column by one for anything parsing by
+/// position, which is the whole contract.
+#[must_use]
+pub fn refs(defs: &[grid_wire::DefRef]) -> String {
+    let mut out = String::new();
+    for d in defs {
+        let callsign = d.callsign.as_ref().map_or("", |c| c.0.as_str());
+        record(&mut out, "ref", &[callsign, &short(&d.datum)]);
     }
     out
 }

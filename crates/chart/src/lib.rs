@@ -15,9 +15,11 @@
 //! (defs, edges) set is the same bytes on every machine, and a snapshot id is
 //! therefore a pure function of content.
 mod build;
+mod delta;
 mod manifest;
 
 pub use build::{build, Def, Edge};
+pub use delta::made_good;
 pub use manifest::{Manifest, SegmentEntry, SnapshotId};
 
 /// Bytes prefixing every segment image.

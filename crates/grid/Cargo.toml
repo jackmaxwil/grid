@@ -8,6 +8,9 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+grid-chart = { path = "../chart", version = "0.1.0" }
+grid-chart-io = { path = "../chart-io", version = "0.1.0" }
+grid-survey = { path = "../survey", version = "0.1.0" }
 grid-wire = { path = "../wire", version = "0.1.0" }
 grid-xte = { path = "../xte", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }

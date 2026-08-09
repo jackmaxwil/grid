@@ -285,3 +285,123 @@ fn a_bad_request_is_an_error_response_not_a_crash() {
         "0.1.0"
     );
 }
+
+#[test]
+fn survey_run_publishes_a_snapshot_the_contract_accepts() {
+    let dir = repo();
+    let daemon = Daemon::start(dir.path());
+    let response = daemon.call("grid.survey.run", &json!({}));
+    assert!(
+        response.get("error").is_none(),
+        "survey.run errored: {response}"
+    );
+    let result = &response["result"];
+    for key in ["snapshot_id", "git_rev", "created_at", "stats"] {
+        assert!(
+            result.get(key).is_some(),
+            "snapshot missing {key}: {result}"
+        );
+    }
+    // D5: the id is the hash of the manifest, so it is a content id.
+    assert!(
+        result["snapshot_id"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("snap:b3:")),
+        "snapshot id must be content-addressed: {result}"
+    );
+    assert!(result["stats"]["defs"].as_u64().is_some_and(|n| n > 0));
+}
+
+#[test]
+fn surveying_twice_returns_the_same_snapshot_id() {
+    // Idempotence by construction: an unchanged tree is the same snapshot,
+    // so a caller cannot survey "too often".
+    let dir = repo();
+    let daemon = Daemon::start(dir.path());
+    let first = daemon.call("grid.survey.run", &json!({}));
+    let second = daemon.call("grid.survey.run", &json!({}));
+    assert_eq!(
+        first["result"]["snapshot_id"],
+        second["result"]["snapshot_id"]
+    );
+}
+
+#[test]
+fn snapshot_current_reports_what_was_published() {
+    let dir = repo();
+    let daemon = Daemon::start(dir.path());
+    let published = daemon.call("grid.survey.run", &json!({}));
+    let current = daemon.call("grid.snapshot.current", &json!({}));
+    assert_eq!(
+        current["result"]["snapshot_id"], published["result"]["snapshot_id"],
+        "the current snapshot is the one just published"
+    );
+}
+
+#[test]
+fn snapshot_current_before_any_survey_is_the_contracts_error() {
+    // "Never surveyed" is a state with a wire code (-32002), not a crash and
+    // not a null that a caller would have to special-case.
+    let dir = repo();
+    let daemon = Daemon::start(dir.path());
+    let response = daemon.call("grid.snapshot.current", &json!({}));
+    assert_eq!(response["error"]["code"], -32002, "got {response}");
+}
+
+#[test]
+fn delta_answers_with_a_made_good_the_contract_accepts() {
+    let dir = repo();
+    let daemon = Daemon::start(dir.path());
+    let response = daemon.call(
+        "grid.delta",
+        &json!({"base": {"git_rev": "HEAD~1"}, "head": {"git_rev": "HEAD"}}),
+    );
+    assert!(response.get("error").is_none(), "delta errored: {response}");
+    let result = &response["result"];
+    for key in ["base", "head", "defs", "edges"] {
+        assert!(
+            result.get(key).is_some(),
+            "MadeGood missing {key}: {result}"
+        );
+    }
+    // `b.py` is added in the second commit of the fixture repo, and the
+    // chart names definitions, not files.
+    let defs = result["defs"].as_array().expect("defs");
+    assert!(
+        defs.iter()
+            .any(|d| d["callsign"] == "b.b" && d["action"] == "added"),
+        "the added definition is reported: {result}"
+    );
+}
+
+#[test]
+fn resolve_finds_a_definition_by_unique_suffix() {
+    let dir = repo();
+    let daemon = Daemon::start(dir.path());
+    daemon.call("grid.survey.run", &json!({}));
+    let response = daemon.call("grid.resolve", &json!({"locator": {"callsign": "b"}}));
+    let refs = response["result"].as_array().expect("refs");
+    assert_eq!(refs.len(), 1, "got {response}");
+    assert_eq!(refs[0]["callsign"], "b.b");
+    assert!(
+        refs[0]["datum"]
+            .as_str()
+            .is_some_and(|d| d.starts_with("b3:")),
+        "a DefRef carries the datum: {response}"
+    );
+}
+
+#[test]
+fn resolving_an_unknown_name_is_an_empty_list_not_an_error() {
+    // The contract says so explicitly: "Unknown locators resolve to an empty
+    // list, not an error."
+    let dir = repo();
+    let daemon = Daemon::start(dir.path());
+    daemon.call("grid.survey.run", &json!({}));
+    let response = daemon.call(
+        "grid.resolve",
+        &json!({"locator": {"callsign": "no.such.name"}}),
+    );
+    assert!(response.get("error").is_none(), "got {response}");
+    assert_eq!(response["result"].as_array().expect("refs").len(), 0);
+}
