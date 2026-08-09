@@ -3,12 +3,25 @@
 [advisories]
 db-path = "~/.cargo/advisory-db"
 yanked = "deny"
+# The rust-unic family is unmaintained with no safe upgrade; it reaches us
+# through rustpython-parser's Unicode tables. Parse-time tables, not
+# network-facing code; the parser itself is justified in ASSURANCE.md.
+# Tracked; revisited when the parser migrates off rust-unic.
+ignore = [
+    "RUSTSEC-2025-0075", # unic-char-range
+    "RUSTSEC-2025-0080", # unic-common
+    "RUSTSEC-2025-0081", # unic-char-property
+    "RUSTSEC-2025-0090", # unic-emoji-char
+    "RUSTSEC-2025-0098", # unic-ucd-version
+    "RUSTSEC-2025-0100", # unic-ucd-ident
+]
 
 [licenses]
-# CC0-1.0 is a public-domain dedication: it imposes no condition on use, so it
-# is permissive in the only sense that matters here. Reached via tiny-keccak,
-# a build-time dependency of the Python parser.
-allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "CC0-1.0", "ISC", "Unicode-3.0", "Zlib"]
+# CC0-1.0 is a public-domain dedication: no conditions on use, permissive in
+# the only sense that matters here (tiny-keccak, parser build-time dep).
+# LicenseRef-Proprietary is the workspace's own crates: proprietary is a
+# license, not an absence of one.
+allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "CC0-1.0", "ISC", "Unicode-3.0", "Zlib", "Unicode-DFS-2016", "LicenseRef-Proprietary"]
 
 [bans]
 wildcards = "deny"

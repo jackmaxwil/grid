@@ -563,23 +563,22 @@ impl Fold<TextRange> for Renamer {
             name,
             asname,
         } = node;
-        // The bound local is the asname, or the first dotted segment.
-        let (bound, name, asname) = if let Some(a) = asname {
-            let canon = self.bind_in_current(a.as_str());
-            (a.as_str().to_owned(), name, Some(Identifier::new(canon)))
+        // An import binds a local: the asname if present, else the first
+        // dotted segment of the module path. The rest of the path is the
+        // module's interface and is left alone.
+        let (name, asname) = if let Some(a) = asname {
+            (
+                name,
+                Some(Identifier::new(self.bind_in_current(a.as_str()))),
+            )
         } else {
             let first = name.as_str().split('.').next().unwrap_or_default();
             let canon = self.bind_in_current(first);
-            if canon == first {
-                (first.to_owned(), name, None)
-            } else {
-                let renamed = canon + name.as_str().strip_prefix(first).unwrap_or_default();
-                (first.to_owned(), Identifier::new(renamed), None)
-            }
+            let rest = &name.as_str()[first.len()..];
+            (Identifier::new(canon + rest), None)
         };
-        let _ = bound;
         Ok(Alias {
-            range: (),
+            range: Default::default(),
             name,
             asname,
         })
