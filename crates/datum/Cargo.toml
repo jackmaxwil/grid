@@ -6,3 +6,15 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+blake3 = "1"
+# Default features pull malachite (LGPL-3.0-only) for bigint literals; the
+# num-bigint path is MIT/Apache and does the same job. `location` is off: grid
+# addresses code by structure, never by line number. `full-lexer` keeps comment
+# tokens, which are retained as metadata rather than hashed.
+rustpython-parser = { version = "0.4", default-features = false, features = ["num-bigint", "full-lexer"] }
+rustpython-ast = { version = "0.4", default-features = false, features = ["num-bigint", "fold", "visitor"] }
+
+[dev-dependencies]
+proptest = "1"

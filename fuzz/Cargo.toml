@@ -1,0 +1,20 @@
+[package]
+name = "grid-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "Proprietary"
+
+# Own workspace: cargo-fuzz builds with nightly and its own lock.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+grid-datum = { path = "../crates/datum" }
+
+[[bin]]
+name = "normalize"
+path = "fuzz_targets/normalize.rs"
+test = false
+doc = false
+bench = false

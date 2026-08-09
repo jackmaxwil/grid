@@ -168,8 +168,12 @@ def main():
         for p in m["params"]:
             for ref in re.findall(r"schemas/(\w+)", json.dumps(p["schema"])):
                 used.add(ref)
+        # A result that *is* a schema type (grid.bisect -> BisectResult) emits
+        # no alias below, so importing it would be an unused import.
+        own = method_mod_name(m["name"]) + "Result"
         for ref in re.findall(r"schemas/(\w+)", json.dumps(m["result"]["schema"])):
-            used.add(ref)
+            if ref != own:
+                used.add(ref)
     meth = [METH_HEADER, f"use super::{{{', '.join(sorted(used))}}};\n"]
     for m in d["methods"]:
         M = method_mod_name(m["name"])
