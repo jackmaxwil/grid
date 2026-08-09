@@ -405,3 +405,162 @@ fn resolving_an_unknown_name_is_an_empty_list_not_an_error() {
     assert!(response.get("error").is_none(), "got {response}");
     assert_eq!(response["result"].as_array().expect("refs").len(), 0);
 }
+
+/// Publish a one-segment chart into `dir/.grid/chart` and return the two datum
+/// handles it interns: a caller and the callee it proves an edge to.
+fn seed_chart(dir: &Path) -> (String, String) {
+    use grid_chart::{build, DatumId, Def, Edge};
+
+    let caller = DatumId([0x11; 32]);
+    let target = DatumId([0x22; 32]);
+    let image = build(
+        &[
+            Def {
+                datum: caller,
+                callsign: "app.caller".into(),
+                lang: Some(grid_wire::Lang::Py),
+            },
+            Def {
+                datum: target,
+                callsign: "app.callee".into(),
+                lang: Some(grid_wire::Lang::Py),
+            },
+        ],
+        &[Edge {
+            src: caller,
+            dst: target,
+            relation: grid_wire::Relation::Calls,
+            zoc: grid_wire::Zoc::Proven,
+        }],
+    )
+    .expect("build segment");
+    let mut store = grid_chart_io::Store::open(dir.join(".grid/chart")).expect("open store");
+    store.publish("HEAD", None, &[image]).expect("publish");
+    (caller.to_string(), target.to_string())
+}
+
+#[test]
+fn cache_check_and_record_are_served_over_the_socket() {
+    let dir = repo();
+    let (caller, _callee) = seed_chart(dir.path());
+    let daemon = Daemon::start(dir.path());
+    let env = "env:b3:77aa77aa";
+
+    // Cold: the datum is real, but nothing has been recorded, so it misses.
+    let cold = daemon.call(
+        "grid.cache.check",
+        &json!({"request": {"kind": "test", "env_hash": env, "datums": [caller]}}),
+    );
+    let result = &cold["result"];
+    assert_eq!(result["hits"].as_array().expect("hits").len(), 0);
+    assert_eq!(result["misses"][0], json!(caller), "cold check misses");
+    assert!(
+        result["snapshot"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("snap:b3:")),
+        "a check answers with the snapshot it answered from: {result}"
+    );
+
+    // Record the miss, as CI would after running the tests.
+    let recorded = daemon.call(
+        "grid.cache.record",
+        &json!({
+            "kind": "test",
+            "env_hash": env,
+            "results": [{"datum": caller, "verdict": "pass"}]
+        }),
+    );
+    assert_eq!(recorded["result"]["recorded"], 1);
+    assert_eq!(
+        recorded["result"]["rejected"]
+            .as_array()
+            .expect("rejected")
+            .len(),
+        0
+    );
+
+    // Warm: the same key now hits, with the verdict that was recorded.
+    let warm = daemon.call(
+        "grid.cache.check",
+        &json!({"request": {"kind": "test", "env_hash": env, "datums": [caller]}}),
+    );
+    let hit = &warm["result"]["hits"][0];
+    assert_eq!(hit["datum"], json!(caller));
+    assert_eq!(hit["verdict"], "pass");
+    assert!(
+        hit["recorded_at"]
+            .as_str()
+            .is_some_and(|s| s.ends_with('Z')),
+        "recorded_at is RFC 3339 UTC: {hit}"
+    );
+    assert_eq!(
+        warm["result"]["misses"].as_array().expect("misses").len(),
+        0
+    );
+
+    // A different environment is a different key, whatever the chart says.
+    let other_env = daemon.call(
+        "grid.cache.check",
+        &json!({"request": {"kind": "lint", "env_hash": "env:b3:different", "datums": [caller]}}),
+    );
+    assert_eq!(other_env["result"]["misses"][0], json!(caller));
+}
+
+#[test]
+fn a_datum_outside_the_snapshot_is_rejected_not_stored() {
+    // C4's record-side face: no key can be frozen for a closure that cannot be
+    // established, so the entry is refused with a reason rather than stored.
+    let dir = repo();
+    seed_chart(dir.path());
+    let daemon = Daemon::start(dir.path());
+    let stranger = format!("b3:{}", "ab".repeat(32));
+
+    let recorded = daemon.call(
+        "grid.cache.record",
+        &json!({
+            "kind": "test",
+            "env_hash": "env:b3:77aa77aa",
+            "results": [{"datum": stranger, "verdict": "pass"}]
+        }),
+    );
+    assert_eq!(recorded["result"]["recorded"], 0);
+    let rejected = &recorded["result"]["rejected"][0];
+    assert_eq!(rejected["datum"], json!(stranger));
+    assert!(
+        rejected["reason"].as_str().is_some_and(|r| !r.is_empty()),
+        "a rejection carries its reason: {rejected}"
+    );
+
+    // And it never becomes a hit afterwards.
+    let check = daemon.call(
+        "grid.cache.check",
+        &json!({"request": {"kind": "test", "env_hash": "env:b3:77aa77aa", "datums": [stranger]}}),
+    );
+    assert_eq!(check["result"]["hits"].as_array().expect("hits").len(), 0);
+}
+
+#[test]
+fn the_contract_example_shape_is_served() {
+    // The contract's own example params, against a real chart: the daemon must
+    // answer the documented shape, not a shape only this test knows.
+    let contract = contract();
+    let dir = repo();
+    let (caller, _) = seed_chart(dir.path());
+    let daemon = Daemon::start(dir.path());
+
+    let mut params = example_params(&contract, "grid.cache.check");
+    // The example names a snapshot this build has never seen; the datums are
+    // this chart's. Shape from the contract, coordinates from the fixture.
+    params["request"]["snapshot"] = Value::Null;
+    params["request"]
+        .as_object_mut()
+        .expect("obj")
+        .remove("snapshot");
+    params["request"]["datums"] = json!([caller]);
+
+    let response = daemon.call("grid.cache.check", &params);
+    let result = &response["result"];
+    assert!(result["snapshot"].is_string());
+    assert!(result["hits"].is_array());
+    assert!(result["misses"].is_array());
+}
