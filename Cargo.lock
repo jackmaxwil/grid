@@ -228,6 +228,12 @@ dependencies = [
 [[package]]
 name = "grid-leadline"
 version = "0.1.0"
+dependencies = [
+ "grid-chart",
+ "grid-wire",
+ "proptest",
+ "serde_json",
+]
 
 [[package]]
 name = "grid-survey"
