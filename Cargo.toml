@@ -18,6 +18,8 @@ license = "LicenseRef-Proprietary"
 
 [workspace.lints.rust]
 unsafe_code = { level = "forbid", priority = -1 }
+# `cargo kani` sets this cfg; a plain build must not warn about proof harnesses.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }

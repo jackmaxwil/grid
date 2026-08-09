@@ -10,11 +10,19 @@ license = "Proprietary"
 
 [dependencies]
 libfuzzer-sys = "0.4"
+grid-chart = { path = "../crates/chart" }
 grid-datum = { path = "../crates/datum" }
 
 [[bin]]
 name = "normalize"
 path = "fuzz_targets/normalize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "segment"
+path = "fuzz_targets/segment.rs"
 test = false
 doc = false
 bench = false
