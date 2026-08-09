@@ -1,1 +1,1 @@
-//! grid-xte — spec gate: Track vs MadeGood -> CrossTrackError verdicts.
+//! grid-xte — spec gate: `Track` vs `MadeGood` -> `CrossTrackError` verdicts.
