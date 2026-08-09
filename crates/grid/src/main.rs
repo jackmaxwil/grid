@@ -79,6 +79,7 @@ fn main() -> ExitCode {
         Some((&"gate", args)) => gate(args, json),
         Some((&"track", args)) => track::main(args, json),
         Some((&"cache", args)) => cache(args, json),
+        Some((&"wake", args)) => wake(args, json),
         Some((&"serve", args)) => serve::main(args),
         Some((other, _)) => {
             hint(&format!(
@@ -389,6 +390,103 @@ fn resolve(args: &[&str], json: bool) -> u8 {
             // that" is an answer (PORCELAIN.md).
             print!("{}", porcelain::refs(&defs));
             exit::OK
+        }
+    }
+}
+
+/// `grid wake ingest <wake.json|->` and `grid wake diff <green> <red>`.
+///
+/// The CI shape: a test runner emits a wake JSON, `ingest` resolves and
+/// retains it, and `diff` compares two retained runs — exit 3 when behavior
+/// forked, because a forked trace is a divergence. Both call the same rpc
+/// functions the daemon serves, so CLI and socket cannot disagree.
+fn wake(args: &[&str], json: bool) -> u8 {
+    let root = std::path::Path::new(".");
+    match args.split_first() {
+        Some((&"ingest", rest)) => {
+            let Some(path) = rest.first() else {
+                hint("usage: grid wake ingest <wake.json|->");
+                return exit::BAD_INPUT;
+            };
+            let text = if *path == "-" {
+                use std::io::Read as _;
+                let mut buf = String::new();
+                match std::io::stdin().read_to_string(&mut buf) {
+                    Ok(_) => buf,
+                    Err(e) => {
+                        hint(&format!("grid: cannot read stdin: {e}"));
+                        return exit::INTERNAL;
+                    }
+                }
+            } else {
+                match std::fs::read_to_string(path) {
+                    Ok(text) => text,
+                    Err(e) => {
+                        hint(&format!("grid: cannot read {path}: {e}"));
+                        return exit::BAD_INPUT;
+                    }
+                }
+            };
+            let w: grid_wire::Wake = match serde_json::from_str(&text) {
+                Ok(w) => w,
+                Err(e) => {
+                    hint(&format!("grid: wake JSON: {e}"));
+                    return exit::BAD_INPUT;
+                }
+            };
+            let total = w.observations.len() as u64;
+            let params = grid_wire::methods::WakeIngestParams { wake: w };
+            match rpc::wake_ingest(&params, root) {
+                Ok(result) => {
+                    if json {
+                        return emit_json(&result);
+                    }
+                    print!("{}", porcelain::wake_ingest(&result, total));
+                    exit::OK
+                }
+                Err(e) => {
+                    hint(&format!("grid: {e}"));
+                    exit::INTERNAL
+                }
+            }
+        }
+        Some((&"diff", rest)) => {
+            let (Some(green), Some(red)) = (rest.first(), rest.get(1)) else {
+                hint("usage: grid wake diff <green-wake-id> <red-wake-id>");
+                return exit::BAD_INPUT;
+            };
+            let params = grid_wire::methods::WakeDiffParams {
+                green: grid_wire::WakeId((*green).to_string()),
+                red: grid_wire::WakeId((*red).to_string()),
+            };
+            match rpc::wake_diff(&params, root) {
+                Ok(diff) => {
+                    if json {
+                        return emit_json(&diff);
+                    }
+                    print!("{}", porcelain::wake_diff(&diff));
+                    let forked = diff.first_divergence.is_some()
+                        || !diff.added.is_empty()
+                        || !diff.removed.is_empty();
+                    if forked {
+                        exit::DIVERGENCE
+                    } else {
+                        exit::OK
+                    }
+                }
+                Err(rpc::WakeDiffError::UnknownWake(e)) => {
+                    hint(&format!("grid: {e}"));
+                    exit::BAD_INPUT
+                }
+                Err(rpc::WakeDiffError::Store(e)) => {
+                    hint(&format!("grid: {e}"));
+                    exit::INTERNAL
+                }
+            }
+        }
+        _ => {
+            hint("usage: grid wake ingest|diff ...");
+            exit::BAD_INPUT
         }
     }
 }

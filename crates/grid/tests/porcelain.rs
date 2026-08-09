@@ -632,3 +632,102 @@ fn a_bad_cache_kind_is_bad_input() {
     assert_eq!(code(&out), 2);
     assert!(stdout(&out).is_empty(), "errors go to stderr, not stdout");
 }
+
+/// Write a wake JSON into `dir` and return its path for `grid wake ingest`.
+fn wake_file(dir: &Path, name: &str, wake_id: &str, hops: &[(&str, &str)]) -> std::path::PathBuf {
+    let observations: Vec<serde_json::Value> = hops
+        .iter()
+        .map(|(caller, callee)| {
+            serde_json::json!({
+                "caller": { "datum": caller },
+                "callee": { "datum": callee },
+            })
+        })
+        .collect();
+    let path = dir.join(name);
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "wake_id": wake_id,
+            "git_rev": "4f2c9e1",
+            "observations": observations,
+        })
+        .to_string(),
+    )
+    .expect("write wake");
+    path
+}
+#[test]
+#[allow(clippy::similar_names)] // caller/callee are the domain words
+fn wake_ingest_then_diff_is_the_ci_loop() {
+    let dir = repo();
+    let (caller, callee) = seed_chart(dir.path(), 0x22);
+    let green = wake_file(dir.path(), "green.json", "wake:g", &[(&caller, &callee)]);
+    let red = wake_file(
+        dir.path(),
+        "red.json",
+        "wake:r",
+        &[(&caller, &callee), (&callee, &caller)],
+    );
+    for (file, want) in [(&green, "1/1"), (&red, "2/2")] {
+        let out = grid(
+            dir.path(),
+            &["wake", "ingest", file.to_str().expect("utf-8 path")],
+        );
+        assert_eq!(code(&out), 0, "{}", stdout(&out));
+        let text = stdout(&out);
+        let cols = columns(text.lines().next().expect("done record"));
+        assert_eq!(cols[0], "done");
+        assert_eq!(cols[1], want);
+    }
+    // Same trace twice: no fork, exit 0.
+    let same = grid(dir.path(), &["wake", "diff", "wake:g", "wake:g"]);
+    assert_eq!(code(&same), 0);
+    assert!(stdout(&same).is_empty(), "no records without a difference");
+    // Green against red: red kept calling, exit 3, fork then edge records.
+    let forked = grid(dir.path(), &["wake", "diff", "wake:g", "wake:r"]);
+    assert_eq!(code(&forked), 3, "a forked trace is a divergence");
+    let text = stdout(&forked);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(columns(lines[0])[0], "fork");
+    assert_eq!(columns(lines[0])[2], "-", "green had no second hop");
+    assert_eq!(columns(lines[1])[0], "edge");
+    assert_eq!(columns(lines[1])[1], "+");
+    assert_eq!(columns(lines[1])[5], "observed");
+}
+#[test]
+fn wake_ingest_reports_unresolved_symbols_never_drops_them() {
+    let dir = repo();
+    seed_chart(dir.path(), 0x22);
+    let path = dir.path().join("wake.json");
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "wake_id": "wake:u",
+            "git_rev": "4f2c9e1",
+            "observations": [
+                { "caller": { "symbol": "caller" }, "callee": { "symbol": "no.such" } },
+            ],
+        })
+        .to_string(),
+    )
+    .expect("write wake");
+    let out = grid(
+        dir.path(),
+        &["wake", "ingest", path.to_str().expect("utf-8")],
+    );
+    assert_eq!(code(&out), 0);
+    let text = stdout(&out);
+    let cols = columns(text.lines().next().expect("done record"));
+    assert_eq!(cols[1], "0/1", "the hop resolved to nothing: {text}");
+    let warn = columns(text.lines().nth(1).expect("warn record"));
+    assert_eq!(warn[0], "warn");
+    assert_eq!(warn[1], "no.such");
+}
+#[test]
+fn a_diff_against_an_unknown_wake_is_bad_input() {
+    let dir = repo();
+    seed_chart(dir.path(), 0x22);
+    let out = grid(dir.path(), &["wake", "diff", "wake:nope", "wake:alsono"]);
+    assert_eq!(code(&out), 2);
+}
