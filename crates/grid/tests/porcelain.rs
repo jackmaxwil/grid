@@ -36,6 +36,52 @@ fn repo() -> tempfile::TempDir {
     dir
 }
 
+/// A repo whose second commit adds a definition *and* a call to it, so the
+/// chart has a real edge to report. The file-level provider of wave 3 could
+/// not have produced one.
+fn repo_with_a_call() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let git = |args: &[&str]| {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .env("GIT_AUTHOR_NAME", "grid")
+            .env("GIT_AUTHOR_EMAIL", "grid@example.invalid")
+            .env("GIT_COMMITTER_NAME", "grid")
+            .env("GIT_COMMITTER_EMAIL", "grid@example.invalid")
+            .output()
+            .expect("run git")
+            .status
+            .success();
+        assert!(ok, "git {args:?} failed");
+    };
+    let write = |path: &str, body: &str| {
+        let full = dir.path().join(path);
+        std::fs::create_dir_all(full.parent().expect("parent")).expect("mkdir");
+        std::fs::write(full, body).expect("write");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    write("pkg/__init__.py", "");
+    write("pkg/util.py", "def helper():\n    return 1\n");
+    write(
+        "pkg/main.py",
+        "from pkg.util import helper\n\n\ndef sweep():\n    helper()\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "one"]);
+    write(
+        "pkg/util.py",
+        "def helper():\n    return 1\n\n\ndef extra():\n    return 2\n",
+    );
+    write(
+        "pkg/main.py",
+        "from pkg.util import helper, extra\n\n\ndef sweep():\n    helper()\n    extra()\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "two"]);
+    dir
+}
+
 fn grid(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_grid"))
         .args(args)
@@ -59,13 +105,38 @@ fn columns(line: &str) -> Vec<&str> {
 }
 
 #[test]
-fn bare_grid_teaches_on_stderr_and_says_nothing_on_stdout() {
+fn bare_grid_shows_the_diff_and_teaches_on_stderr() {
+    // Bare `grid` is the everyday verb (CLI plan §4): what changed. The
+    // teaching still happens, on stderr, so a machine reading stdout gets
+    // only records and a human gets both.
     let dir = repo();
     let out = grid(dir.path(), &[]);
     assert_eq!(code(&out), 0);
-    assert!(stdout(&out).is_empty(), "machines read stdout only");
-    let hints = String::from_utf8(out.stderr).expect("utf-8");
+    let hints = String::from_utf8(out.stderr.clone()).expect("utf-8");
     assert!(hints.contains("what your code promises vs what it does"));
+    // `b.py` was added in the second commit, so the default HEAD~1..HEAD
+    // diff is exactly that definition.
+    let text = stdout(&out);
+    assert!(
+        text.lines().any(|l| {
+            let c = columns(l);
+            c.first() == Some(&"def") && c.get(1) == Some(&"+") && c.get(2) == Some(&"b.b")
+        }),
+        "bare grid is the diff:\n{text}"
+    );
+}
+
+#[test]
+fn help_teaches_without_running_anything() {
+    // `grid help` is the one that says nothing on stdout: it is the teaching
+    // surface, not a query.
+    let dir = repo();
+    let out = grid(dir.path(), &["help"]);
+    assert_eq!(code(&out), 0);
+    assert!(stdout(&out).is_empty(), "machines read stdout only");
+    assert!(String::from_utf8(out.stderr)
+        .expect("utf-8")
+        .contains("what your code promises vs what it does"));
 }
 
 #[test]
@@ -133,7 +204,9 @@ fn gate_pass_is_exit_0() {
         &json!({
             "track_id": "track:pr-2-v1",
             "base": {"git_rev": "HEAD~1"},
-            "delta": {"defs": [{"action": "add", "callsign": "b"}], "edges": []}
+            // Callsigns are module-qualified now that the chart is real:
+            // `b.py` defines `b.b`, not `b`.
+            "delta": {"defs": [{"action": "add", "callsign": "b.b"}], "edges": []}
         }),
     );
     let out = grid(dir.path(), &["gate", track.to_str().expect("path"), "HEAD"]);
@@ -265,4 +338,147 @@ fn an_unknown_verb_is_bad_input() {
     let out = grid(dir.path(), &["frobnicate"]);
     assert_eq!(code(&out), 2);
     assert!(stdout(&out).is_empty());
+}
+
+#[test]
+fn survey_emits_one_snapshot_record() {
+    let dir = repo();
+    let out = grid(dir.path(), &["survey"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = stdout(&out);
+    let c = columns(text.lines().next().expect("a record"));
+    assert_eq!(c[0], "snapshot");
+    // Displayed identity is the rev, never the raw content id (CLI plan §2).
+    assert!(c[1].starts_with('@'), "snapshot displays @rev: {text}");
+    assert!(text.contains("defs "), "stats are on the record: {text}");
+}
+
+#[test]
+fn diff_records_the_definition_that_changed() {
+    let dir = repo();
+    let out = grid(dir.path(), &["diff", "HEAD~1", "HEAD"]);
+    assert_eq!(code(&out), 0);
+    let text = stdout(&out);
+    assert!(
+        text.lines().any(|l| {
+            let c = columns(l);
+            c[0] == "def" && c[1] == "+" && c[2] == "b.b"
+        }),
+        "the added definition is a `def +` record:\n{text}"
+    );
+}
+
+#[test]
+fn diff_prints_edges_in_callsign_space_not_as_hashes() {
+    // The display policy: callsigns are identity, hashes appear only where
+    // identity beyond the name matters. An arrow is not one of those places.
+    let dir = repo_with_a_call();
+    let out = grid(dir.path(), &["diff", "HEAD~1", "HEAD"]);
+    let text = stdout(&out);
+    let arrow = text
+        .lines()
+        .find(|l| l.starts_with("edge"))
+        .unwrap_or_else(|| panic!("no edge record:\n{text}"));
+    assert!(
+        arrow.contains("pkg.main.sweep -calls-> pkg.util.extra"),
+        "edges read as names: {arrow}"
+    );
+    assert!(
+        !arrow.contains("b3:"),
+        "a raw digest is neither readable nor typeable: {arrow}"
+    );
+}
+
+#[test]
+fn resolve_finds_a_definition_by_suffix_and_says_nothing_for_an_unknown_name() {
+    let dir = repo();
+    grid(dir.path(), &["survey"]);
+    let out = grid(dir.path(), &["resolve", "b"]);
+    assert_eq!(code(&out), 0);
+    let text = stdout(&out);
+    let c = columns(text.lines().next().expect("record"));
+    // `ref`, not `def`: a resolved definition exists, it did not change, so
+    // there is no glyph column and the callsign is first.
+    assert_eq!((c[0], c[1]), ("ref", "b.b"));
+
+    // Empty result sets exit 0 with no records (PORCELAIN.md).
+    let out = grid(dir.path(), &["resolve", "no.such.name"]);
+    assert_eq!(code(&out), 0);
+    assert!(stdout(&out).is_empty());
+}
+
+#[test]
+fn a_gate_over_a_real_edge_promise_passes_when_the_edge_is_built() {
+    // The wave's headline: a promise about a *call* is now checked against a
+    // surveyed call, not reported `missing` for want of a chart.
+    let dir = repo_with_a_call();
+    let track = write_track(
+        dir.path(),
+        "edge",
+        &json!({
+            "track_id": "track:edge/v1",
+            "base": {"git_rev": "HEAD~1"},
+            "delta": {
+                "defs": [
+                    {"action": "add", "callsign": "pkg.util.extra"},
+                    {"action": "modify", "callsign": "pkg.main.sweep"}
+                ],
+                "edges": [{
+                    "action": "add",
+                    "src": "pkg.main.sweep",
+                    "relation": "calls",
+                    "dst": "pkg.util.extra"
+                }]
+            }
+        }),
+    );
+    let out = grid(dir.path(), &["gate", track.to_str().expect("path"), "HEAD"]);
+    let text = stdout(&out);
+    assert_eq!(code(&out), 0, "stdout:\n{text}");
+    assert!(
+        text.lines().any(|l| {
+            let c = columns(l);
+            c[0] == "edge" && c[1] == "match"
+        }),
+        "the promised edge is matched, not missing:\n{text}"
+    );
+}
+
+#[test]
+fn a_gate_holds_when_the_promised_edge_was_not_built() {
+    // The inverse, and the one CI branches on: exit 3, with the divergence
+    // itemized as records.
+    let dir = repo_with_a_call();
+    let track = write_track(
+        dir.path(),
+        "unbuilt",
+        &json!({
+            "track_id": "track:unbuilt/v1",
+            "base": {"git_rev": "HEAD~1"},
+            "delta": {
+                "defs": [],
+                "edges": [{
+                    "action": "add",
+                    "src": "pkg.main.sweep",
+                    "relation": "calls",
+                    "dst": "pkg.util.never_written"
+                }]
+            }
+        }),
+    );
+    let out = grid(dir.path(), &["gate", track.to_str().expect("path"), "HEAD"]);
+    let text = stdout(&out);
+    assert_eq!(code(&out), 3, "stdout:\n{text}");
+    assert!(
+        text.lines().any(|l| {
+            let c = columns(l);
+            c[0] == "edge" && c[1] == "miss"
+        }),
+        "`grep '^edge  miss'` is the explanation:\n{text}"
+    );
 }

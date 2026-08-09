@@ -6,7 +6,7 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 | claim | statement | evidence | wave |
 |---|---|---|---|
 | C1 | no input to `chart-io` causes UB | segment.rs adversarial.rs + ci:miri+asan | 4 |
-| C2 | same (source, epoch) ⇒ same bytes | determinism.rs store.rs + incremental≡full | 4–5 |
+| C2 | same (source, epoch) ⇒ same bytes | determinism.rs store.rs corpus.rs + incremental≡full | 4–5 |
 | C3 | every walk terminates within fuel | Kani fuel-decrease harness | 9 |
 | C4 | no cache hit without established closure | adversarial closure proptest | 7 |
 | C5 | two writers only (survey, edit.apply); unsafe confined to `chart-io` | check-unsafe-confined.sh | 0+ |
@@ -19,6 +19,9 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 
 | C11 | a store reopens valid after `kill -9` at any instant | crash_safety.rs | 4 |
 | C12 | CSR indexing is total: a parsed segment answers every ordinal, in bounds | proofs.rs | 4 |
+
+| C13 | an incremental survey and a full one produce the same segment bytes | determinism.rs corpus.rs | 5 |
+| C14 | every recorded edge is one the language's own binding rules establish; an unresolvable or ambiguous name yields no edge | refs.rs determinism.rs | 5 |
 
 
 ## Dependency justification
@@ -33,6 +36,10 @@ Every dependency in `Cargo.lock` gets a line here saying why it is in the TCB.
   Python runtime and no C in the build; a parser must exist somewhere and this
   one keeps `forbid(unsafe_code)` intact outside `chart-io`. `proptest`
   (dev-only) — the property harness C6 is evidenced by.
+- Wave 5 (`survey`): no new dependencies. Extraction reuses `datum`'s parser
+  (one parse of a file serves identity and references alike), discovery is
+  `git ls-files` rather than a walker crate so the repo's own ignore rules are
+  the only policy, and the incremental key is `blake3`, already in the TCB.
 - Wave 4 (`chart`, `chart-io`): `memmap2` — the mapping primitive itself; the
   alternative is raw `libc::mmap`, i.e. more unsafe, not less. `arc-swap` — a
   lock-free pointer swap so a publication cannot make a reader block or observe

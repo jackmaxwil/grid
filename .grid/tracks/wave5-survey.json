@@ -1,0 +1,13 @@
+{
+  "track_id": "track:wave5-survey",
+  "plan_rev": "2026-08-08-002",
+  "base": {
+    "git_rev": "cd4b3d0"
+  },
+  "delta": {
+    "defs": [],
+    "edges": []
+  },
+  "tests": [],
+  "invariants": []
+}

@@ -55,10 +55,13 @@ pub fn main(args: &[&str]) -> u8 {
     hint(&format!("grid: serving on {}", path.display()));
 
     let root = Path::new(".");
+    // One chart for the daemon's life: the survey cache it carries is what
+    // makes a warm survey warm, and it is per-process state by nature.
+    let mut chart = rpc::Chart::new(root);
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                if let Err(e) = serve_conn(stream, root) {
+                if let Err(e) = serve_conn(stream, root, &mut chart) {
                     hint(&format!("grid: connection ended: {e}"));
                 }
             }
@@ -72,14 +75,14 @@ pub fn main(args: &[&str]) -> u8 {
     exit::OK
 }
 
-fn serve_conn(stream: UnixStream, root: &Path) -> std::io::Result<()> {
+fn serve_conn(stream: UnixStream, root: &Path, chart: &mut rpc::Chart) -> std::io::Result<()> {
     let mut out = stream.try_clone()?;
     for line in BufReader::new(stream).lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
-        let response = handle(&line, root);
+        let response = handle(&line, root, chart);
         // A notification (no id) gets no response, per JSON-RPC 2.0.
         if let Some(response) = response {
             writeln!(out, "{response}")?;
@@ -91,14 +94,14 @@ fn serve_conn(stream: UnixStream, root: &Path) -> std::io::Result<()> {
 
 /// One request line in, one response line out (or none, for a notification).
 #[must_use]
-pub fn handle(line: &str, root: &Path) -> Option<String> {
+pub fn handle(line: &str, root: &Path, chart: &mut rpc::Chart) -> Option<String> {
     let request: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         // Parse error: id is null, because there is no id to read.
         Err(e) => return Some(error_line(&Value::Null, -32700, &e.to_string())),
     };
     let id = request.get("id").cloned();
-    let response = dispatch(&request, root);
+    let response = dispatch(&request, root, chart);
     // Notifications are dispatched for their effect and answered with silence.
     let id = id?;
     Some(match response {
@@ -124,9 +127,22 @@ fn error_line(id: &Value, code: i32, message: &str) -> String {
     envelope(id, json!({ "error": { "code": code, "message": message } }))
 }
 
+/// Map a chart-provider failure onto the wire error code that describes it.
+/// An unsurveyed rev and an unknown snapshot are the same class of thing to a
+/// caller: the coordinate you named is not in the store.
+fn chart_error(e: &crate::chart_provider::Error) -> (i32, String) {
+    use crate::chart_provider::Error as E;
+    let code = match e {
+        E::NoSnapshotForRev(_) | E::Store(_) => WireError::UnknownSnapshot.code(),
+        E::Survey(_) => WireError::SurveyFailed.code(),
+        E::Config(_) => WireError::InvalidTrack.code(),
+    };
+    (code, e.to_string())
+}
+
 /// Route a request to its method. Errors are `(code, message)` pairs so the
 /// transport layer decides framing and the method layer decides meaning.
-fn dispatch(request: &Value, root: &Path) -> Result<Value, (i32, String)> {
+fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Value, (i32, String)> {
     if request.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
         return Err((-32600, "jsonrpc must be \"2.0\"".into()));
     }
@@ -141,7 +157,7 @@ fn dispatch(request: &Value, root: &Path) -> Result<Value, (i32, String)> {
     let encode = |v: &dyn erased::Serialize| v.to_value();
 
     match method {
-        "grid.version" => Ok(encode(&rpc::version())),
+        "grid.version" => Ok(encode(&rpc::version(root))),
         "grid.track.lint" => {
             let params = serde_json::from_value(params).map_err(bad_params)?;
             let result =
@@ -152,7 +168,42 @@ fn dispatch(request: &Value, root: &Path) -> Result<Value, (i32, String)> {
             let params = serde_json::from_value(params).map_err(bad_params)?;
             rpc::gate_check(&params, root)
                 .map(|v| encode(&v))
-                .map_err(|e| (WireError::UnknownSnapshot.code(), e.to_string()))
+                .map_err(|e| chart_error(&e))
+        }
+        "grid.snapshot.current" => rpc::snapshot_current(root)
+            .map_err(|e| chart_error(&e))?
+            // A repo that has never been surveyed has no current snapshot.
+            // That is a state, not a protocol failure, but the method's result
+            // is a Snapshot, so it is the contract's error rather than null.
+            .map_or_else(
+                || {
+                    Err((
+                        WireError::NoSnapshot.code(),
+                        "no snapshot published: run `grid survey`".to_string(),
+                    ))
+                },
+                |s| Ok(encode(&s)),
+            ),
+        "grid.survey.run" => {
+            let params = serde_json::from_value(params).map_err(bad_params)?;
+            // The daemon is the single writer (D6), and connections are served
+            // one at a time, so this is the only place segments are written.
+            chart
+                .survey_run(&params)
+                .map(|(s, _)| encode(&s))
+                .map_err(|e| chart_error(&e))
+        }
+        "grid.delta" => {
+            let params = serde_json::from_value(params).map_err(bad_params)?;
+            rpc::delta(&params, root)
+                .map(|d| encode(&d))
+                .map_err(|e| chart_error(&e))
+        }
+        "grid.resolve" => {
+            let params = serde_json::from_value(params).map_err(bad_params)?;
+            rpc::resolve(&params, root)
+                .map(|r| encode(&r))
+                .map_err(|e| chart_error(&e))
         }
         other => Err((-32601, format!("no such method: {other}"))),
     }

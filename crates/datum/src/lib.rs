@@ -11,8 +11,10 @@
 //! on the span, typecheck and test key on identity.
 mod canon;
 mod extract;
+mod refs;
 
 pub use extract::{definitions, DefKind, Definition};
+pub use refs::{references, FileRefs, Import, RefKind, Reference};
 
 use rustpython_parser::ast;
 use rustpython_parser::ast::fold::Fold;
