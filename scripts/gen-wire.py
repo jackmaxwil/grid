@@ -16,7 +16,7 @@ LIB_HEADER = (
     "//! grid-wire - versioned external schemas; the only public vocabulary.\n"
     "//!\n"
     "//! GENERATED from docs/wire-v0.openrpc.json by scripts/gen-wire.py - do not\n"
-    "//! edit by hand. deny_unknown_fields everywhere: unknown keys are a wire\n"
+    "//! edit by hand. `deny_unknown_fields` everywhere: unknown keys are a wire\n"
     "//! error, never silently dropped.\n"
     "\n"
     "pub mod errors;\n"
@@ -27,7 +27,6 @@ LIB_HEADER = (
 METH_HEADER = (
     "//! Method param and result types, one per wire method. GENERATED.\n"
     "\n"
-    "use super::*;\n"
     "use serde::{Deserialize, Serialize};\n"
 )
 
@@ -164,7 +163,14 @@ def main():
 
     (OUT / "lib.rs").write_text(LIB_HEADER + "\n\n".join(defs) + "\n")
 
-    meth = [METH_HEADER]
+    used = set()
+    for m in d["methods"]:
+        for p in m["params"]:
+            for ref in re.findall(r"schemas/(\w+)", json.dumps(p["schema"])):
+                used.add(ref)
+        for ref in re.findall(r"schemas/(\w+)", json.dumps(m["result"]["schema"])):
+            used.add(ref)
+    meth = [METH_HEADER, f"use super::{{{', '.join(sorted(used))}}};\n"]
     for m in d["methods"]:
         M = method_mod_name(m["name"])
         extra = []
