@@ -192,6 +192,7 @@ dependencies = [
  "grid-chart",
  "grid-chart-io",
  "grid-datum",
+ "grid-leadline",
  "grid-survey",
  "grid-wake",
  "grid-wire",

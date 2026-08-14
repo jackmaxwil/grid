@@ -33,6 +33,14 @@ per-kind split (`edges 2/3 · defs 1/1 · tests 0/1`). A `done` record from
 `edit apply` is not emitted: applied edits are `def` records, conflicts are
 `conflict` records.
 
+`grid suspects` emits ranked `hit` records: datum handle, Ochiai score, then
+the `via` evidence text. `grid bisect` emits one `hit` record for the culprit
+when known, followed by a `done` record carrying measured `steps` and
+`cache_hits`. Neither verb turns missing retained history into an empty
+success: insufficient history is bad input (exit `2`) with the explanation on
+stderr and no stdout records. Seeded test fixtures exercise this grammar but
+are not production-history claims.
+
 Verdict roles on `edge` records: `match`, `miss`, `surplus`, `tolerated`.
 
 ## Glyphs

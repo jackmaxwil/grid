@@ -12,19 +12,26 @@
 //! and `grid explain` (help generated from the wire contract and
 //! `docs/ONTOLOGY.md` at build time).
 //!
+//! Wave 9 adds `grid review`: the gate verdict plus the paths that made each
+//! promise good, the surplus it never promised, and what changed without
+//! being run. It holds — exit 3 — exactly when the gate holds.
+//!
 //! Two output modes, one vocabulary: porcelain records (`docs/PORCELAIN.md`)
 //! by default, the wire result verbatim under `--json`. stdout carries
 //! records; stderr carries hints and the first-run banner (`GRID_HINTS=0`
 //! disables). Exit codes are uniform across verbs: 0 pass, 1 internal error,
 //! 2 bad input, 3 divergence, 4 stale coordinate.
 
+mod bisect;
 mod chart_provider;
 mod edit;
 mod explain;
 mod porcelain;
+mod review;
 mod rpc;
 mod serve;
 mod standing;
+mod suspects;
 mod track;
 
 use std::io::Write as _;
@@ -92,7 +99,9 @@ fn main() -> ExitCode {
         Some((&"todo", args)) => todo(args, json),
         Some((&"edit", args)) => edit(args, json),
         Some((&"uses", args)) => uses(args, json),
+        Some((&"review", args)) => review(args, json),
         Some((&"explain", args)) => explain::main(args),
+        Some((&"suspects", args)) => suspects(args, json),
         Some((&"wake", args)) => wake(args, json),
         Some((&"serve", args)) => serve::main(args),
         Some((other, _)) => {
@@ -612,6 +621,109 @@ fn uses(args: &[&str], json: bool) -> u8 {
                 return emit_json(&edges);
             }
             print!("{}", porcelain::uses(&edges, &namer()));
+            exit::OK
+        }
+    }
+}
+
+/// `grid review <track> [<head-rev|snap:id>] [--wake <id>]` — the reviewer's
+/// pack: the gate verdict, then *why* — a path per fulfilling promise, the
+/// surplus it did not promise, and what changed without being run.
+///
+/// The verdict is the gate's, so the exit code is the gate's too: hold is 3,
+/// divergence. A reviewer and CI reading the same pack cannot disagree about
+/// whether the promise was kept.
+fn review(args: &[&str], json: bool) -> u8 {
+    let mut track = None;
+    let mut head = None;
+    let mut wake = None;
+    let mut rest = args;
+    while let Some((arg, tail)) = rest.split_first() {
+        rest = tail;
+        if *arg == "--wake" {
+            let Some((id, tail)) = rest.split_first() else {
+                hint("usage: grid review <track> [<head-rev>] [--wake <id>]");
+                return exit::BAD_INPUT;
+            };
+            wake = Some(grid_wire::WakeId((*id).to_string()));
+            rest = tail;
+        } else if track.is_none() {
+            track = Some(grid_wire::TrackId((*arg).to_string()));
+        } else if head.is_none() {
+            head = Some(snapshot_or_rev(arg));
+        } else {
+            hint(&format!("grid: unexpected argument `{arg}`"));
+            return exit::BAD_INPUT;
+        }
+    }
+    let Some(track) = track else {
+        hint("usage: grid review <track> [<head-rev>] [--wake <id>]");
+        return exit::BAD_INPUT;
+    };
+    let params = grid_wire::methods::ReviewPackParams {
+        track,
+        head: head.unwrap_or_else(|| snapshot_or_rev("HEAD")),
+        wake,
+    };
+    match review::pack(&params, root()) {
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            exit::BAD_INPUT
+        }
+        Ok(pack) => {
+            let code = if pack.verdict.gate == grid_wire::XteVerdictGate::Hold {
+                exit::DIVERGENCE
+            } else {
+                exit::OK
+            };
+            if json {
+                // A serialization failure is internal (1) and outranks the
+                // verdict, exactly as `grid gate` treats it.
+                return match emit_json(&pack) {
+                    exit::OK => code,
+                    failure => failure,
+                };
+            }
+            print!("{}", review::porcelain(&pack, &namer()));
+            code
+        }
+    }
+}
+
+/// `grid suspects <test> [<wake>] [<base>]` — rank changed definitions seen
+/// in retained spectra for the named test.
+fn suspects(args: &[&str], json: bool) -> u8 {
+    let Some(test) = args.first() else {
+        hint("usage: grid suspects <test> [<wake>] [<base>]");
+        return exit::BAD_INPUT;
+    };
+    if args.len() > 3 {
+        hint("usage: grid suspects <test> [<wake>] [<base>]");
+        return exit::BAD_INPUT;
+    }
+    let params = grid_wire::methods::SuspectsParams {
+        test: (*test).to_owned(),
+        wake: args
+            .get(1)
+            .map(|wake| grid_wire::WakeId((*wake).to_owned())),
+        base: args.get(2).map(|base| snapshot_or_rev(base)),
+    };
+    match suspects::rank(&params, root()) {
+        Err(error) => {
+            hint(&format!("grid: {error}"));
+            match error {
+                suspects::Error::UnknownWake(_) => exit::STALE,
+                suspects::Error::InsufficientHistory(_) => exit::BAD_INPUT,
+                suspects::Error::Chart(_) => exit::INTERNAL,
+            }
+        }
+        Ok(result) => {
+            if json {
+                return emit_json(&result);
+            }
+            for item in result.ranked {
+                println!("hit     {} {:.6} {}", item.datum.0, item.score, item.via);
+            }
             exit::OK
         }
     }

@@ -1,4 +1,4 @@
-//! C15: an ingested wake yields observed edges only where both endpoints
+//! C16: an ingested wake yields observed edges only where both endpoints
 //! resolve; every endpoint that does not resolve is returned, never dropped.
 //!
 //! The claim is the honesty of the `observed` evidence grade: an `observed`

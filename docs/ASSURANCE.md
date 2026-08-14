@@ -24,6 +24,17 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 | C14 | every recorded edge is one the language's own binding rules establish; an unresolvable or ambiguous name yields no edge | refs.rs determinism.rs | 5 |
 | C15 | an edit addressed at a stale coordinate conflicts and writes nothing; it never lands against moved code | edit_apply.rs | 6 |
 
+| C16 | an observed edge exists only where both endpoints resolve; every endpoint that does not resolve is returned, never dropped | ingest.rs | 8 |
+| C17 | two wakes fork at the first hop where their call order parts, and each trace's exclusive edges are itemized | diff.rs | 8 |
+
+| C18 | a bridged hop the language does not establish is labeled `Zoc::Modeled`, is deterministic, and is never upgraded to proven | query.rs walk.rs | 9 |
+| C19 | `grid.query.walk` answers over the real socket with the same traversal the engine uses, not a second one | conformance.rs walk.rs | 9 |
+| C20 | a review pack contains only paths that fulfill the request, plus the divergences that refused it | porcelain.rs conformance.rs | 9 |
+
+| C21 | seeded retained spectra rank the injected culprit first by plain Ochiai, with datum identity as the deterministic tie-break | suspects.rs | 10 |
+| C22 | seeded revision history finds the injected culprit deterministically and reports measured cache hits above one half of probes | bisect.rs | 10 |
+| C23 | suspect ranking and bisect both refuse when retained production history is absent; fixture evidence is never presented as accumulated production evidence | wave10.rs conformance.rs bisect.rs | 10 |
+
 
 ## Dependency justification
 
@@ -55,6 +66,12 @@ Every dependency in `Cargo.lock` gets a line here saying why it is in the TCB.
   file needs no database, and a database would be state a partial write could
   corrupt.
 
+- Wave 10 (`grid`): no new dependencies. Seeded, test-local retained history
+  makes the ranking, bisection, and cache-measurement regressions repeatable;
+  it is algorithm evidence only, not weeks of production CI history. Stage 4+
+  promotion remains gated until real retained history exists and measures the
+  production cache-hit threshold.
+
 - Wave 6 (`grid` agent verbs): no new dependencies. The write path reuses
   `grid-datum`'s parser — an edit's new identity is computed by the same
   normalization the survey would compute, so a post-edit survey can only
@@ -62,6 +79,19 @@ Every dependency in `Cargo.lock` gets a line here saying why it is in the TCB.
   `serde_json` becomes a *build* dependency of `grid` (the explain corpus is
   generated from the wire contract at build time); it has been in the TCB
   since Wave 1, so the lockfile gains no package.
+- Wave 8 (`wake`): no new dependencies. A wake is ingested through
+  `grid-chart`'s own resolver (the `grid.resolve` rule, so a trace names
+  datums the same way every other verb does), retention is one `std::fs`
+  file per wake keyed by `blake3` — already in the TCB, and hashing the id
+  means no wake id is also a path — and the diff is `BTreeMap`/`BTreeSet`
+  ordering, not a graph library.
+- Wave 9 (`leadline` in `grid`): no new packages. `grid` gains a path
+  dependency on the workspace's existing `grid-leadline` crate so the daemon
+  runs the *same* traversal the engine is proven on (C3) rather than a second
+  implementation the proofs would not cover; `Cargo.lock` gains nothing.
+  Modeled bridge hops are static tables in `grid-leadline`, not an inference
+  engine: a table is auditable and deterministic, and it is why C18 can say
+  a modeled hop never becomes proven.
 
 The segment format is the other compatibility surface: images are prefixed
 `GRIDSEG\0` and carry a `FORMAT_EPOCH`, and the manifest carries the same

@@ -1,14 +1,14 @@
 //! Method layer shared by CLI and daemon.
 use grid_wire::methods::{
     CacheCheckParams, CacheRecordParams, CacheRecordResult, CacheRecordResultRejectedItem,
-    DeltaParams, DeltaResult, GateCheckParams, GateCheckResult, ResolveParams, ResolveResult,
-    ScopeParams, ScopeResult, SnapshotCurrentResult, SurveyRunParams, SurveyRunResult, TodoParams,
-    TodoResult, TrackLintParams, TrackLintResult, VersionResult, WakeDiffParams, WakeIngestParams,
-    WakeIngestResult,
+    DeltaParams, DeltaResult, GateCheckParams, GateCheckResult, QueryWalkParams, QueryWalkResult,
+    ResolveParams, ResolveResult, ScopeParams, ScopeResult, SnapshotCurrentResult, SurveyRunParams,
+    SurveyRunResult, TodoParams, TodoResult, TrackLintParams, TrackLintResult, VersionResult,
+    WakeDiffParams, WakeIngestParams, WakeIngestResult,
 };
 use grid_wire::{
-    CacheCheckResult, CacheHit, CacheHitVerdict, CacheResultEntryVerdict, GitRev, Snapshot,
-    SnapshotId, SnapshotOrRev, SnapshotStats,
+    CacheCheckResult, CacheHit, CacheHitVerdict, CacheResultEntryVerdict, GitRev, LeadlineResult,
+    LeadlineResultStats, LeadlineResultStatus, Snapshot, SnapshotId, SnapshotOrRev, SnapshotStats,
 };
 
 use grid_xte::DeltaProvider as _;
@@ -213,6 +213,78 @@ pub fn resolve(
     root: &std::path::Path,
 ) -> Result<ResolveResult, chart_provider::Error> {
     Ok(ChartDelta::open(root)?.resolve(&params.locator))
+}
+
+/// `grid.query.walk` — the leadline engine over the live chart.
+///
+/// The chart is a set of segments and [`grid_leadline::query`] walks one
+/// graph, so the walk runs per segment and the answers are merged. A segment
+/// that holds none of the roots answers `Unresolved`; that is an absence
+/// here, not an error, the same reading `grid.review.pack` takes.
+///
+/// Merging keeps the engine's meaning: `aground` anywhere is `aground`
+/// overall (some frontier went unexpanded), the frontier is the union of the
+/// unexpanded edges, and `reached`/`paths` stay exclusive — a sweep answers
+/// `reached`, a path query answers `paths`, exactly as the single-graph call
+/// does.
+///
+/// # Errors
+/// [`chart_provider::Error::NoSnapshot`] when the store has never been
+/// surveyed — there is no graph to walk. Other variants as in [`open_for`].
+pub fn query_walk(
+    params: &QueryWalkParams,
+    root: &std::path::Path,
+) -> Result<QueryWalkResult, chart_provider::Error> {
+    let named = params
+        .query
+        .snapshot
+        .clone()
+        .map(|snapshot| SnapshotOrRev::Snapshot { snapshot });
+    let chart = open_for(named.as_ref(), root)?;
+    let Some(snapshot) = chart.current() else {
+        return Err(chart_provider::Error::NoSnapshot);
+    };
+    let sweep = params.query.to.is_none();
+    let mut merged = LeadlineResult {
+        status: LeadlineResultStatus::Complete,
+        snapshot: snapshot.clone(),
+        paths: (!sweep).then(Vec::new),
+        reached: sweep.then(Vec::new),
+        frontier: None,
+        stats: LeadlineResultStats {
+            visited: 0,
+            hops: 0,
+            ms: 0,
+        },
+    };
+    let mut frontier: Vec<grid_wire::Datum> = Vec::new();
+    for segment in chart.head().segments() {
+        let Ok(part) = grid_leadline::query(segment, &params.query, snapshot.clone()) else {
+            continue;
+        };
+        if part.status == LeadlineResultStatus::Aground {
+            merged.status = LeadlineResultStatus::Aground;
+        }
+        merged.stats.visited += part.stats.visited;
+        merged.stats.hops = merged.stats.hops.max(part.stats.hops);
+        merged.stats.ms += part.stats.ms;
+        frontier.extend(part.frontier.into_iter().flatten());
+        if let Some(reached) = &mut merged.reached {
+            reached.extend(part.reached.into_iter().flatten());
+        }
+        if let Some(paths) = &mut merged.paths {
+            paths.extend(part.paths.into_iter().flatten());
+        }
+    }
+    // Deterministic, and one datum named once however many segments saw it.
+    frontier.sort_by(|a, b| a.0.cmp(&b.0));
+    frontier.dedup();
+    merged.frontier = (!frontier.is_empty()).then_some(frontier);
+    if let Some(reached) = &mut merged.reached {
+        reached.sort_by(|a, b| a.datum.0.cmp(&b.datum.0));
+        reached.dedup_by(|a, b| a.datum == b.datum);
+    }
+    Ok(merged)
 }
 
 /// Where the cache log and the chart store live under a repo root. Both are

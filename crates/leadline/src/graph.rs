@@ -46,6 +46,11 @@ pub struct Step {
     pub zoc: Zoc,
     /// `true` when the stored edge runs from the current node to `other`.
     pub forward: bool,
+    /// Index of the modeled bridge this hop came from, if it is not a hop the
+    /// language established. `None` is the only shape a proven hop can have:
+    /// evidence travels with the step, so a modeled hop cannot be laundered
+    /// into a proven one downstream (claim C18).
+    pub bridge: Option<u32>,
 }
 
 /// A read-only graph the walk can traverse.
@@ -78,6 +83,7 @@ pub trait Graph {
                 relation: n.relation,
                 zoc: n.zoc,
                 forward: true,
+                bridge: None,
             })
         };
         let inc = || {
@@ -86,6 +92,7 @@ pub trait Graph {
                 relation: n.relation,
                 zoc: n.zoc,
                 forward: false,
+                bridge: None,
             })
         };
         match dir {
@@ -93,6 +100,15 @@ pub trait Graph {
             Direction::In => inc().collect(),
             Direction::Both => out().chain(inc()).collect(),
         }
+    }
+
+    /// The `via` label of a modeled hop, for rendering.
+    ///
+    /// Graphs that model nothing have no labels; the blanket segment impl is
+    /// one of them, because a segment stores only what a language established.
+    fn bridge_label(&self, bridge: u32) -> Option<String> {
+        let _ = bridge;
+        None
     }
 }
 
