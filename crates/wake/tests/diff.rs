@@ -1,4 +1,4 @@
-//! `grid.wake.diff`: two traces compared at call granularity.
+//! C17: `grid.wake.diff` — two traces compared at call granularity.
 //!
 //! The first divergent hop is where behavior forked — the answer to "the
 //! same test passed green and failed red, where did they part". The edge

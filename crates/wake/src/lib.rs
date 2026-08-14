@@ -7,7 +7,7 @@
 //! the hops into observed edges: `Calls` at `Zoc::Observed`, deduplicated with
 //! counts summed.
 //!
-//! Claim C15 is the honesty rule, and it is one-directional like the cache's:
+//! Claim C16 is the honesty rule, and it is one-directional like the cache's:
 //! an edge is stored only where *both* endpoints resolve, and every endpoint
 //! that does not resolve — unknown name, ambiguous suffix, malformed handle —
 //! is returned in `unresolved_symbols`, never silently dropped. An observed
@@ -17,7 +17,7 @@
 //! Wakes are retained (one file per wake, named by the blake3 of its id, so
 //! no id is also a path) because `grid.wake.diff` compares two traces after
 //! the fact: same-hop-order comparison for the first divergent hop, and edge
-//! sets for what each trace has that the other lacks.
+//! sets for what each trace has that the other lacks (C17).
 use grid_chart::{DatumId, Segment};
 use grid_wire::{Datum, Edge, Wake, WakeDiff, WakeDiffFirstDivergence, WakeEndpoint, Zoc};
 use std::collections::{BTreeMap, BTreeSet};
@@ -45,7 +45,7 @@ pub struct Ingested {
     /// to exactly one edge.
     pub resolved: u64,
     /// Endpoint texts that resolved to nothing or to more than one datum,
-    /// sorted and deduplicated. Never silently dropped (C15).
+    /// sorted and deduplicated. Never silently dropped (C16).
     pub unresolved_symbols: Vec<String>,
     /// The resolved hops in wake order. Retained beside the wake: order is
     /// what `grid.wake.diff`'s first-divergence walk compares, and an edge
@@ -125,7 +125,7 @@ pub fn ingest<B: AsRef<[u8]>>(segments: &[Segment<B>], wake: &Wake) -> Ingested 
                 *counts.entry((from, to)).or_insert(0) += obs.count.unwrap_or(1);
             }
             (from, to) => {
-                // C15: report every endpoint that resolved to nothing. The
+                // C16: report every endpoint that resolved to nothing. The
                 // hop itself yields no edge — half an edge is not an edge.
                 if let Err(text) = from {
                     unresolved.insert(text);

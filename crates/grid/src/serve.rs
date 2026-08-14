@@ -144,6 +144,7 @@ fn chart_error(e: &crate::chart_provider::Error) -> (i32, String) {
 
 /// Route a request to its method. Errors are `(code, message)` pairs so the
 /// transport layer decides framing and the method layer decides meaning.
+#[allow(clippy::too_many_lines)]
 fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Value, (i32, String)> {
     if request.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
         return Err((-32600, "jsonrpc must be \"2.0\"".into()));
@@ -239,7 +240,36 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
                 .map(|out| encode(&out.wire))
                 .map_err(|e| (-32602, e.to_string()))
         }
+        "grid.suspects" => {
+            let params = serde_json::from_value(params).map_err(bad_params)?;
+            crate::suspects::rank(&params, root)
+                .map(|v| encode(&v))
+                .map_err(|e| match &e {
+                    crate::suspects::Error::UnknownWake(_) => {
+                        (WireError::UnknownWake.code(), e.to_string())
+                    }
+                    crate::suspects::Error::InsufficientHistory(_) => {
+                        (WireError::NoSnapshot.code(), e.to_string())
+                    }
+                    crate::suspects::Error::Chart(chart) => chart_error(chart),
+                })
+        }
+        "grid.bisect" => {
+            let params = serde_json::from_value(params).map_err(bad_params)?;
+            crate::bisect::run(&params, root)
+                .map(|v| encode(&v))
+                .map_err(|e| match &e {
+                    crate::bisect::Error::UnknownWake(_) => {
+                        (WireError::UnknownWake.code(), e.to_string())
+                    }
+                    crate::bisect::Error::InsufficientHistory(_) => {
+                        (WireError::NoSnapshot.code(), e.to_string())
+                    }
+                    crate::bisect::Error::Chart(chart) => chart_error(chart),
+                })
+        }
         other => dispatch_wake(other, &params, root, &bad_params, &encode)
+            .or_else(|| dispatch_query_review(other, &params, root, &bad_params, &encode))
             .unwrap_or_else(|| Err((-32601, format!("no such method: {other}")))),
     }
 }
@@ -277,6 +307,45 @@ fn dispatch_wake(
                         rpc::WakeDiffError::Store(_) => WireError::CorruptSegment.code(),
                     };
                     (code, e.to_string())
+                })
+        }
+        _ => return None,
+    })
+}
+
+/// Wave 9's two methods: the leadline walk and the reviewer's bundle. Both
+/// answer from the chart, so both fail the way every other chart method
+/// fails — the coordinate you named is not in the store — except for a wake
+/// id a review named and the log does not hold.
+fn dispatch_query_review(
+    method: &str,
+    params: &Value,
+    root: &Path,
+    bad_params: &dyn Fn(serde_json::Error) -> (i32, String),
+    encode: &dyn Fn(&dyn erased::Serialize) -> Value,
+) -> Option<Result<Value, (i32, String)>> {
+    Some(match method {
+        "grid.query.walk" => {
+            let params = match serde_json::from_value(params.clone()).map_err(bad_params) {
+                Ok(p) => p,
+                Err(e) => return Some(Err(e)),
+            };
+            rpc::query_walk(&params, root)
+                .map(|v| encode(&v))
+                .map_err(|e| chart_error(&e))
+        }
+        "grid.review.pack" => {
+            let params = match serde_json::from_value(params.clone()).map_err(bad_params) {
+                Ok(p) => p,
+                Err(e) => return Some(Err(e)),
+            };
+            crate::review::pack(&params, root)
+                .map(|v| encode(&v))
+                .map_err(|e| match &e {
+                    crate::review::Error::Chart(chart) => chart_error(chart),
+                    crate::review::Error::UnknownWake(_) => {
+                        (WireError::UnknownWake.code(), e.to_string())
+                    }
                 })
         }
         _ => return None,

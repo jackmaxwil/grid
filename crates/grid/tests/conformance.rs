@@ -349,6 +349,42 @@ fn snapshot_current_before_any_survey_is_the_contracts_error() {
 }
 
 #[test]
+fn wave_ten_methods_reject_bad_params_and_absent_history() {
+    let dir = repo();
+    let daemon = Daemon::start(dir.path());
+
+    for method in ["grid.suspects", "grid.bisect"] {
+        let bad = daemon.call(method, &json!({"nope": true}));
+        assert_eq!(bad["error"]["code"], -32602, "got {bad}");
+    }
+
+    let suspects = daemon.call("grid.suspects", &json!({"test": "test::red"}));
+    assert_eq!(suspects["error"]["code"], -32002, "got {suspects}");
+    assert!(
+        suspects["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("insufficient history")),
+        "got {suspects}"
+    );
+
+    let bisect = daemon.call(
+        "grid.bisect",
+        &json!({
+            "good": {"git_rev": "HEAD~1"},
+            "bad": {"git_rev": "HEAD"},
+            "test": "test::red"
+        }),
+    );
+    assert_eq!(bisect["error"]["code"], -32002, "got {bisect}");
+    assert!(
+        bisect["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("insufficient history")),
+        "got {bisect}"
+    );
+}
+
+#[test]
 fn delta_answers_with_a_made_good_the_contract_accepts() {
     let dir = repo();
     let daemon = Daemon::start(dir.path());
@@ -879,4 +915,118 @@ fn ingest_resolved_nothing_is_counts_not_silence() {
     assert_eq!(result["resolved"], 0, "got {response}");
     assert_eq!(result["observed_edges"], 0);
     assert_eq!(result["unresolved_symbols"], json!(["no.such", "nor.this"]));
+}
+
+/// Wave 9: the leadline walk, served. The fixture's proven edge is
+/// `pkg.main.sweep -> pkg.util.helper`, so an inbound walk from the callee
+/// must reach the caller and answer with a wire `LeadlineResult`.
+#[test]
+fn query_walk_answers_with_a_leadline_result_the_contract_accepts() {
+    let dir = repo_with_an_unused_import();
+    let daemon = Daemon::start(dir.path());
+    let snapshot = daemon.call("grid.survey.run", &json!({}))["result"]["snapshot_id"].clone();
+
+    let response = daemon.call(
+        "grid.query.walk",
+        &json!({"query": {
+            "from": [{"callsign": "pkg.util.helper"}],
+            "direction": "in",
+            "at_or_above": "proven",
+            "fuel": {"max_hops": 4},
+        }}),
+    );
+    assert!(response.get("error").is_none(), "walk errored: {response}");
+    let typed: Result<grid_wire::LeadlineResult, _> =
+        serde_json::from_value(response["result"].clone());
+    let walk = typed.expect("the answer is a wire LeadlineResult, not a lookalike");
+    assert_eq!(walk.snapshot.0, snapshot.as_str().expect("snapshot id"));
+    let reached = walk
+        .reached
+        .expect("a reachability sweep reports what it reached");
+    assert!(
+        reached
+            .iter()
+            .any(|r| r.callsign.as_ref().is_some_and(|c| c.0 == "pkg.main.sweep")),
+        "sweep calls helper, so it is inbound-reachable: {reached:?}"
+    );
+}
+
+/// Params are typed at the door: an unknown field is -32602, not a walk over
+/// a query the caller did not write.
+#[test]
+fn query_walk_rejects_params_the_wire_does_not_define() {
+    let dir = repo_with_an_unused_import();
+    let daemon = Daemon::start(dir.path());
+    daemon.call("grid.survey.run", &json!({}));
+
+    let response = daemon.call(
+        "grid.query.walk",
+        &json!({"query": {"from": [{"callsign": "pkg.util.helper"}], "depth": 3}}),
+    );
+    assert_eq!(response["error"]["code"], -32602, "got {response}");
+    assert!(response.get("result").is_none());
+}
+
+/// Wave 9: the reviewer's bundle, served. Same track the gate holds on, so
+/// the pack's verdict is the gate's.
+#[test]
+fn review_pack_answers_with_a_review_pack_the_contract_accepts() {
+    let dir = repo_with_an_unused_import();
+    let daemon = Daemon::start(dir.path());
+    let base = daemon.call("grid.survey.run", &json!({}))["result"]["snapshot_id"].clone();
+    let track_value = json!({
+        "track_id": "track:review/v1",
+        "base": {"snapshot": base},
+        "delta": {
+            "defs": [{"action": "modify", "callsign": "pkg.main.sweep"}],
+            "edges": [{"action": "add", "src": "pkg.main.sweep",
+                       "relation": "calls", "dst": "pkg.util.extra"}]
+        }
+    });
+    let track = write_track(dir.path(), "review", &track_value);
+
+    let response = daemon.call(
+        "grid.review.pack",
+        &json!({"track": track, "head": {"snapshot": base}}),
+    );
+    assert!(response.get("error").is_none(), "pack errored: {response}");
+    let typed: Result<grid_wire::ReviewPack, _> =
+        serde_json::from_value(response["result"].clone());
+    let pack = typed.expect("the answer is a wire ReviewPack, not a lookalike");
+    // Nothing was implemented, so the gate holds and the promise is unmet:
+    // a pack never disagrees with `grid.gate.check` about that.
+    let gate = daemon.call(
+        "grid.gate.check",
+        &json!({"track": track_value, "head": {"snapshot": base}}),
+    );
+    assert_eq!(
+        serde_json::to_value(&pack.verdict).expect("verdict"),
+        gate["result"],
+        "the pack's verdict is the gate's"
+    );
+}
+
+/// A wake the log does not hold is the contract's unknown-wake error, not a
+/// pack computed as if coverage had been asked for and found empty.
+#[test]
+fn review_pack_with_an_unknown_wake_is_the_contracts_error() {
+    let dir = repo_with_an_unused_import();
+    let daemon = Daemon::start(dir.path());
+    let base = daemon.call("grid.survey.run", &json!({}))["result"]["snapshot_id"].clone();
+    let track = write_track(
+        dir.path(),
+        "review-wake",
+        &json!({
+            "track_id": "track:review-wake/v1",
+            "base": {"snapshot": base},
+            "delta": {"defs": [{"action": "modify", "callsign": "pkg.main.sweep"}], "edges": []}
+        }),
+    );
+
+    let response = daemon.call(
+        "grid.review.pack",
+        &json!({"track": track, "head": {"snapshot": base}, "wake": "wake:nope"}),
+    );
+    assert_eq!(response["error"]["code"], -32008, "got {response}");
+    assert!(response.get("result").is_none());
 }
