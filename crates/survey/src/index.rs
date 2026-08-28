@@ -35,6 +35,12 @@ pub struct DefIndex {
     /// name" from "too many", which is the difference between an omission and
     /// an error a human should hear about.
     ambiguous: std::collections::HashSet<String>,
+    /// Re-export aliases: absolute alias name -> (declaring module, raw
+    /// target as written). Raw, because the target anchors against the
+    /// declaring module at lookup time — `pub use build::build` in
+    /// `grid_chart` may mean `grid_chart.build.build` or an external path,
+    /// and only the index as a whole can tell.
+    aliases: HashMap<String, (String, String)>,
 }
 
 impl DefIndex {
@@ -61,13 +67,44 @@ impl DefIndex {
         }
     }
 
-    /// Look up an absolute dotted name.
+    /// Record one re-export: `absolute` reaches whatever `target` names in
+    /// `module`. Consulted only when no definition answers to the name, so
+    /// a real definition always shadows an alias.
+    pub fn insert_alias(&mut self, absolute: String, module: &str, target: &str) {
+        self.aliases
+            .insert(absolute, (module.to_owned(), target.to_owned()));
+    }
+
+    /// Look up an absolute dotted name, following re-export aliases.
+    ///
+    /// The depth cap bounds alias cycles (`pub use` loops do not compile,
+    /// but the index must not trust that) — past it, refuse.
     #[must_use]
     pub fn lookup_absolute(&self, absolute: &str) -> Option<&Symbol> {
-        if self.ambiguous.contains(absolute) {
-            return None;
+        let mut name = absolute.to_owned();
+        for _ in 0..8 {
+            if self.ambiguous.contains(&name) {
+                return None;
+            }
+            if let Some(sym) = self.by_name.get(&name) {
+                return Some(sym);
+            }
+            let (module, target) = self.aliases.get(&name)?;
+            // A `crate::`/`super::`/`self::` head anchors to one spelling;
+            // a bare target is uniform-path — a local module's item or an
+            // absolute path, local preferred when the index answers to it.
+            name = if let Some(anchored) = crate::resolve_rs::anchor_target(module, target) {
+                anchored
+            } else {
+                let local = format!("{module}.{target}");
+                if self.by_name.contains_key(&local) || self.aliases.contains_key(&local) {
+                    local
+                } else {
+                    target.clone()
+                }
+            };
         }
-        self.by_name.get(absolute)
+        None
     }
 
     /// Look up a name relative to `module`, falling back to the name as an

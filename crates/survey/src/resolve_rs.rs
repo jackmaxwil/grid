@@ -73,17 +73,22 @@ fn target_of<'a>(
     }
 
     // A name bound by a `use` resolves through it, and only then. The bound
-    // target may itself be anchor-headed, spelled against this module.
+    // target may itself be anchor-headed, spelled against this module — and
+    // a bare target may be a local module's item (uniform paths), which is
+    // why the final lookup tries module-relative before absolute.
     if let Some(target) = bindings.lookup(&r.from, head) {
         let segs: Vec<&str> = target.split('.').collect();
         let (thead, trest) = segs.split_first()?;
-        let base = anchor_str(module, thead, trest).unwrap_or_else(|| segs.join("."));
-        let full = if rest.is_empty() {
-            base
-        } else {
-            format!("{base}.{}", rest.join("."))
+        let full = match anchor_str(module, thead, trest) {
+            Some(base) if rest.is_empty() => base,
+            Some(base) => format!("{base}.{}", rest.join(".")),
+            None if rest.is_empty() => segs.join("."),
+            None => format!("{}.{}", segs.join("."), rest.join(".")),
         };
-        return index.lookup_absolute(&full);
+        return match anchor_str(module, thead, trest) {
+            Some(_) => index.lookup_absolute(&full),
+            None => index.lookup(module, &full),
+        };
     }
 
     // Otherwise the name is an item in this module or an enclosing
@@ -110,6 +115,18 @@ fn target_of<'a>(
 fn anchor(module: &str, head: &str, rest: &[String]) -> Option<String> {
     let rest: Vec<&str> = rest.iter().map(String::as_str).collect();
     anchor_str(module, head, &rest)
+}
+
+/// Anchor a re-export target against its declaring module, or `None` for a
+/// bare path (whose meaning the index decides — local module or absolute).
+pub(crate) fn anchor_target(module: &str, target: &str) -> Option<String> {
+    let segs: Vec<&str> = target.split('.').collect();
+    let (head, rest) = segs.split_first()?;
+    if matches!(*head, "crate" | "super" | "self") {
+        anchor_str(module, head, rest).or_else(|| Some(target.to_owned()))
+    } else {
+        None
+    }
 }
 
 /// `crate::` is the module root segment, `super::` climbs one module per

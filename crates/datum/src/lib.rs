@@ -151,4 +151,8 @@ pub struct FileRefs {
     pub imports: Vec<Import>,
     /// References, in source order.
     pub refs: Vec<Reference>,
+    /// Bindings this file re-exports (`pub use` and its visible-scoped kin):
+    /// names other files may reach through this module. A subset of
+    /// `imports` by construction.
+    pub reexports: Vec<Import>,
 }

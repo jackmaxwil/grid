@@ -160,7 +160,8 @@ pub fn extract(lang: Lang, source: &str) -> FileFacts {
 /// [`SurveyError::Git`] if the tree cannot be listed, [`SurveyError::Chart`]
 /// if the graph exceeds what a segment can address.
 pub fn run(root: &Path, cache: &mut Cache) -> Result<Survey, SurveyError> {
-    run_sources(&files::sources(root)?, cache)
+    let (sources, roots) = files::sources(root)?;
+    run_sources(&sources, &roots, cache)
 }
 
 /// Survey the tree as it was at `rev`.
@@ -173,7 +174,8 @@ pub fn run(root: &Path, cache: &mut Cache) -> Result<Survey, SurveyError> {
 /// [`SurveyError::Git`] if the rev does not resolve, [`SurveyError::Chart`] if
 /// the graph exceeds what a segment can address.
 pub fn run_at(root: &Path, rev: &str, cache: &mut Cache) -> Result<Survey, SurveyError> {
-    run_sources(&files::sources_at(root, rev)?, cache)
+    let (sources, roots) = files::sources_at(root, rev)?;
+    run_sources(&sources, &roots, cache)
 }
 
 /// Phase 1 — per-file facts, cacheable, order-independent.
@@ -239,7 +241,11 @@ fn extract_all<'s>(
     (per_file, reread)
 }
 
-fn run_sources(sources: &[SourceFile], cache: &mut Cache) -> Result<Survey, SurveyError> {
+fn run_sources(
+    sources: &[SourceFile],
+    roots: &files::CrateRoots,
+    cache: &mut Cache,
+) -> Result<Survey, SurveyError> {
     let (per_file, reread) = extract_all(sources, cache);
 
     // Phase 2 — index the whole tree. Edges cannot be resolved before every
@@ -248,10 +254,21 @@ fn run_sources(sources: &[SourceFile], cache: &mut Cache) -> Result<Survey, Surv
     let mut index = DefIndex::default();
     for (file, facts) in &per_file {
         index.insert_file(
-            &files::module_of(file.lang, &file.path),
+            &files::module_of(file.lang, &file.path, roots),
             file.lang,
             &facts.defs,
         );
+    }
+    // Aliases go in after every definition, so a real name always wins over
+    // a re-export of the same spelling. A reexport inside a function body
+    // is unreachable from other files and stays out of the map.
+    for (file, facts) in &per_file {
+        let module = files::module_of(file.lang, &file.path, roots);
+        for rx in &facts.refs.reexports {
+            if rx.scope.is_empty() {
+                index.insert_alias(format!("{module}.{}", rx.alias), &module, &rx.target);
+            }
+        }
     }
 
     // Phase 3 — resolve names to datums, under each file's own language
@@ -259,7 +276,7 @@ fn run_sources(sources: &[SourceFile], cache: &mut Cache) -> Result<Survey, Surv
     // resolver dispatches exactly where extraction does.
     let mut edges = Vec::new();
     for (file, facts) in &per_file {
-        let module = files::module_of(file.lang, &file.path);
+        let module = files::module_of(file.lang, &file.path, roots);
         edges.extend(match file.lang {
             Lang::Py => resolve::resolve(&index, &module, &facts.refs.imports, &facts.refs.refs),
             Lang::Rs => resolve_rs::resolve(&index, &module, &facts.refs.imports, &facts.refs.refs),
