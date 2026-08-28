@@ -205,14 +205,28 @@ impl Chart {
     }
 }
 
+/// Does a def materialized at `path` fall under the `--under` prefix?
+/// Boundary-aware: `--under crates` keeps `crates/x.rs`, not `crates2/`.
+/// A def with no recorded location (an epoch-1 segment) matches nothing.
+fn in_subtree(under: Option<&str>, path: Option<&str>) -> bool {
+    let Some(prefix) = under else { return true };
+    let prefix = prefix.trim_end_matches('/');
+    path.is_some_and(|p| {
+        p == prefix
+            || p.strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
 /// `grid.orphans` — every definition with no proven inbound edge, in
-/// callsign order, optionally one language's.
+/// callsign order, optionally one language's or one subtree's.
 ///
 /// # Errors
 /// [`chart_provider::Error`] if the store cannot be opened.
 pub fn orphans(
     root: &std::path::Path,
     lang: Option<grid_wire::Lang>,
+    under: Option<&str>,
 ) -> Result<Vec<grid_wire::DefRef>, chart_provider::Error> {
     let chart = ChartDelta::open(root)?;
     let mut out = Vec::new();
@@ -226,6 +240,9 @@ pub fn orphans(
                 continue;
             }
             if lang.is_some() && segment.lang(ord) != lang {
+                continue;
+            }
+            if !in_subtree(under, segment.location(ord).map(|loc| loc.path)) {
                 continue;
             }
             let (Some(datum), Some(callsign)) = (segment.datum(ord), segment.callsign(ord)) else {
@@ -274,6 +291,7 @@ pub struct Hotspot {
 pub fn hotspots(
     root: &std::path::Path,
     limit: usize,
+    under: Option<&str>,
 ) -> Result<Vec<Hotspot>, chart_provider::Error> {
     let chart = ChartDelta::open(root)?;
     // Union legs into identity components by plain map-merging: the log is
@@ -325,6 +343,9 @@ pub fn hotspots(
             ) else {
                 continue;
             };
+            if !in_subtree(under, segment.location(ord).map(|loc| loc.path)) {
+                continue;
+            }
             let datum = datum.to_string();
             let churn = component
                 .get(&datum)
@@ -669,26 +690,28 @@ pub fn scope(
     let all = live_defs(&chart);
     let matched: Vec<String> = all
         .iter()
-        .filter(|(_, callsign, _)| {
+        .filter(|(_, callsign, _, _)| {
             params
                 .callsigns
                 .iter()
                 .any(|p| grid_xte::pattern::matches(&p.0, callsign))
         })
-        .map(|(datum, _, _)| datum.clone())
+        .map(|(datum, _, _, _)| datum.clone())
         .collect();
     let in_scope = expand(&chart, matched, params.depth.unwrap_or(0));
 
     let defs: Vec<grid_wire::DefRef> = all
         .iter()
-        .filter(|(datum, _, _)| in_scope.contains(datum))
-        .map(|(datum, callsign, lang)| grid_wire::DefRef {
-            datum: grid_wire::Datum(datum.clone()),
-            callsign: Some(grid_wire::Callsign(callsign.clone())),
-            lang: *lang,
-            signature: None,
-            materialization: None,
-        })
+        .filter(|(datum, _, _, _)| in_scope.contains(datum))
+        .map(
+            |(datum, callsign, lang, materialization)| grid_wire::DefRef {
+                datum: grid_wire::Datum(datum.clone()),
+                callsign: Some(grid_wire::Callsign(callsign.clone())),
+                lang: *lang,
+                signature: None,
+                materialization: materialization.clone(),
+            },
+        )
         .collect();
     let (in_edges, out_edges) = incident_edges(&chart, &in_scope);
 
@@ -726,16 +749,35 @@ pub fn scope(
     })
 }
 
-/// Every definition in the live epoch: (datum, callsign, lang), in segment
-/// order — which is content order, so everything derived from it is
-/// deterministic by construction (C2).
-fn live_defs(chart: &ChartDelta) -> Vec<(String, String, Option<grid_wire::Lang>)> {
+type LiveDef = (
+    String,
+    String,
+    Option<grid_wire::Lang>,
+    Option<grid_wire::DefRefMaterialization>,
+);
+
+/// Every definition in the live epoch: (datum, callsign, lang, location),
+/// in segment order — which is content order, so everything derived from it
+/// is deterministic by construction (C2).
+fn live_defs(chart: &ChartDelta) -> Vec<LiveDef> {
     let mut all = Vec::new();
     for segment in chart.head().segments() {
         for ord in 0..segment.def_count() {
             let ord = grid_chart::Ordinal(ord);
             if let (Some(datum), Some(callsign)) = (segment.datum(ord), segment.callsign(ord)) {
-                all.push((datum.to_string(), callsign.to_owned(), segment.lang(ord)));
+                let materialization =
+                    segment
+                        .location(ord)
+                        .map(|loc| grid_wire::DefRefMaterialization {
+                            file: loc.path.to_owned(),
+                            line: u64::from(loc.line),
+                        });
+                all.push((
+                    datum.to_string(),
+                    callsign.to_owned(),
+                    segment.lang(ord),
+                    materialization,
+                ));
             }
         }
     }

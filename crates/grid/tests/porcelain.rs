@@ -1010,3 +1010,57 @@ fn hotspots_rank_the_branchy_and_edited_above_the_large_and_flat() {
         "churn is the multiplier and is reported:\n{text}"
     );
 }
+
+#[test]
+fn under_scopes_orphans_and_hotspots_to_a_subtree() {
+    let dir = repo();
+    std::fs::create_dir_all(dir.path().join("pkg")).expect("mkdir");
+    std::fs::write(dir.path().join("pkg/c.py"), "def c():\n    pass\n").expect("write");
+    let ok = Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(dir.path())
+        .output()
+        .expect("git add")
+        .status
+        .success();
+    assert!(ok);
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let out = grid(dir.path(), &["orphans", "--under", "pkg"]);
+    assert_eq!(code(&out), 0);
+    let text = stdout(&out);
+    assert!(
+        text.lines().any(|l| columns(l).get(1) == Some(&"pkg.c.c")),
+        "the subtree's orphan is listed:\n{text}"
+    );
+    assert!(
+        !text.lines().any(|l| columns(l).get(1) == Some(&"a.a")),
+        "rows outside --under are filtered:\n{text}"
+    );
+    let out = grid(dir.path(), &["hotspots", "--under", "pkg"]);
+    assert_eq!(code(&out), 0);
+    let text = stdout(&out);
+    assert!(
+        text.lines().all(|l| columns(l).get(1) == Some(&"pkg.c.c")),
+        "hotspot rows outside --under are filtered:\n{text}"
+    );
+}
+
+#[test]
+fn scope_defs_carry_their_location() {
+    let dir = repo_with_a_call();
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let out = grid(dir.path(), &["scope", "pkg.util.extra"]);
+    assert_eq!(code(&out), 0);
+    let text = stdout(&out);
+    // The ref row is pasteable, same as resolve and orphans: file:line last.
+    let row = text
+        .lines()
+        .find(|l| columns(l)[0] == "ref")
+        .expect("a ref row");
+    assert!(
+        columns(row)
+            .last()
+            .is_some_and(|c| c.starts_with("pkg/util.py:")),
+        "scope refs carry file:line:\n{text}"
+    );
+}

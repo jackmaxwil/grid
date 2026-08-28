@@ -57,33 +57,41 @@ impl CrateRoots {
     }
 }
 
-/// The `[package] name` a manifest declares, spelled as the crate name a
-/// `use` reaches for (hyphens underscored).
+/// The crate name a `use` reaches for (hyphens underscored): `[lib] name`
+/// when the manifest renames the library, else `[package] name`.
 ///
 /// ponytail: a line scan, not a TOML parser — a name split across lines or
 /// inherited from the workspace falls back to the directory name, which
 /// costs an unresolved edge and never a false one.
 fn package_name(manifest: &str) -> Option<String> {
-    let mut in_package = false;
+    let mut section = "";
+    let mut package = None;
+    let mut lib = None;
     for line in manifest.lines() {
         let line = line.trim();
         if line.starts_with('[') {
-            in_package = line == "[package]";
+            section = line;
             continue;
         }
-        if in_package {
-            if let Some(rest) = line.strip_prefix("name") {
-                let rest = rest.trim_start();
-                if let Some(value) = rest.strip_prefix('=') {
-                    let value = value.trim().trim_matches('"');
-                    if !value.is_empty() {
-                        return Some(value.replace('-', "_"));
+        if section != "[package]" && section != "[lib]" {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("name") {
+            let rest = rest.trim_start();
+            if let Some(value) = rest.strip_prefix('=') {
+                let value = value.trim().trim_matches('"');
+                if !value.is_empty() {
+                    let name = value.replace('-', "_");
+                    if section == "[lib]" {
+                        lib = Some(name);
+                    } else {
+                        package = Some(name);
                     }
                 }
             }
         }
     }
-    None
+    lib.or(package)
 }
 
 fn manifest_dir(path: &str) -> Option<&str> {
@@ -129,18 +137,76 @@ pub fn lang_of(path: &str) -> Option<Lang> {
     }
 }
 
-/// Tracked files under `root`, in git's order.
+/// Tracked files under `root` minus what the ignore rules match, in git's
+/// order. A tracked-but-ignored path (committed vendor code under a later
+/// `.gitignore` line) is filtered out: the rules say not-source, and being
+/// tracked must not override that.
 ///
 /// # Errors
 /// [`SurveyError::Git`] if `root` is not a git work tree or git fails.
 pub fn tracked(root: &Path) -> Result<Vec<PathBuf>, SurveyError> {
     // `-z` because a path is bytes and may contain a newline; git only quotes
     // paths in the non-`-z` form, so this is the parse that cannot be fooled.
-    Ok(git(root, &["ls-files", "-z"])?
+    let all: Vec<String> = git(root, &["ls-files", "-z"])?
         .split(|b| *b == 0)
         .filter(|p| !p.is_empty())
-        .map(|p| PathBuf::from(String::from_utf8_lossy(p).into_owned()))
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .collect();
+    let skip = ignored(root, &all)?;
+    Ok(all
+        .into_iter()
+        .filter(|p| !skip.contains(p))
+        .map(PathBuf::from)
         .collect())
+}
+
+/// The subset of `paths` the worktree's ignore rules match. `--no-index` so
+/// tracking a path does not exempt it — that is the whole question here.
+fn ignored(
+    root: &Path,
+    paths: &[String],
+) -> Result<std::collections::HashSet<String>, SurveyError> {
+    if paths.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+    let as_git = |e: std::io::Error| SurveyError::Git(e.to_string());
+    let mut child = Command::new("git")
+        .args(["check-ignore", "--no-index", "--stdin", "-z"])
+        .current_dir(root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(as_git)?;
+    let mut buf = Vec::new();
+    for path in paths {
+        buf.extend_from_slice(path.as_bytes());
+        buf.push(0);
+    }
+    // Feed stdin on its own thread: with both pipes on one thread, a long
+    // match list fills the stdout pipe while this side blocks on stdin.
+    let stdin = child.stdin.take();
+    let out = std::thread::scope(|scope| {
+        scope.spawn(move || {
+            if let Some(mut stdin) = stdin {
+                let _ = std::io::Write::write_all(&mut stdin, &buf);
+            }
+        });
+        child.wait_with_output()
+    })
+    .map_err(as_git)?;
+    // check-ignore exits 1 for "nothing matched" — an answer, not a failure.
+    match out.status.code() {
+        Some(0 | 1) => Ok(out
+            .stdout
+            .split(|b| *b == 0)
+            .filter(|p| !p.is_empty())
+            .map(|p| String::from_utf8_lossy(p).into_owned())
+            .collect()),
+        _ => Err(SurveyError::Git(
+            String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+        )),
+    }
 }
 
 /// Read every tracked file an adapter claims.
@@ -267,10 +333,19 @@ fn module_of_rs(path: &str, roots: &CrateRoots) -> String {
 /// [`SurveyError::Git`] if the rev does not resolve or git fails.
 pub fn sources_at(root: &Path, rev: &str) -> Result<(Vec<SourceFile>, CrateRoots), SurveyError> {
     let listing = git(root, &["ls-tree", "-r", "-z", "--name-only", rev])?;
+    let all: Vec<String> = listing
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .collect();
+    // The worktree's ignore rules apply to both sides of a gate comparison:
+    // a rev survey keeping vendor code the head survey drops would report
+    // the difference as a mass deletion.
+    let skip = ignored(root, &all)?;
     let mut out = Vec::new();
     let mut manifests = Vec::new();
-    for rel in listing.split(|b| *b == 0).filter(|p| !p.is_empty()) {
-        let path = String::from_utf8_lossy(rel).replace('\\', "/");
+    for path in all.into_iter().filter(|p| !skip.contains(p)) {
+        let path = path.replace('\\', "/");
         if let Some(dir) = manifest_dir(&path) {
             // Manifests come from the same rev as the sources they name:
             // roots are part of the state being surveyed, not of the worktree.

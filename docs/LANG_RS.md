@@ -200,6 +200,8 @@ expansion, a `modeled` tier) is a later wave with its own evidence story.
   not a TOML parser), and `pub use` re-exports resolve through index
   aliases — a real definition always shadows an alias, and an alias chain
   deeper than 8 refuses. Cross-crate edges on this repo went from zero to
-  ~400, including through re-exports. Remaining ceilings: glob re-exports
-  (`pub use x::*`) stay omissions, and `[lib] name`/`#[path]` still fall
-  back to the directory name.
+  ~400, including through re-exports. `[lib] name` now wins over
+  `[package] name` in that scan — a renamed library is imported by the lib
+  name, so the package name never appears in a `use`. Remaining ceilings:
+  glob re-exports (`pub use x::*`) stay omissions, and `#[path]` still
+  falls back to the directory-derived module path.

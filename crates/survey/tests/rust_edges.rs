@@ -150,3 +150,34 @@ fn python_and_rust_survey_side_by_side() {
     assert_eq!(s.edges, 2);
     assert_eq!(s.langs.len(), 2);
 }
+
+#[test]
+fn a_tracked_but_ignored_file_is_not_charted() {
+    let dir = repo(&[
+        ("crates/app/src/lib.rs", "pub fn a() -> u32 { 1 }\n"),
+        ("vendor/dep.rs", "pub fn v() -> u32 { 1 }\n"),
+    ]);
+    // Committed, then ignored: the vendored-code case. The repo's ignore
+    // rules say not-source, and tracking must not override that.
+    std::fs::write(dir.path().join(".gitignore"), "vendor/\n").expect("write");
+    let s = survey(dir.path());
+    assert_eq!(s.defs, 1);
+}
+
+#[test]
+fn a_lib_rename_is_the_name_a_use_reaches_for() {
+    let dir = repo(&[
+        (
+            "crates/app/Cargo.toml",
+            "[package]\nname = \"my-app\"\n\n[lib]\nname = \"renamed\"\n",
+        ),
+        ("crates/app/src/lib.rs", "pub fn helper() -> u32 { 1 }\n"),
+        (
+            "crates/cli/src/main.rs",
+            "fn main() { let _ = renamed::helper(); }\n",
+        ),
+    ]);
+    let s = survey(dir.path());
+    // main -> renamed.helper: `[lib] name` wins over `[package] name`.
+    assert_eq!(s.edges, 1);
+}
