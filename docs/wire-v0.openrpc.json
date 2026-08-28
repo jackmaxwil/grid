@@ -629,7 +629,7 @@
         "type": "object",
         "required": ["action", "callsign"],
         "properties": {
-          "action": { "type": "string", "enum": ["added", "removed", "modified"] },
+          "action": { "type": "string", "enum": ["added", "removed", "modified", "moved"] },
           "callsign": { "$ref": "#/components/schemas/Callsign" },
           "before": { "$ref": "#/components/schemas/Datum" },
           "after": { "$ref": "#/components/schemas/Datum" }

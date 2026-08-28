@@ -192,6 +192,10 @@ pub struct DefChange {
     pub before: Option<Datum>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<Datum>,
+    /// For [`DefChangeAction::Moved`]: the callsign the datum answered to
+    /// before. A rename rebinds the callsign; the datum does not change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_from: Option<Callsign>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,6 +206,8 @@ pub enum DefChangeAction {
     Removed,
     #[serde(rename = "modified")]
     Modified,
+    #[serde(rename = "moved")]
+    Moved,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -254,6 +260,8 @@ pub enum TrackDefPromiseAction {
     Remove,
     #[serde(rename = "modify")]
     Modify,
+    #[serde(rename = "move")]
+    Move,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

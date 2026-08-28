@@ -174,7 +174,20 @@ expansion, a `modeled` tier) is a later wave with its own evidence story.
   `(x,)` really is a one-tuple; the "call shape" is decided by the preceding
   token (a non-keyword ident or a turbofish `>`). The one-tuple case is
   pinned by a test that must never pass by stripping.
-- **The datum is not yet rename-invariant.** v1 canonical bytes are token
+- **The ontology's rename law collides with the chart's primary key.** "A
+  rename rebinds the callsign; the datum does not change" — but both
+  frontends hash the definition's own name, so a rename moves the datum.
+  Erasing the name was tried and reverted the same day: with names erased,
+  `def a(): pass` and `def b(): pass` share one datum, and a segment
+  interns datums *uniquely* — the second definition silently vanished from
+  the chart (a conformance test caught it). The name in the hash is what
+  keeps datum a usable primary key. Resolution: datum keeps the name;
+  rename detection joins on a name-erased **shape hash** carried as a
+  per-def segment column in the epoch-2 format — the `moved` delta
+  machinery is already in place and activates when shape lands. Second
+  lesson, paid for once: any datum-epoch change makes stored snapshots
+  diff as "everything modified" — `.grid/chart` is a cache; delete it.
+- **The datum is not yet rename-invariant for locals.** v1 canonical bytes are token
   streams after doc erasure, so a local rename moves the datum — a false
   "changed", never a false "same". The ceiling is asserted in
   `tests/identity.rs` so accidentally gaining the invariance (an epoch
