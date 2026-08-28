@@ -172,6 +172,53 @@ impl Chart {
     }
 }
 
+/// `grid.orphans` — every definition with no proven inbound edge, in
+/// callsign order, optionally one language's.
+///
+/// # Errors
+/// [`chart_provider::Error`] if the store cannot be opened.
+pub fn orphans(
+    root: &std::path::Path,
+    lang: Option<grid_wire::Lang>,
+) -> Result<Vec<grid_wire::DefRef>, chart_provider::Error> {
+    let chart = ChartDelta::open(root)?;
+    let mut out = Vec::new();
+    for segment in chart.head().segments() {
+        for i in 0..segment.def_count() {
+            let ord = grid_chart::Ordinal(i);
+            if segment
+                .in_edges(ord)
+                .any(|n| n.zoc == grid_wire::Zoc::Proven)
+            {
+                continue;
+            }
+            if lang.is_some() && segment.lang(ord) != lang {
+                continue;
+            }
+            let (Some(datum), Some(callsign)) = (segment.datum(ord), segment.callsign(ord)) else {
+                continue;
+            };
+            out.push(grid_wire::DefRef {
+                datum: grid_wire::Datum(datum.to_string()),
+                callsign: Some(grid_wire::Callsign(callsign.to_owned())),
+                lang: segment.lang(ord),
+                signature: None,
+                materialization: segment.location(ord).map(|loc| {
+                    grid_wire::DefRefMaterialization {
+                        file: loc.path.to_owned(),
+                        line: u64::from(loc.line),
+                    }
+                }),
+            });
+        }
+    }
+    out.sort_by(|a, b| {
+        let key = |d: &grid_wire::DefRef| d.callsign.as_ref().map(|c| c.0.clone());
+        key(a).cmp(&key(b))
+    });
+    Ok(out)
+}
+
 /// `grid.snapshot.current` — the published snapshot, or `None` for a store
 /// that has never been surveyed.
 ///
