@@ -238,22 +238,9 @@ fn cache(args: &[&str], json: bool) -> u8 {
             }
         }
         Some((&"record", rest)) => {
-            // `--wake <id>` ties the verdict to a retained wake, which is
-            // what lets `grid suspects` use it as a spectrum.
-            let mut wake_id = None;
-            let mut positional = Vec::new();
-            let mut it = rest.iter();
-            while let Some(arg) = it.next() {
-                if *arg == "--wake" {
-                    let Some(id) = it.next() else {
-                        hint("usage: grid cache record <kind> <env-hash> <datum>=<pass|fail>... [--wake <id>]");
-                        return exit::BAD_INPUT;
-                    };
-                    wake_id = Some((*id).to_owned());
-                } else {
-                    positional.push(*arg);
-                }
-            }
+            let Some((wake_id, positional)) = wake_flag(rest) else {
+                return exit::BAD_INPUT;
+            };
             let Some((kind, env, entries)) = cache_args(&positional) else {
                 hint("usage: grid cache record <lint|typecheck|test> <env-hash> <datum>=<pass|fail>... [--wake <id>]");
                 return exit::BAD_INPUT;
@@ -313,6 +300,27 @@ fn cache(args: &[&str], json: bool) -> u8 {
 }
 
 /// `<kind> <env-hash> <rest>...`, or nothing if the shape is wrong.
+/// Split a trailing `--wake <id>` off an argument list. `--wake` ties a
+/// verdict to a retained wake, which is what lets `grid suspects` use it as
+/// a spectrum. `None` prints its own hint.
+fn wake_flag<'a>(args: &'a [&'a str]) -> Option<(Option<String>, Vec<&'a str>)> {
+    let mut wake_id = None;
+    let mut positional = Vec::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if *arg == "--wake" {
+            let Some(id) = it.next() else {
+                hint("usage: grid cache record <kind> <env-hash> <datum>=<pass|fail>... [--wake <id>]");
+                return None;
+            };
+            wake_id = Some((*id).to_owned());
+        } else {
+            positional.push(*arg);
+        }
+    }
+    Some((wake_id, positional))
+}
+
 fn cache_args<'a>(args: &'a [&'a str]) -> Option<(&'a str, &'a str, &'a [&'a str])> {
     match args {
         [kind, env, rest @ ..] if !rest.is_empty() => Some((kind, env, rest)),
@@ -681,6 +689,47 @@ fn uses(args: &[&str], json: bool) -> u8 {
     }
 }
 
+/// `grid wake ingest --lcov <report> --test <name>` — coverage as a reach
+/// set: every executed line inside a charted definition becomes one
+/// observation from the named test.
+fn wake_lcov(rest: &[&str], json: bool, root: &std::path::Path) -> u8 {
+    let (Some(path), Some(&"--test"), Some(test)) = (rest.get(1), rest.get(2), rest.get(3)) else {
+        hint("usage: grid wake ingest --lcov <report|-> --test <name>");
+        return exit::BAD_INPUT;
+    };
+    let Some(report) = read_arg(path) else {
+        return exit::BAD_INPUT;
+    };
+    let mapped = match lcov::wake_of(root, &report, test) {
+        Ok(mapped) => mapped,
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            return exit::BAD_INPUT;
+        }
+    };
+    if mapped.unmapped_lines > 0 || mapped.unknown_files > 0 {
+        hint(&format!(
+            "grid: {} executed lines outside any definition, {} files not in the chart — omitted, not guessed",
+            mapped.unmapped_lines, mapped.unknown_files
+        ));
+    }
+    let total = mapped.wake.observations.len() as u64;
+    let params = grid_wire::methods::WakeIngestParams { wake: mapped.wake };
+    match rpc::wake_ingest(&params, root) {
+        Ok(result) => {
+            if json {
+                return emit_json(&result);
+            }
+            print!("{}", porcelain::wake_ingest(&result, total));
+            exit::OK
+        }
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            exit::BAD_INPUT
+        }
+    }
+}
+
 /// A file argument, `-` meaning stdin. `None` prints its own hint.
 fn read_arg(path: &str) -> Option<String> {
     if path == "-" {
@@ -856,47 +905,7 @@ fn suspects(args: &[&str], json: bool) -> u8 {
 fn wake(args: &[&str], json: bool) -> u8 {
     let root = std::path::Path::new(".");
     match args.split_first() {
-        Some((&"ingest", rest)) if rest.first() == Some(&"--lcov") => {
-            // `grid wake ingest --lcov <report> --test <name>` — coverage as
-            // a reach set: every executed line inside a charted definition
-            // becomes one observation from the named test.
-            let (Some(path), Some(&"--test"), Some(test)) = (rest.get(1), rest.get(2), rest.get(3))
-            else {
-                hint("usage: grid wake ingest --lcov <report|-> --test <name>");
-                return exit::BAD_INPUT;
-            };
-            let Some(text) = read_arg(path) else {
-                return exit::BAD_INPUT;
-            };
-            let mapped = match lcov::wake_of(root, &text, test) {
-                Ok(mapped) => mapped,
-                Err(e) => {
-                    hint(&format!("grid: {e}"));
-                    return exit::BAD_INPUT;
-                }
-            };
-            if mapped.unmapped_lines > 0 || mapped.unknown_files > 0 {
-                hint(&format!(
-                    "grid: {} executed lines outside any definition, {} files not in the chart — omitted, not guessed",
-                    mapped.unmapped_lines, mapped.unknown_files
-                ));
-            }
-            let total = mapped.wake.observations.len() as u64;
-            let params = grid_wire::methods::WakeIngestParams { wake: mapped.wake };
-            return match rpc::wake_ingest(&params, root) {
-                Ok(result) => {
-                    if json {
-                        return emit_json(&result);
-                    }
-                    print!("{}", porcelain::wake_ingest(&result, total));
-                    exit::OK
-                }
-                Err(e) => {
-                    hint(&format!("grid: {e}"));
-                    exit::BAD_INPUT
-                }
-            };
-        }
+        Some((&"ingest", rest)) if rest.first() == Some(&"--lcov") => wake_lcov(rest, json, root),
         Some((&"ingest", rest)) => {
             let Some(path) = rest.first() else {
                 hint("usage: grid wake ingest <wake.json|->");
