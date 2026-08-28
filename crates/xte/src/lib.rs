@@ -78,6 +78,7 @@ const fn def_tense(promise: TrackDefPromiseAction) -> grid_wire::DefChangeAction
         TrackDefPromiseAction::Add => A::Added,
         TrackDefPromiseAction::Remove => A::Removed,
         TrackDefPromiseAction::Modify => A::Modified,
+        TrackDefPromiseAction::Move => A::Moved,
     }
 }
 

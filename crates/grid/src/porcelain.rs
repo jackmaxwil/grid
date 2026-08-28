@@ -44,12 +44,13 @@ fn role(name: &str) -> String {
     format!("{name:<9}")
 }
 
-/// Change glyphs: `+` added, `-` removed, `~` modified.
+/// Change glyphs: `+` added, `-` removed, `~` modified, `>` moved.
 const fn def_glyph(action: DefChangeAction) -> &'static str {
     match action {
         DefChangeAction::Added => "+",
         DefChangeAction::Removed => "-",
         DefChangeAction::Modified => "~",
+        DefChangeAction::Moved => ">",
     }
 }
 
@@ -178,6 +179,7 @@ pub fn track(t: &grid_wire::Track) -> String {
             grid_wire::TrackDefPromiseAction::Add => "+",
             grid_wire::TrackDefPromiseAction::Remove => "-",
             grid_wire::TrackDefPromiseAction::Modify => "~",
+            grid_wire::TrackDefPromiseAction::Move => ">",
         };
         record(&mut out, "def", &[action, &d.callsign.0]);
     }
@@ -273,10 +275,15 @@ pub fn diff(made_good: &grid_wire::MadeGood, name: &NameOf) -> String {
     for d in &made_good.defs {
         // `old→new` when both exist, otherwise the one that does: an added
         // definition has no before, a removed one has no after.
-        let transition = match (&d.before, &d.after) {
-            (Some(before), Some(after)) => format!("{}→{}", short(before), short(after)),
-            (None, Some(after)) | (Some(after), None) => short(after),
-            (None, None) => String::new(),
+        // A move's datum held still; the interesting column is the old name.
+        let transition = if let Some(from) = &d.moved_from {
+            format!("(was {})", from.0)
+        } else {
+            match (&d.before, &d.after) {
+                (Some(before), Some(after)) => format!("{}→{}", short(before), short(after)),
+                (None, Some(after)) | (Some(after), None) => short(after),
+                (None, None) => String::new(),
+            }
         };
         record(
             &mut out,
@@ -443,6 +450,7 @@ pub fn todo(list: &grid_wire::TodoList) -> String {
             grid_wire::TrackDefPromiseAction::Add => "+",
             grid_wire::TrackDefPromiseAction::Remove => "-",
             grid_wire::TrackDefPromiseAction::Modify => "~",
+            grid_wire::TrackDefPromiseAction::Move => ">",
         };
         record(&mut out, "def", &[action, &d.callsign.0]);
     }

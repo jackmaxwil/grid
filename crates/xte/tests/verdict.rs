@@ -271,12 +271,14 @@ fn def_promises_cover_def_changes_by_pattern() {
         callsign: CallsignPattern("cortana.reaper.TagContract.*".into()),
     }];
     let covered = DefChange {
+        moved_from: None,
         action: DefChangeAction::Added,
         callsign: Callsign("cortana.reaper.TagContract.validate".into()),
         before: None,
         after: Some(datum("bb")),
     };
     let stray = DefChange {
+        moved_from: None,
         action: DefChangeAction::Added,
         callsign: Callsign("cortana.boards.render".into()),
         before: None,

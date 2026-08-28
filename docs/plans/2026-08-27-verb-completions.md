@@ -93,9 +93,13 @@ fallback. Add when a real repo pays the omission.
 **Problem.** A rename prints as `- old` + `+ new`. The ontology defines a
 rename as callsign rebound, datum held — the delta should say so.
 
-**Design.** In `rpc::delta` (where `DefChange` rows are built), after
-added/removed sets are known: join removed × added on datum. Every pair
-with equal datum and unequal callsign collapses into one row:
+**Design.** In `grid_chart::delta` (where `DefChange` rows are built),
+after added/removed sets are known: join removed × added on the name-erased
+**shape hash** (item 3's `DefShapes` column — a datum cannot be the join
+key, because the definition's own name is part of it, deliberately: erasing
+it made identical bodies share a datum and the segment's unique-datum
+primary key silently dropped one). Every unambiguous pair collapses into
+one row:
 
 - Wire, additive: `DefChangeAction::Moved` (`"moved"`), plus
   `moved_from: Option<Callsign>` on `DefChange` — the same shape edges
@@ -136,6 +140,7 @@ section table:
 | `PathBytes` | UTF-8 repo-relative paths, concatenated, interned |
 | `DefLocs` | per def: `(path: u32, line: u32, byte_start: u32, byte_end: u32)` |
 | `DefMetrics` | per def: `(complexity: u16, reserved: u16)` |
+| `DefShapes` | per def: 32-byte blake3 of the canonical bytes with the definition's own name erased — the rename-join key (item 2) |
 
 `DefMetrics` rides this epoch bump because format bumps are rare and a
 per-def column is free now versus a third epoch later. Complexity is

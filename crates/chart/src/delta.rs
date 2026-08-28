@@ -117,14 +117,11 @@ pub fn made_good<B: AsRef<[u8]>>(
 ) -> MadeGood {
     let (base_defs, head_defs) = (defs_of(base), defs_of(head));
     let mut defs = Vec::new();
+    let mut added: Vec<(&String, DatumId)> = Vec::new();
+    let mut removed: Vec<(&String, DatumId)> = Vec::new();
     for (callsign, after) in &head_defs {
         match base_defs.get(callsign) {
-            None => defs.push(DefChange {
-                action: DefChangeAction::Added,
-                callsign: Callsign(callsign.clone()),
-                before: None,
-                after: Some(datum(*after)),
-            }),
+            None => added.push((callsign, *after)),
             // Same callsign, same datum: the definition did not change. Not a
             // record — a `MadeGood` reports what changed.
             Some(before) if before == after => {}
@@ -133,19 +130,16 @@ pub fn made_good<B: AsRef<[u8]>>(
                 callsign: Callsign(callsign.clone()),
                 before: Some(datum(*before)),
                 after: Some(datum(*after)),
+                moved_from: None,
             }),
         }
     }
     for (callsign, before) in &base_defs {
         if !head_defs.contains_key(callsign) {
-            defs.push(DefChange {
-                action: DefChangeAction::Removed,
-                callsign: Callsign(callsign.clone()),
-                before: Some(datum(*before)),
-                after: None,
-            });
+            removed.push((callsign, *before));
         }
     }
+    defs.extend(detect_def_moves(&added, &removed));
     defs.sort_by(|a, b| a.callsign.0.cmp(&b.callsign.0));
 
     let (base_edges, head_edges) = (edges_of(base), edges_of(head));
@@ -172,6 +166,66 @@ pub fn made_good<B: AsRef<[u8]>>(
         defs,
         edges,
     }
+}
+
+/// Pair a removed definition with an added one that carries the same datum:
+/// the ontology's definition of a rename (callsign rebound, datum held). The
+/// pairing must be unambiguous — a datum appearing more than once on either
+/// side stays -/+ rather than guessing which body went where. Refusal over
+/// invention, the same rule the index applies to name collisions.
+fn detect_def_moves(
+    added: &[(&String, DatumId)],
+    removed: &[(&String, DatumId)],
+) -> Vec<DefChange> {
+    use std::collections::HashMap;
+    let mut add_count: HashMap<DatumId, usize> = HashMap::new();
+    let mut rem_at: HashMap<DatumId, (&String, usize)> = HashMap::new();
+    for (_, d) in added {
+        *add_count.entry(*d).or_insert(0) += 1;
+    }
+    for (name, d) in removed {
+        let entry = rem_at.entry(*d).or_insert((name, 0));
+        entry.1 += 1;
+    }
+    let mut out = Vec::new();
+    for (callsign, d) in added {
+        let unique_pair =
+            add_count.get(d) == Some(&1) && rem_at.get(d).is_some_and(|(_, count)| *count == 1);
+        if unique_pair {
+            let Some((old, _)) = rem_at.get(d) else {
+                continue;
+            };
+            out.push(DefChange {
+                action: DefChangeAction::Moved,
+                callsign: Callsign((*callsign).clone()),
+                before: Some(datum(*d)),
+                after: Some(datum(*d)),
+                moved_from: Some(Callsign((*old).clone())),
+            });
+        } else {
+            out.push(DefChange {
+                action: DefChangeAction::Added,
+                callsign: Callsign((*callsign).clone()),
+                before: None,
+                after: Some(datum(*d)),
+                moved_from: None,
+            });
+        }
+    }
+    for (callsign, d) in removed {
+        let paired =
+            add_count.get(d) == Some(&1) && rem_at.get(d).is_some_and(|(_, count)| *count == 1);
+        if !paired {
+            out.push(DefChange {
+                action: DefChangeAction::Removed,
+                callsign: Callsign((*callsign).clone()),
+                before: Some(datum(*d)),
+                after: None,
+                moved_from: None,
+            });
+        }
+    }
+    out
 }
 
 /// Pair a removed edge with an added one when the *same call to the same

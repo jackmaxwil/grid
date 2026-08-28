@@ -50,6 +50,7 @@ fn render_def(p: &TrackDefPromise) -> String {
         A::Add => "add",
         A::Remove => "remove",
         A::Modify => "modify",
+        A::Move => "move",
     };
     format!("{action} {}", p.callsign.0)
 }
