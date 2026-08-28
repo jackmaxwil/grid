@@ -141,8 +141,6 @@ name = "grid-datum"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "rustpython-ast",
- "rustpython-parser",
 ]
 
 [[package]]
@@ -150,8 +148,17 @@ name = "grid-fuzz"
 version = "0.0.0"
 dependencies = [
  "grid-chart",
- "grid-datum",
+ "grid-lang-py",
  "libfuzzer-sys",
+]
+
+[[package]]
+name = "grid-lang-py"
+version = "0.1.0"
+dependencies = [
+ "grid-datum",
+ "rustpython-ast",
+ "rustpython-parser",
 ]
 
 [[package]]

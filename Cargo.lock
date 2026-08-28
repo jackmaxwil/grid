@@ -191,7 +191,7 @@ dependencies = [
  "grid-cache",
  "grid-chart",
  "grid-chart-io",
- "grid-datum",
+ "grid-lang-py",
  "grid-leadline",
  "grid-survey",
  "grid-wake",
@@ -238,6 +238,13 @@ name = "grid-datum"
 version = "0.1.0"
 dependencies = [
  "blake3",
+]
+
+[[package]]
+name = "grid-lang-py"
+version = "0.1.0"
+dependencies = [
+ "grid-datum",
  "proptest",
  "rustpython-ast",
  "rustpython-parser",
@@ -260,6 +267,7 @@ dependencies = [
  "blake3",
  "grid-chart",
  "grid-datum",
+ "grid-lang-py",
  "grid-wire",
  "tempfile",
 ]

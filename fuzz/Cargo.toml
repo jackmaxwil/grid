@@ -11,7 +11,7 @@ license = "Proprietary"
 [dependencies]
 libfuzzer-sys = "0.4"
 grid-chart = { path = "../crates/chart" }
-grid-datum = { path = "../crates/datum" }
+grid-lang-py = { path = "../crates/lang-py" }
 
 [[bin]]
 name = "normalize"

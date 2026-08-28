@@ -1,7 +1,8 @@
 //! Reference extraction: the raw material of edges.
 //!
-//! A [`Definition`](crate::Definition) says what code *is*; a [`Reference`]
-//! says what it *reaches for*. Extraction stops at the name: this module knows
+//! A [`Definition`](grid_datum::Definition) says what code *is*; a
+//! [`Reference`] says what it *reaches for*. Extraction stops at the name:
+//! this module knows
 //! that `TagContract.validate` calls something spelled `emit`, and refuses to
 //! guess which `emit` that is. Binding a name to a datum needs the whole
 //! surveyed tree, which is `grid-survey`'s job, not this crate's — so the two
@@ -18,75 +19,15 @@
 use rustpython_parser::ast::{self, Visitor};
 use rustpython_parser::Parse;
 
-use crate::ParseError;
-
-/// How a name was reached for. The kind decides the edge relation once the
-/// name is bound: a base class is `implements`, a call of a class is
-/// `constructs`, a call of a function is `calls`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RefKind {
-    /// `f(...)` — the callee position of a call.
-    Call,
-    /// `class C(B)` — a base class in a class definition.
-    Base,
-    /// `@d` above a definition. Attributed to the decorated definition: the
-    /// decorator runs because that definition exists.
-    Decorator,
-    /// `self.m(...)` inside a class body. Resolution needs the enclosing
-    /// class, which the reference's `from` callsign carries, so it is kept
-    /// apart from a plain [`RefKind::Call`].
-    SelfCall,
-}
-
-/// One name reached for, with the definition that reached for it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Reference {
-    /// Callsign of the definition containing the reference, dotted from the
-    /// module root. Empty means module level — code that runs on import and
-    /// belongs to no definition.
-    pub from: String,
-    /// What kind of position the name appeared in.
-    pub kind: RefKind,
-    /// The dotted name as written: `["a", "b", "c"]` for `a.b.c`. Never
-    /// empty. For [`RefKind::SelfCall`] the leading `self` is stripped.
-    pub path: Vec<String>,
-}
-
-/// One `import` binding: the local name a module or symbol was bound to.
-///
-/// `scope` is what makes a function-local import local. A binding applies to a
-/// reference only if the binding's scope is the reference's definition or an
-/// ancestor of it, which is Python's own rule and stops a shadowing import
-/// inside one function from rewriting names in another.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Import {
-    /// The name bound in this scope (`np` for `import numpy as np`).
-    pub alias: String,
-    /// The dotted path it names (`numpy`, or `pkg.mod.symbol` for a
-    /// from-import). Relative imports keep their leading dots, so the
-    /// resolver can anchor them against the importing module.
-    pub target: String,
-    /// Callsign of the definition the `import` statement sits in; empty for
-    /// module level.
-    pub scope: String,
-}
-
-/// Everything about one file that edge resolution needs beyond its
-/// definitions: what it imported, and what its definitions reached for.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct FileRefs {
-    /// Import bindings, in source order.
-    pub imports: Vec<Import>,
-    /// References, in source order.
-    pub refs: Vec<Reference>,
-}
+use grid_datum::{FileRefs, Import, ParseError, RefKind, Reference};
 
 /// Extract the imports and references of a Python source file.
 ///
 /// # Errors
 /// Returns `ParseError` if the source is not valid Python.
 pub fn references(source: &str) -> Result<FileRefs, ParseError> {
-    let module = ast::ModModule::parse(source, "<datum>").map_err(|e| ParseError(e.to_string()))?;
+    let module =
+        ast::ModModule::parse(source, "<datum>").map_err(|e| ParseError::new(e.to_string()))?;
     let mut scan = Scan::default();
     for stmt in module.body {
         scan.visit_stmt(stmt);

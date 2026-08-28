@@ -1,11 +1,10 @@
 //! grid-survey — extraction: repo -> defs + edges.
 //!
-//! A survey turns a working tree into a chart segment: every definition an
-//! adapter can find, and every edge between them it can *prove*. Python is
-//! the only adapter at this wave (beelink is Python, so self-hosting starts
-//! here); the seams the second adapter needs are [`files::lang_of`] and the
-//! per-file extraction step, and nothing above them knows what language a
-//! file was.
+//! A survey turns a working tree into a chart segment: every definition a
+//! frontend can find, and every edge between them it can *prove*. Python is
+//! the only frontend at this wave; a second language lands as a
+//! `grid-lang-*` crate, an extension in [`files::lang_of`], and a dispatch
+//! arm in [`extract`] — nothing above those knows what language a file was.
 //!
 //! Two properties are load-bearing and everything here is arranged around
 //! them:
@@ -104,16 +103,26 @@ pub struct Survey {
     pub ambiguous: u64,
 }
 
-/// Extract one file's facts. Pure: the same text is the same facts.
+/// Extract one file's facts with the frontend `lang` names. Pure: the same
+/// text is the same facts.
 ///
-/// A file the parser rejects yields no facts rather than failing the survey —
+/// This is the frontend seam: the one place a language is dispatched on. A
+/// file the parser rejects yields no facts rather than failing the survey —
 /// a repo with one syntactically broken file still has a chart, and the
 /// alternative is a tool that cannot run on the tree it is meant to fix.
 #[must_use]
-pub fn extract(source: &str) -> FileFacts {
-    FileFacts {
-        defs: grid_datum::definitions(source).unwrap_or_default(),
-        refs: grid_datum::references(source).unwrap_or_default(),
+pub fn extract(lang: Lang, source: &str) -> FileFacts {
+    match lang {
+        Lang::Py => FileFacts {
+            defs: grid_lang_py::definitions(source).unwrap_or_default(),
+            refs: grid_lang_py::references(source).unwrap_or_default(),
+        },
+        // No frontend claims these yet; [`files::lang_of`] never hands them
+        // out, so no file silently loses facts here.
+        Lang::Ts | Lang::Js | Lang::Rs => FileFacts {
+            defs: Vec::new(),
+            refs: FileRefs::default(),
+        },
     }
 }
 
@@ -153,7 +162,7 @@ fn run_sources(sources: &[SourceFile], cache: &mut Cache) -> Result<Survey, Surv
             reread += 1;
             hit.clone()
         } else {
-            let facts = extract(&file.source);
+            let facts = extract(file.lang, &file.source);
             cache.insert(file.content_hash, facts.clone());
             facts
         };

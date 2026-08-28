@@ -7,7 +7,8 @@
 //!     which is what makes the pair usable as cache keys.
 use std::fmt::Write as _;
 
-use grid_datum::{definitions, normalize, span_hash};
+use grid_datum::span_hash;
+use grid_lang_py::{definitions, normalize};
 use proptest::prelude::*;
 
 /// A generated Python function: name, parameter names, and a body that uses

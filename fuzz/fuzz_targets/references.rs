@@ -9,8 +9,8 @@ fuzz_target!(|data: &[u8]| {
     let Ok(source) = std::str::from_utf8(data) else {
         return;
     };
-    if let Ok(first) = grid_datum::references(source) {
-        let second = grid_datum::references(source).expect("extraction is deterministic");
+    if let Ok(first) = grid_lang_py::references(source) {
+        let second = grid_lang_py::references(source).expect("extraction is deterministic");
         assert_eq!(first, second, "same source, same references");
         // Every reference names something: an empty path would be a name that
         // resolution could match against anything.

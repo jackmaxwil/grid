@@ -12,7 +12,7 @@ grid-chart = { path = "../chart", version = "0.1.0" }
 grid-chart-io = { path = "../chart-io", version = "0.1.0" }
 grid-survey = { path = "../survey", version = "0.1.0" }
 grid-cache = { path = "../cache", version = "0.1.0" }
-grid-datum = { path = "../datum", version = "0.1.0" }
+grid-lang-py = { path = "../lang-py", version = "0.1.0" }
 grid-leadline = { path = "../leadline", version = "0.1.0" }
 grid-wake = { path = "../wake", version = "0.1.0" }
 grid-wire = { path = "../wire", version = "0.1.0" }

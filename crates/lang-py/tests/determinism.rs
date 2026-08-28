@@ -1,12 +1,12 @@
 //! Determinism smoke over a real corpus: hashing a whole tree twice must
 //! yield identical sets. The plan names `packages/cortana`, but grid is its
-//! own repo, so the tree is `GRID_CORPUS` when set (CI or a local beelink
+//! own repo, so the tree is `GRID_CORPUS` when set (CI or any local corpus
 //! checkout) and grid's own `scripts/` otherwise — never nothing, so the
 //! test cannot silently pass on an empty tree.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use grid_datum::{definitions, normalize};
+use grid_lang_py::{definitions, normalize};
 
 fn python_files(root: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(root) else {
