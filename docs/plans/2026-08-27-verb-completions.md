@@ -135,6 +135,16 @@ section table:
 | `PathOffsets` | `path_count + 1` u32 byte starts into `PathBytes` |
 | `PathBytes` | UTF-8 repo-relative paths, concatenated, interned |
 | `DefLocs` | per def: `(path: u32, line: u32, byte_start: u32, byte_end: u32)` |
+| `DefMetrics` | per def: `(complexity: u16, reserved: u16)` |
+
+`DefMetrics` rides this epoch bump because format bumps are rare and a
+per-def column is free now versus a third epoch later. Complexity is
+cyclomatic (branch-count: `if`, `match` arms beyond the first, loops,
+`&&`/`||`, `?`), computed by each frontend at parse time. It is a pure
+function of the normalized AST — the same invariance the datum has — so
+it is datum metadata, cached by identity forever. `reserved` is zero and
+ignored on read, so the next metric is a semantic change, not a format
+one.
 
 - Line is computed at survey time from the source the survey already
   holds (`memchr`-free manual newline count over the span head — std).
@@ -298,6 +308,37 @@ verb's help).
 
 ---
 
+## 8. `grid hotspots` — complexity × churn
+
+**Problem.** Complexity alone is noise (a flat match table scores high
+and is fine); complexity times edit-frequency is the empirically backed
+"refactor this first" signal. Grid is uniquely placed: its churn is in
+identity space — legs chain datums, so the count survives renames.
+
+**Design.** One read-only walk: for every live def, `score =
+complexity × (1 + legs touching its datum lineage)`. Porcelain, sorted
+descending, file:line from item 3:
+
+```
+hot     survey.run_sources  cx 14  legs 6  crates/survey/src/lib.rs:243
+```
+
+Until item 7 lands, `legs` degrades to "changed in the current worktree
+diff" (0/1) and the header says so. No thresholds, no gate, no exit-code
+opinion: clippy owns lints; grid reports, and the header names the
+evidence grade (heuristic). `--limit N` defaults to 20.
+
+**Tests.** Complexity function pinned per frontend with hand-counted
+fixtures (a straight-line fn is 1; each branch kind adds exactly one —
+the fixture comments show the count); datum invariance asserted
+(reformat + rename locals, same complexity); hotspot ordering over a
+seeded two-def repo where the flat-but-big def loses to the
+branchy-and-edited one.
+
+**Ceilings.** Cyclomatic, not cognitive complexity (no nesting weight):
+simpler, language-uniform, and the churn factor does the prioritizing
+work. Revisit only if hotspot rankings mislead in practice.
+
 ## Acceptance for the whole plan
 
 - `grid uses grid_chart.build` answers cross-crate callers on this repo.
@@ -307,5 +348,7 @@ verb's help).
 - `cargo llvm-cov --lcov | grid wake ingest --lcov -` then
   `grid suspects <failing-test>` ranks datums on Rust.
 - `grid log survey.extract` shows the perf-pass edit chain.
+- `grid hotspots` ranks a branchy, frequently edited def above a large
+  flat one, and says which evidence tier the ranking used.
 - `grid survey` still under 50ms; `just check`, deny, crash soak green at
   every step.
