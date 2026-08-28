@@ -338,6 +338,12 @@ pub fn cache_check(result: &CacheCheckResult) -> String {
 /// position, which is the whole contract.
 #[must_use]
 pub fn refs(defs: &[grid_wire::DefRef]) -> String {
+    refs_as(defs, "ref")
+}
+
+/// The same rows under a different record tag (`orphan`).
+#[must_use]
+pub fn refs_as(defs: &[grid_wire::DefRef], tag: &str) -> String {
     let mut out = String::new();
     for d in defs {
         let callsign = d.callsign.as_ref().map_or("", |c| c.0.as_str());
@@ -347,7 +353,7 @@ pub fn refs(defs: &[grid_wire::DefRef]) -> String {
             .as_ref()
             .map(|m| format!("{}:{}", m.file, m.line))
             .unwrap_or_default();
-        record(&mut out, "ref", &[callsign, &short(&d.datum), &at]);
+        record(&mut out, tag, &[callsign, &short(&d.datum), &at]);
     }
     out
 }

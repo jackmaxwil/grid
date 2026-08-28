@@ -99,6 +99,7 @@ fn main() -> ExitCode {
         Some((&"todo", args)) => todo(args, json),
         Some((&"edit", args)) => edit(args, json),
         Some((&"uses", args)) => uses(args, json),
+        Some((&"orphans", args)) => orphans(args, json),
         Some((&"review", args)) => review(args, json),
         Some((&"explain", args)) => explain::main(args),
         Some((&"suspects", args)) => suspects(args, json),
@@ -596,8 +597,22 @@ fn edit(args: &[&str], json: bool) -> u8 {
 /// definition the name resolves to. Ambiguity is a list of pasteable
 /// commands, per the CLI plan's error doctrine.
 fn uses(args: &[&str], json: bool) -> u8 {
-    let Some(name) = args.first() else {
-        hint("usage: grid uses <name|name@prefix>");
+    let mut relation = None;
+    let mut positional = Vec::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if *arg == "--relation" {
+            let Some(want) = it.next().and_then(|w| relation_named(w)) else {
+                hint("usage: grid uses <name> --relation <calls|constructs|reads_field|writes_field|implements|imports>");
+                return exit::BAD_INPUT;
+            };
+            relation = Some(want);
+        } else {
+            positional.push(*arg);
+        }
+    }
+    let Some(name) = positional.first() else {
+        hint("usage: grid uses <name|name@prefix> [--relation <r>]");
         return exit::BAD_INPUT;
     };
     let locator = if name.contains('@') {
@@ -618,7 +633,10 @@ fn uses(args: &[&str], json: bool) -> u8 {
             hint(&format!("grid: {e}"));
             exit::BAD_INPUT
         }
-        Ok((defs, edges)) => {
+        Ok((defs, mut edges)) => {
+            if let Some(want) = relation {
+                edges.retain(|e| e.relation == want);
+            }
             match defs.as_slice() {
                 [] => {
                     hint(&format!("grid: nothing is called `{name}`"));
@@ -641,6 +659,46 @@ fn uses(args: &[&str], json: bool) -> u8 {
                 return emit_json(&edges);
             }
             print!("{}", porcelain::uses(&edges, &namer()));
+            exit::OK
+        }
+    }
+}
+
+/// The wire spelling of a relation, for `--relation` arguments. The serde
+/// names are the vocabulary, so the flag cannot drift from the contract.
+fn relation_named(name: &str) -> Option<grid_wire::Relation> {
+    serde_json::from_value(serde_json::Value::String(name.to_owned())).ok()
+}
+
+/// `grid orphans [--lang <py|rs|ts|js>]` — definitions with no proven
+/// inbound edge. The header states the evidence honestly: *no proven
+/// caller* — public API, tests, and macro-reached code all look like this,
+/// and none of them is dead.
+fn orphans(args: &[&str], json: bool) -> u8 {
+    let mut lang = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if *arg == "--lang" {
+            let Some(want) = it.next().and_then(|w| {
+                serde_json::from_value(serde_json::Value::String((*w).to_owned())).ok()
+            }) else {
+                hint("usage: grid orphans [--lang <py|rs|ts|js>]");
+                return exit::BAD_INPUT;
+            };
+            lang = Some(want);
+        }
+    }
+    match rpc::orphans(root(), lang) {
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            exit::BAD_INPUT
+        }
+        Ok(rows) => {
+            if json {
+                return emit_json(&rows);
+            }
+            hint("grid: no proven caller — not the same as dead (public API, tests, macro-reached code all match)");
+            print!("{}", porcelain::refs_as(&rows, "orphan"));
             exit::OK
         }
     }

@@ -885,3 +885,44 @@ fn a_diff_against_an_unknown_wake_is_bad_input() {
     let out = grid(dir.path(), &["wake", "diff", "wake:nope", "wake:alsono"]);
     assert_eq!(code(&out), 2);
 }
+
+#[test]
+fn orphans_lists_the_uncalled_with_their_location_and_never_the_called() {
+    // repo(): a.py defines a (never called), b.py defines b (never called);
+    // add a caller of b so exactly one def has a proven inbound edge.
+    let dir = repo();
+    std::fs::write(
+        dir.path().join("c.py"),
+        "from b import b\ndef c():\n    return b()\n",
+    )
+    .expect("write");
+    // Discovery is `git ls-files`: untracked files are invisible on purpose.
+    let ok = Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(dir.path())
+        .output()
+        .expect("git add")
+        .status
+        .success();
+    assert!(ok);
+    let out = grid(dir.path(), &["survey"]);
+    assert_eq!(code(&out), 0);
+    let out = grid(dir.path(), &["orphans"]);
+    assert_eq!(code(&out), 0);
+    let text = stdout(&out);
+    let rows: Vec<&str> = text.lines().collect();
+    assert!(
+        rows.iter().any(|l| columns(l)[..2] == ["orphan", "a.a"]),
+        "the uncalled def is an orphan row:\n{text}"
+    );
+    assert!(
+        !rows.iter().any(|l| columns(l).get(1) == Some(&"b.b")),
+        "a def with a proven caller is not an orphan:\n{text}"
+    );
+    // The location column is what makes the row pasteable.
+    assert!(
+        rows.iter()
+            .any(|l| columns(l).last().is_some_and(|c| c.starts_with("a.py:"))),
+        "orphan rows carry file:line:\n{text}"
+    );
+}
