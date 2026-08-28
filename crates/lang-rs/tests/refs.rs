@@ -139,8 +139,15 @@ fn builtin_attributes_produce_nothing() {
 
 #[test]
 fn struct_literals_reference_the_type() {
+    // Construction and field-writing, both to the type — nothing else.
     let r = refs("struct Foo { x: u32 }\nfn f() { let _ = Foo { x: 1 }; }");
-    assert_eq!(r, vec![("f".into(), RefKind::Call, "Foo".into())]);
+    assert_eq!(
+        r,
+        vec![
+            ("f".into(), RefKind::Call, "Foo".into()),
+            ("f".into(), RefKind::FieldWrite, "Foo".into()),
+        ]
+    );
 }
 
 #[test]
@@ -155,5 +162,14 @@ fn qualified_self_paths_produce_nothing() {
     // `<Foo as T>::m()` names through a type, which is resolution this
     // frontend does not claim; recording nothing is the honest answer.
     let r = refs("fn f() { <Foo as T>::m(); }");
+    assert!(r.is_empty());
+}
+
+#[test]
+fn a_struct_literal_also_writes_the_types_fields() {
+    let r = refs("struct Foo { x: u32 }\nfn f() { let _ = Foo { x: 1 }; }");
+    assert!(r.contains(&("f".into(), RefKind::FieldWrite, "Foo".into())));
+    // The provable half only: a typed-receiver field write emits nothing.
+    let r = refs("fn g(mut foo: Foo) { foo.x = 1; }");
     assert!(r.is_empty());
 }

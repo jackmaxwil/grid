@@ -291,7 +291,10 @@ impl<'ast> Visit<'ast> for Scan {
                 .map(|s| s.ident.to_string())
                 .collect();
             if path.first().is_some_and(|h| h != "Self") {
-                self.push(RefKind::Call, path);
+                self.push(RefKind::Call, path.clone());
+                // The literal also writes the type's fields — the provable
+                // half of the field vocabulary; reads need types.
+                self.push(RefKind::FieldWrite, path);
             }
         }
         syn::visit::visit_expr_struct(self, node);
