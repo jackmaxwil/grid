@@ -248,13 +248,33 @@ fn run_sources(
 ) -> Result<Survey, SurveyError> {
     let (per_file, reread) = extract_all(sources, cache);
 
+    // `#[path]` relocations first: the declaration, not the filesystem,
+    // decides what module the target file materializes.
+    let mut relocations: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for (file, facts) in &per_file {
+        for (name, declared) in &facts.refs.path_mods {
+            let module = files::module_of(file.lang, &file.path, roots);
+            relocations.insert(
+                files::relocated(&file.path, declared),
+                format!("{module}.{name}"),
+            );
+        }
+    }
+    let module_for = |file: &SourceFile| {
+        relocations
+            .get(&file.path)
+            .cloned()
+            .unwrap_or_else(|| files::module_of(file.lang, &file.path, roots))
+    };
+
     // Phase 2 — index the whole tree. Edges cannot be resolved before every
     // definition is known, which is the reason for two phases and the reason
     // the cache cannot hold edges.
     let mut index = DefIndex::default();
     for (file, facts) in &per_file {
         index.insert_file(
-            &files::module_of(file.lang, &file.path, roots),
+            &module_for(file),
             file.lang,
             &facts.defs,
             &file.path,
@@ -265,7 +285,7 @@ fn run_sources(
     // a re-export of the same spelling. A reexport inside a function body
     // is unreachable from other files and stays out of the map.
     for (file, facts) in &per_file {
-        let module = files::module_of(file.lang, &file.path, roots);
+        let module = module_for(file);
         for rx in &facts.refs.reexports {
             if rx.scope.is_empty() {
                 index.insert_alias(format!("{module}.{}", rx.alias), &module, &rx.target);
@@ -278,7 +298,7 @@ fn run_sources(
     // resolver dispatches exactly where extraction does.
     let mut edges = Vec::new();
     for (file, facts) in &per_file {
-        let module = files::module_of(file.lang, &file.path, roots);
+        let module = module_for(file);
         edges.extend(match file.lang {
             Lang::Py => resolve::resolve(&index, &module, &facts.refs.imports, &facts.refs.refs),
             Lang::Rs => resolve_rs::resolve(&index, &module, &facts.refs.imports, &facts.refs.refs),
