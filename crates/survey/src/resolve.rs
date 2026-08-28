@@ -111,6 +111,7 @@ pub fn resolve(
 pub(crate) fn relation_of(kind: RefKind, target_is_class: bool) -> Relation {
     match kind {
         RefKind::Base => Relation::Implements,
+        RefKind::FieldWrite => Relation::WritesField,
         // A decorator is applied to the definition, which is a call of the
         // decorator with the definition as its argument.
         RefKind::Decorator | RefKind::Call | RefKind::SelfCall if target_is_class => {

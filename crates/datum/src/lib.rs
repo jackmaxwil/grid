@@ -116,6 +116,10 @@ pub enum RefKind {
     /// class, which the reference's `from` callsign carries, so it is kept
     /// apart from a plain [`RefKind::Call`].
     SelfCall,
+    /// `Foo { x: 1 }` — a struct literal writes the type's fields. The wire
+    /// edge carries no field name, so the target is the type itself; field
+    /// *reads* need receiver types and are never emitted.
+    FieldWrite,
 }
 
 /// One name reached for, with the definition that reached for it.
