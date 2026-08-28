@@ -27,6 +27,7 @@ mod chart_provider;
 mod edit;
 mod explain;
 mod lcov;
+mod legs;
 mod porcelain;
 mod review;
 mod rpc;
@@ -101,6 +102,8 @@ fn main() -> ExitCode {
         Some((&"edit", args)) => edit(args, json),
         Some((&"uses", args)) => uses(args, json),
         Some((&"orphans", args)) => orphans(args, json),
+        Some((&"log", args)) => log(args, json),
+        Some((&"bisect", args)) => bisect_verb(args, json),
         Some((&"review", args)) => review(args, json),
         Some((&"explain", args)) => explain::main(args),
         Some((&"suspects", args)) => suspects(args, json),
@@ -590,6 +593,7 @@ fn edit(args: &[&str], json: bool) -> u8 {
             exit::BAD_INPUT
         }
         Ok(outcome) => {
+            record_edit_legs(&outcome);
             let stale = !outcome.wire.conflicts.is_empty();
             if json {
                 let failure = emit_json(&outcome.wire);
@@ -749,6 +753,99 @@ fn read_arg(path: &str) -> Option<String> {
                 hint(&format!("grid: cannot read {path}: {e}"));
                 None
             }
+        }
+    }
+}
+
+/// Every landed modification becomes a leg in the patch log. Best effort:
+/// an unwritable log costs history, never the edit that already landed.
+fn record_edit_legs(outcome: &edit::Outcome) {
+    let root = root();
+    let rev = chart_provider::resolve_rev(root, "HEAD");
+    let rows: Vec<grid_wire::Leg> = outcome
+        .edits
+        .iter()
+        .filter_map(|detail| match detail {
+            edit::EditDetail::Modified { was, now, .. } => Some(grid_wire::Leg {
+                from: was.clone(),
+                to: now.clone(),
+                git_rev: Some(grid_wire::GitRev(rev.clone())),
+                at: None,
+            }),
+            _ => None,
+        })
+        .collect();
+    if let Err(e) = legs::append(root, &rows) {
+        hint(&format!("grid: patch log not updated: {e}"));
+    }
+}
+
+/// `grid log <name>` — a datum's history in identity space: every leg that
+/// chains to it, newest first. A rename does not break the chain, because
+/// legs chain datums, not names.
+fn log(args: &[&str], json: bool) -> u8 {
+    let Some(name) = args.first() else {
+        hint("usage: grid log <name|name@prefix>");
+        return exit::BAD_INPUT;
+    };
+    let params = grid_wire::methods::ResolveParams {
+        locator: grid_wire::Locator::Callsign {
+            callsign: grid_wire::Callsign((*name).to_string()),
+        },
+        snapshot: None,
+    };
+    let defs = match rpc::resolve(&params, root()) {
+        Ok(defs) => defs,
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            return exit::INTERNAL;
+        }
+    };
+    let Some(def) = defs.first() else {
+        hint(&format!("grid: nothing is called `{name}`"));
+        return exit::BAD_INPUT;
+    };
+    let rows = legs::history(root(), &def.datum.0);
+    if json {
+        return emit_json(&rows);
+    }
+    if rows.is_empty() {
+        hint(&format!(
+            "grid: no recorded history for `{name}` — legs accrue from `grid edit apply` and surveys"
+        ));
+    }
+    print!("{}", porcelain::legs(&rows));
+    exit::OK
+}
+
+/// `grid bisect <test> [<good> <bad>]` — first failing patch in the
+/// retained chain, by the outcomes recorded against datum versions.
+fn bisect_verb(args: &[&str], json: bool) -> u8 {
+    let Some(test) = args.first() else {
+        hint("usage: grid bisect <test> [<good> <bad>]");
+        return exit::BAD_INPUT;
+    };
+    let params = grid_wire::methods::BisectParams {
+        good: snapshot_or_rev(args.get(1).unwrap_or(&"HEAD~1")),
+        bad: snapshot_or_rev(args.get(2).unwrap_or(&"HEAD")),
+        test: (*test).to_owned(),
+    };
+    match bisect::run(&params, root()) {
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            exit::BAD_INPUT
+        }
+        Ok(result) => {
+            if json {
+                return emit_json(&result);
+            }
+            if let Some(culprit) = &result.culprit {
+                println!(
+                    "culprit  {}  steps {}  cache_hits {}",
+                    culprit.0, result.steps, result.cache_hits
+                );
+            }
+            exit::OK
         }
     }
 }

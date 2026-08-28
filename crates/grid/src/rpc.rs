@@ -149,9 +149,42 @@ impl Chart {
         // which is that rule in the type system.
         let mut store = grid_chart_io::Store::open(chart_provider::store_dir(&self.root))
             .map_err(chart_provider::Error::Store)?;
+        let prev = store.load();
         let id = store
             .publish(&rev, None, &[survey.image])
             .map_err(chart_provider::Error::Store)?;
+        // Every modification between the previous live set and this one is a
+        // leg: edits made outside `grid edit` are still captured, one leg
+        // per survey interval. Best effort — an unwritable log costs
+        // history, never the snapshot that already published.
+        if !prev.segments().is_empty() && prev.snapshot_id() != &id {
+            let next = store.load();
+            let delta = grid_chart::made_good(
+                grid_wire::SnapshotId(prev.snapshot_id().as_str().to_owned()),
+                prev.segments(),
+                grid_wire::SnapshotId(id.as_str().to_owned()),
+                next.segments(),
+            );
+            let legs: Vec<grid_wire::Leg> = delta
+                .defs
+                .iter()
+                .filter(|d| {
+                    matches!(
+                        d.action,
+                        grid_wire::DefChangeAction::Modified | grid_wire::DefChangeAction::Moved
+                    )
+                })
+                .filter_map(|d| {
+                    Some(grid_wire::Leg {
+                        from: d.before.clone()?,
+                        to: d.after.clone()?,
+                        git_rev: Some(GitRev(rev.clone())),
+                        at: None,
+                    })
+                })
+                .collect();
+            let _unwritable = crate::legs::append(&self.root, &legs);
+        }
         Ok((
             Snapshot {
                 snapshot_id: SnapshotId(id.as_str().to_owned()),
@@ -437,6 +470,15 @@ pub fn cache_record(
     let kind = grid_cache::Kind::from(params.kind);
     let recorded_at = grid_cache::now_rfc3339();
 
+    // A verdict tied to a retained wake also lands in the datum-outcome
+    // log: that pairing — this test, this datum version, this verdict — is
+    // what bisect searches. Best effort, like every history writer.
+    let outcome_test = params.wake_id.as_deref().and_then(|id| {
+        grid_wake::Store::open(wake_dir(root))
+            .ok()
+            .and_then(|s| s.get(id).ok().flatten())
+            .and_then(|stored| stored.wake.command)
+    });
     let mut recorded = 0u64;
     let mut rejected = Vec::new();
     for entry in &params.results {
@@ -463,6 +505,15 @@ pub fn cache_record(
                     )
                     .map_err(|e| e.to_string())?;
                 recorded += 1;
+                if let Some(test) = &outcome_test {
+                    let row = crate::legs::Outcome {
+                        datum: entry.datum.0.clone(),
+                        test: test.clone(),
+                        fails: entry.verdict == CacheResultEntryVerdict::Fail,
+                        at: Some(recorded_at.clone()),
+                    };
+                    let _unwritable = crate::legs::append_outcomes(root, &[row]);
+                }
             }
             Err(reject) => rejected.push(CacheRecordResultRejectedItem {
                 datum: entry.datum.clone(),
