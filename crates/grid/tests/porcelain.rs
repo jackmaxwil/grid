@@ -926,3 +926,40 @@ fn orphans_lists_the_uncalled_with_their_location_and_never_the_called() {
         "orphan rows carry file:line:\n{text}"
     );
 }
+
+#[test]
+fn lcov_ingests_as_a_reach_set_and_omits_what_it_cannot_map() {
+    let dir = repo();
+    // b.py: `def b():` line 1, body line 2. Line 1-2 executed inside b.b;
+    // a DA outside any def (no such line) is omitted, not guessed.
+    let out = grid(dir.path(), &["survey"]);
+    assert_eq!(code(&out), 0);
+    let lcov = format!(
+        "TN:\nSF:{}/b.py\nDA:1,4\nDA:2,4\nDA:9,4\nend_of_record\n",
+        dir.path().display()
+    );
+    std::fs::write(dir.path().join("cov.lcov"), lcov).expect("write");
+    let out = grid(
+        dir.path(),
+        &["wake", "ingest", "--lcov", "cov.lcov", "--test", "a"],
+    );
+    assert_eq!(
+        code(&out),
+        0,
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // One observation: test a -> def b.b (both lines fold into one datum).
+    let text = stdout(&out);
+    assert!(
+        text.lines()
+            .next()
+            .is_some_and(|l| columns(l)[..2] == ["done", "1/1"]),
+        "one deduplicated observation ingested:\n{text}"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("1 executed lines outside any definition"),
+        "the unmappable line is counted, never silently dropped:\n{err}"
+    );
+}

@@ -26,6 +26,7 @@ mod bisect;
 mod chart_provider;
 mod edit;
 mod explain;
+mod lcov;
 mod porcelain;
 mod review;
 mod rpc;
@@ -237,8 +238,24 @@ fn cache(args: &[&str], json: bool) -> u8 {
             }
         }
         Some((&"record", rest)) => {
-            let Some((kind, env, entries)) = cache_args(rest) else {
-                hint("usage: grid cache record <lint|typecheck|test> <env-hash> <datum>=<pass|fail>...");
+            // `--wake <id>` ties the verdict to a retained wake, which is
+            // what lets `grid suspects` use it as a spectrum.
+            let mut wake_id = None;
+            let mut positional = Vec::new();
+            let mut it = rest.iter();
+            while let Some(arg) = it.next() {
+                if *arg == "--wake" {
+                    let Some(id) = it.next() else {
+                        hint("usage: grid cache record <kind> <env-hash> <datum>=<pass|fail>... [--wake <id>]");
+                        return exit::BAD_INPUT;
+                    };
+                    wake_id = Some((*id).to_owned());
+                } else {
+                    positional.push(*arg);
+                }
+            }
+            let Some((kind, env, entries)) = cache_args(&positional) else {
+                hint("usage: grid cache record <lint|typecheck|test> <env-hash> <datum>=<pass|fail>... [--wake <id>]");
                 return exit::BAD_INPUT;
             };
             let kind = match kind {
@@ -271,7 +288,7 @@ fn cache(args: &[&str], json: bool) -> u8 {
                 kind,
                 env_hash: env.to_string(),
                 snapshot: None,
-                wake_id: None,
+                wake_id,
                 results,
             };
             match rpc::cache_record(&params, root) {
@@ -664,6 +681,29 @@ fn uses(args: &[&str], json: bool) -> u8 {
     }
 }
 
+/// A file argument, `-` meaning stdin. `None` prints its own hint.
+fn read_arg(path: &str) -> Option<String> {
+    if path == "-" {
+        use std::io::Read as _;
+        let mut buf = String::new();
+        match std::io::stdin().read_to_string(&mut buf) {
+            Ok(_) => Some(buf),
+            Err(e) => {
+                hint(&format!("grid: cannot read stdin: {e}"));
+                None
+            }
+        }
+    } else {
+        match std::fs::read_to_string(path) {
+            Ok(text) => Some(text),
+            Err(e) => {
+                hint(&format!("grid: cannot read {path}: {e}"));
+                None
+            }
+        }
+    }
+}
+
 /// The wire spelling of a relation, for `--relation` arguments. The serde
 /// names are the vocabulary, so the flag cannot drift from the contract.
 fn relation_named(name: &str) -> Option<grid_wire::Relation> {
@@ -816,6 +856,47 @@ fn suspects(args: &[&str], json: bool) -> u8 {
 fn wake(args: &[&str], json: bool) -> u8 {
     let root = std::path::Path::new(".");
     match args.split_first() {
+        Some((&"ingest", rest)) if rest.first() == Some(&"--lcov") => {
+            // `grid wake ingest --lcov <report> --test <name>` — coverage as
+            // a reach set: every executed line inside a charted definition
+            // becomes one observation from the named test.
+            let (Some(path), Some(&"--test"), Some(test)) = (rest.get(1), rest.get(2), rest.get(3))
+            else {
+                hint("usage: grid wake ingest --lcov <report|-> --test <name>");
+                return exit::BAD_INPUT;
+            };
+            let Some(text) = read_arg(path) else {
+                return exit::BAD_INPUT;
+            };
+            let mapped = match lcov::wake_of(root, &text, test) {
+                Ok(mapped) => mapped,
+                Err(e) => {
+                    hint(&format!("grid: {e}"));
+                    return exit::BAD_INPUT;
+                }
+            };
+            if mapped.unmapped_lines > 0 || mapped.unknown_files > 0 {
+                hint(&format!(
+                    "grid: {} executed lines outside any definition, {} files not in the chart — omitted, not guessed",
+                    mapped.unmapped_lines, mapped.unknown_files
+                ));
+            }
+            let total = mapped.wake.observations.len() as u64;
+            let params = grid_wire::methods::WakeIngestParams { wake: mapped.wake };
+            return match rpc::wake_ingest(&params, root) {
+                Ok(result) => {
+                    if json {
+                        return emit_json(&result);
+                    }
+                    print!("{}", porcelain::wake_ingest(&result, total));
+                    exit::OK
+                }
+                Err(e) => {
+                    hint(&format!("grid: {e}"));
+                    exit::BAD_INPUT
+                }
+            };
+        }
         Some((&"ingest", rest)) => {
             let Some(path) = rest.first() else {
                 hint("usage: grid wake ingest <wake.json|->");
