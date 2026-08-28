@@ -819,22 +819,31 @@ fn log(args: &[&str], json: bool) -> u8 {
     exit::OK
 }
 
-/// `grid hotspots [--limit N]` — complexity × churn, descending: what to
-/// refactor first. No thresholds, no gate, no exit-code opinion — clippy
+/// `grid hotspots [--limit N] [--under <path>]` — complexity × churn,
+/// descending: what to refactor first. No thresholds, no gate, no
+/// exit-code opinion — clippy
 /// owns lints; grid ranks, and the header names the evidence used.
 fn hotspots(args: &[&str], json: bool) -> u8 {
     let mut limit = 20usize;
+    let mut under = None;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         if *arg == "--limit" {
             let Some(n) = it.next().and_then(|n| n.parse().ok()) else {
-                hint("usage: grid hotspots [--limit N]");
+                hint("usage: grid hotspots [--limit N] [--under <path>]");
                 return exit::BAD_INPUT;
             };
             limit = n;
         }
+        if *arg == "--under" {
+            let Some(path) = it.next() else {
+                hint("usage: grid hotspots [--limit N] [--under <path>]");
+                return exit::BAD_INPUT;
+            };
+            under = Some(*path);
+        }
     }
-    match rpc::hotspots(root(), limit) {
+    match rpc::hotspots(root(), limit, under) {
         Err(e) => {
             hint(&format!("grid: {e}"));
             exit::BAD_INPUT
@@ -890,25 +899,34 @@ fn relation_named(name: &str) -> Option<grid_wire::Relation> {
     serde_json::from_value(serde_json::Value::String(name.to_owned())).ok()
 }
 
-/// `grid orphans [--lang <py|rs|ts|js>]` — definitions with no proven
-/// inbound edge. The header states the evidence honestly: *no proven
+/// `grid orphans [--lang <py|rs|ts|js>] [--under <path>]` — definitions
+/// with no proven inbound edge. The header states the evidence honestly:
+/// *no proven
 /// caller* — public API, tests, and macro-reached code all look like this,
 /// and none of them is dead.
 fn orphans(args: &[&str], json: bool) -> u8 {
     let mut lang = None;
+    let mut under = None;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         if *arg == "--lang" {
             let Some(want) = it.next().and_then(|w| {
                 serde_json::from_value(serde_json::Value::String((*w).to_owned())).ok()
             }) else {
-                hint("usage: grid orphans [--lang <py|rs|ts|js>]");
+                hint("usage: grid orphans [--lang <py|rs|ts|js>] [--under <path>]");
                 return exit::BAD_INPUT;
             };
             lang = Some(want);
         }
+        if *arg == "--under" {
+            let Some(path) = it.next() else {
+                hint("usage: grid orphans [--lang <py|rs|ts|js>] [--under <path>]");
+                return exit::BAD_INPUT;
+            };
+            under = Some(*path);
+        }
     }
-    match rpc::orphans(root(), lang) {
+    match rpc::orphans(root(), lang, under) {
         Err(e) => {
             hint(&format!("grid: {e}"));
             exit::BAD_INPUT

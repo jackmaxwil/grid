@@ -9,8 +9,10 @@ and the evidence grade of each claim. Queries, diffs, gates, and fault
 localization all run over that chart, in identity space, not text space.
 
 Languages: Rust and Python today. TS/JS next (`swc`-based frontend planned).
-One binary, no daemon required, no build integration, no config. Survey of
-this repo (~1000 defs): ~38ms.
+One binary, no daemon required, no build integration, no config. Discovery
+is `git ls-files` minus your ignore rules — vendored code behind a
+`.gitignore` line is never charted, tracked or not. Survey of this repo
+(~1000 defs): ~38ms.
 
 ## Why a developer wants it
 
