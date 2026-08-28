@@ -13,7 +13,7 @@ use grid_wire::{
 use grid_xte::lint::{relation_name, render_edge};
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "1.2.0";
+pub const VERSION: &str = "1.3.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -332,6 +332,17 @@ pub fn cache_check(result: &CacheCheckResult) -> String {
 /// Render resolved definitions as `ref` records: callsign, then the datum
 /// prefix that distinguishes them when the callsign does not.
 ///
+/// `root` records: import name, then the directory it roots. The name is
+/// first because it is what appears inside every callsign.
+#[must_use]
+pub fn roots(rows: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (name, dir) in rows {
+        record(&mut out, "root", &[name, dir]);
+    }
+    out
+}
+
 /// `ref` rather than `def` because a `def` record's first column is a change
 /// glyph, and a resolved definition did not change — it exists. Overloading
 /// `def` here would shift every later column by one for anything parsing by

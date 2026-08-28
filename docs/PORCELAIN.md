@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 1.2.0
+version: 1.3.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -17,6 +17,7 @@ document.
 | `ref` | callsign, datum prefix, `file:line` when the snapshot carries locations (`grid resolve` — a definition that exists, not one that changed) |
 | `orphan` | callsign, datum prefix, `file:line` — a definition with no *proven* caller (`grid orphans`); not the same as dead |
 | `leg` | `@from -> @to`, rev — one patch edge in the datum's history, newest first (`grid log`) |
+| `root` | import name, directory — the map callsigns are rooted in (`grid roots`) |
 | `hot` | callsign, `cx N`, `legs M`, `file:line` — complexity × churn, descending (`grid hotspots`); a ranking, never a gate |
 | `edge` | glyph, verdict role, or evidence grade (query results), `src -relation-> dst`, evidence or context |
 | `test` | role, test id, `expected=actual` |
@@ -67,8 +68,11 @@ name suffix or `name@prefix` (git short-SHA auto-lengthening).
 
 `0` success/pass · `1` internal error · `2` bad input or ambiguous name ·
 `3` divergence verdict (gate hold, unaddressed fix anchors) · `4`
-stale-coordinate conflict (`edit apply`). Empty result sets exit `0` with no
-records.
+stale-coordinate conflict (`edit apply`). An empty result *set* (zero
+orphans, zero edges) exits `0` with no records; a name that resolves to
+*nothing* is bad input (`2`), and the stderr hint lists the closest charted
+callsigns — silence was read as "does not exist", which is the one
+conclusion grid never licenses.
 
 ## Versioning
 

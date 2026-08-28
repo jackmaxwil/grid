@@ -88,11 +88,15 @@ grid resolve validate       # unique-suffix lookup -> callsign, datum, file:line
 grid explain zoc            # any word or id in grid output, explained
 ```
 
-Sixteen more verbs behind those three; `grid help` lists them, `grid
-explain <anything>` defines them. Porcelain records on stdout are stable
-and column-aligned (docs/PORCELAIN.md); hints and banners go to stderr;
-`--json` emits the wire result verbatim. Exit codes are uniform: 0 pass,
-1 internal, 2 bad input, 3 divergence, 4 stale coordinate.
+A dozen more verbs behind those; `grid help` lists every one, `grid
+explain <anything>` defines any word in the output, and `grid roots`
+prints the import-name -> directory map callsigns are rooted in.
+Porcelain records on stdout are stable and column-aligned
+(docs/PORCELAIN.md); hints and banners go to stderr; `--json` emits the
+wire result verbatim. Exit codes are uniform: 0 pass, 1 internal, 2 bad
+input, 3 divergence, 4 stale coordinate. A name that resolves to nothing
+is exit 2 with the closest callsigns on stderr — silence is never an
+answer.
 
 ## How agents should use it
 

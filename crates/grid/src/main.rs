@@ -69,6 +69,60 @@ fn banner() {
     ));
 }
 
+/// One line per verb — the banner sells three, this lists them all.
+fn help() {
+    hint(
+        "\nverbs:\n  \
+         survey                       chart the worktree; idempotent\n  \
+         diff [base] [head]           what changed, in defs and edges\n  \
+         resolve <name|file|f:line>   where it is; a bare file lists its defs\n  \
+         uses <name> [--relation r]   proven inbound edges\n  \
+         scope <pattern> [--depth N]  context pack around an edit\n  \
+         orphans [--under p]          no proven caller (not the same as dead)\n  \
+         hotspots [--under p]         complexity x churn, descending\n  \
+         roots                        import name -> directory map\n  \
+         log <name>                   a definition's history in identity space\n  \
+         bisect <test>                first failing patch in the chain\n  \
+         suspects <test>              likely culprits, ranked\n  \
+         gate <track> [head]          promise vs delta; exit 3 on hold\n  \
+         track lint <file>            validate a promise file\n  \
+         todo <track>                 the promise as a worklist\n  \
+         review <track> [head]        gate verdict with its why\n  \
+         cache check|record ...       test verdicts keyed by identity closure\n  \
+         edit apply <file>            compare-and-swap edits by datum\n  \
+         wake ingest|diff ...         runtime traces -> observed edges\n  \
+         explain <anything>           define any word or id in grid output\n  \
+         serve                        the same contract on a socket\n\n\
+         every verb takes --json; hints live on stderr (GRID_HINTS=0)",
+    );
+}
+
+/// `grid roots` — the import-name -> directory map the callsigns are rooted
+/// in. This is discovery output: the roots come from manifests, not the
+/// chart, so it works before the first survey.
+fn roots(_args: &[&str], json: bool) -> u8 {
+    match grid_survey::files::crate_roots(root()) {
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            exit::BAD_INPUT
+        }
+        Ok(roots) => {
+            let rows: Vec<(String, String)> = roots
+                .entries()
+                .map(|(dir, name)| {
+                    let dir = if dir.is_empty() { "." } else { dir };
+                    (name.to_owned(), dir.to_owned())
+                })
+                .collect();
+            if json {
+                return emit_json(&rows);
+            }
+            print!("{}", porcelain::roots(&rows));
+            exit::OK
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let json = args.iter().any(|a| a == "--json");
@@ -88,6 +142,7 @@ fn main() -> ExitCode {
         }
         Some((&"help" | &"--help" | &"-h", _)) => {
             banner();
+            help();
             exit::OK
         }
         Some((&"version", _)) => version(json),
@@ -102,6 +157,7 @@ fn main() -> ExitCode {
         Some((&"edit", args)) => edit(args, json),
         Some((&"uses", args)) => uses(args, json),
         Some((&"orphans", args)) => orphans(args, json),
+        Some((&"roots", args)) => roots(args, json),
         Some((&"log", args)) => log(args, json),
         Some((&"bisect", args)) => bisect_verb(args, json),
         Some((&"hotspots", args)) => hotspots(args, json),
@@ -112,7 +168,7 @@ fn main() -> ExitCode {
         Some((&"serve", args)) => serve::main(args),
         Some((other, _)) => {
             hint(&format!(
-                "grid: unknown verb `{other}`\nhint: run `grid` for the three commands"
+                "grid: unknown verb `{other}`\nhint: `grid help` lists every verb"
             ));
             exit::BAD_INPUT
         }
@@ -441,6 +497,36 @@ fn resolve(args: &[&str], json: bool) -> u8 {
         .rsplit_once(':')
         .and_then(|(file, line)| Some((file, line.parse::<u64>().ok()?)))
         .filter(|(file, _)| file.contains('/'));
+    // A bare file path lists what the file contains — the "what's in
+    // here" opener. `:line` narrows to the enclosing definition instead.
+    let looks_like_file = file_line.is_none()
+        && !name.contains('@')
+        && (name.contains('/')
+            || matches!(
+                name.rsplit_once('.').map(|(_, e)| e),
+                Some("py" | "pyi" | "rs")
+            ));
+    if looks_like_file {
+        return match rpc::defs_in_file(root(), name) {
+            Err(e) => {
+                hint(&format!("grid: {e}"));
+                exit::INTERNAL
+            }
+            Ok(defs) if defs.is_empty() => {
+                hint(&format!(
+                    "grid: no charted definitions in `{name}` — paths are repo-relative"
+                ));
+                exit::BAD_INPUT
+            }
+            Ok(defs) => {
+                if json {
+                    return emit_json(&defs);
+                }
+                print!("{}", porcelain::refs(&defs));
+                exit::OK
+            }
+        };
+    }
     let locator = if let Some((file, line)) = file_line {
         grid_wire::Locator::FileLine {
             file: file.to_owned(),
@@ -471,12 +557,32 @@ fn resolve(args: &[&str], json: bool) -> u8 {
             if defs.len() > 1 {
                 hint(&format!("grid: {name} names {} definitions", defs.len()));
             }
-            // An empty result is exit 0 with no records: "nothing is called
-            // that" is an answer (PORCELAIN.md).
+            // A miss used to be a silent exit 0, and agents read silence as
+            // "does not exist". Bad input plus the near misses instead.
+            if defs.is_empty() {
+                hint(&miss(name));
+                return exit::BAD_INPUT;
+            }
             print!("{}", porcelain::refs(&defs));
             exit::OK
         }
     }
+}
+
+/// The refusal for a name that resolved to nothing: what was asked, and the
+/// closest charted callsigns so a partial path or a typo self-corrects.
+fn miss(name: &str) -> String {
+    let mut msg = format!("grid: nothing is called `{name}`");
+    if let Ok(near) = rpc::nearest(root(), name, 5) {
+        if !near.is_empty() {
+            msg.push_str(" — closest:");
+            for callsign in near {
+                msg.push_str("\n  ");
+                msg.push_str(&callsign);
+            }
+        }
+    }
+    msg
 }
 
 /// `grid scope <callsign-pattern>... [--depth N]` — the context pack around
@@ -669,7 +775,7 @@ fn uses(args: &[&str], json: bool) -> u8 {
             }
             match defs.as_slice() {
                 [] => {
-                    hint(&format!("grid: nothing is called `{name}`"));
+                    hint(&miss(name));
                     return exit::BAD_INPUT;
                 }
                 [_, _, ..] => {
@@ -687,6 +793,9 @@ fn uses(args: &[&str], json: bool) -> u8 {
             }
             if json {
                 return emit_json(&edges);
+            }
+            if edges.is_empty() {
+                hint("grid: no proven callers — not the same as unused; `grid orphans` lists these honestly");
             }
             print!("{}", porcelain::uses(&edges, &namer()));
             exit::OK
@@ -803,7 +912,7 @@ fn log(args: &[&str], json: bool) -> u8 {
         }
     };
     let Some(def) = defs.first() else {
-        hint(&format!("grid: nothing is called `{name}`"));
+        hint(&miss(name));
         return exit::BAD_INPUT;
     };
     let rows = legs::history(root(), &def.datum.0);
@@ -848,12 +957,18 @@ fn hotspots(args: &[&str], json: bool) -> u8 {
             hint(&format!("grid: {e}"));
             exit::BAD_INPUT
         }
-        Ok(rows) => {
+        Ok((rows, source)) => {
             if json {
                 return emit_json(&rows);
             }
-            if rows.iter().all(|r| r.legs == 0) {
-                hint("grid: no patch log yet — ranking by complexity alone; legs accrue from edits and surveys");
+            match source {
+                rpc::ChurnSource::GitFiles => hint(
+                    "grid: churn seeded from git file history (file-level) — grid legs accrue from edits and surveys",
+                ),
+                rpc::ChurnSource::None => hint(
+                    "grid: no history yet — ranking by complexity alone",
+                ),
+                rpc::ChurnSource::Legs => {}
             }
             print!("{}", porcelain::hotspots(&rows));
             exit::OK

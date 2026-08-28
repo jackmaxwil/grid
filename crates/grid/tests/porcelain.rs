@@ -494,7 +494,7 @@ fn diff_prints_edges_in_callsign_space_not_as_hashes() {
 }
 
 #[test]
-fn resolve_finds_a_definition_by_suffix_and_says_nothing_for_an_unknown_name() {
+fn resolve_finds_a_definition_by_suffix_and_refuses_an_unknown_name_loudly() {
     let dir = repo();
     grid(dir.path(), &["survey"]);
     let out = grid(dir.path(), &["resolve", "b"]);
@@ -505,9 +505,10 @@ fn resolve_finds_a_definition_by_suffix_and_says_nothing_for_an_unknown_name() {
     // there is no glyph column and the callsign is first.
     assert_eq!((c[0], c[1]), ("ref", "b.b"));
 
-    // Empty result sets exit 0 with no records (PORCELAIN.md).
+    // A miss is bad input with an empty stdout: silence read as "does not
+    // exist" was the worst agent failure mode, so the refusal is loud now.
     let out = grid(dir.path(), &["resolve", "no.such.name"]);
-    assert_eq!(code(&out), 0);
+    assert_eq!(code(&out), 2);
     assert!(stdout(&out).is_empty());
 }
 
@@ -1062,5 +1063,128 @@ fn scope_defs_carry_their_location() {
             .last()
             .is_some_and(|c| c.starts_with("pkg/util.py:")),
         "scope refs carry file:line:\n{text}"
+    );
+}
+
+#[test]
+fn resolving_an_unknown_name_is_bad_input_with_the_closest_callsigns() {
+    let dir = repo_with_a_call();
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    // `pkg.helper` skips a path segment, so it is not a suffix of
+    // `pkg.util.helper`; the refusal must name the near miss instead of
+    // silently printing nothing.
+    let out = grid(dir.path(), &["resolve", "pkg.helper"]);
+    assert_eq!(code(&out), 2);
+    assert!(stdout(&out).is_empty(), "no records for a non-answer");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("pkg.util.helper"),
+        "the near miss is suggested:\n{err}"
+    );
+    let out = grid(dir.path(), &["resolve", "helpr"]);
+    assert_eq!(code(&out), 2);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("pkg.util.helper"),
+        "a typo still finds its neighbour:\n{err}"
+    );
+}
+
+#[test]
+fn uses_with_no_proven_callers_says_so_instead_of_silence() {
+    let dir = repo();
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let out = grid(dir.path(), &["uses", "a.a"]);
+    assert_eq!(code(&out), 0);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("no proven callers"),
+        "zero edges get a voice:\n{err}"
+    );
+}
+
+#[test]
+fn help_lists_every_verb() {
+    let dir = repo();
+    let out = grid(dir.path(), &["help"]);
+    assert_eq!(code(&out), 0);
+    let err = String::from_utf8_lossy(&out.stderr);
+    for verb in [
+        "survey", "resolve", "uses", "scope", "orphans", "hotspots", "log", "bisect", "gate",
+        "cache", "edit", "wake", "roots",
+    ] {
+        assert!(err.contains(verb), "`{verb}` missing from help:\n{err}");
+    }
+}
+
+#[test]
+fn roots_lists_import_name_to_directory() {
+    let dir = repo();
+    std::fs::create_dir_all(dir.path().join("crates/app/src")).expect("mkdir");
+    std::fs::write(
+        dir.path().join("crates/app/Cargo.toml"),
+        "[package]\nname = \"my-app\"\n",
+    )
+    .expect("write");
+    std::fs::write(
+        dir.path().join("crates/app/src/lib.rs"),
+        "pub fn a() -> u32 { 1 }\n",
+    )
+    .expect("write");
+    let ok = Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(dir.path())
+        .output()
+        .expect("git add")
+        .status
+        .success();
+    assert!(ok);
+    let out = grid(dir.path(), &["roots"]);
+    assert_eq!(code(&out), 0);
+    let text = stdout(&out);
+    assert!(
+        text.lines().any(|l| {
+            let c = columns(l);
+            c.first() == Some(&"root")
+                && c.get(1) == Some(&"my_app")
+                && c.get(2) == Some(&"crates/app")
+        }),
+        "the import-name -> directory row:\n{text}"
+    );
+}
+
+#[test]
+fn resolving_a_bare_file_lists_its_definitions() {
+    let dir = repo();
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let out = grid(dir.path(), &["resolve", "a.py"]);
+    assert_eq!(code(&out), 0);
+    let text = stdout(&out);
+    let c = columns(text.lines().next().expect("a record"));
+    assert_eq!((c[0], c[1]), ("ref", "a.a"), "{text}");
+    assert!(
+        c.last().is_some_and(|l| l.starts_with("a.py:")),
+        "rows are pasteable:\n{text}"
+    );
+}
+
+#[test]
+fn a_fresh_checkout_seeds_churn_from_git_history() {
+    // repo(): two commits, one file each. No grid-recorded legs exist, so
+    // the ranking would otherwise be complexity-only with every row legs 0.
+    let dir = repo();
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let out = grid(dir.path(), &["hotspots", "--limit", "10"]);
+    assert_eq!(code(&out), 0);
+    let text = stdout(&out);
+    assert!(
+        text.lines()
+            .any(|l| columns(l).windows(2).any(|w| w == ["legs", "1"])),
+        "file-level git churn seeds the ranking:\n{text}"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("git file history"),
+        "the churn source is named:\n{err}"
     );
 }

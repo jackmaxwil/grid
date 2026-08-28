@@ -205,6 +205,94 @@ impl Chart {
     }
 }
 
+/// The `k` charted callsigns nearest to `name`: ranked by edit distance on
+/// the last dotted segment (the part a caller most likely typed), full-name
+/// distance as the tiebreak. This is what turns a silent miss into a hint.
+///
+/// # Errors
+/// [`chart_provider::Error`] if the store cannot be opened.
+pub fn nearest(
+    root: &std::path::Path,
+    name: &str,
+    k: usize,
+) -> Result<Vec<String>, chart_provider::Error> {
+    let tail = |s: &str| s.rsplit('.').next().unwrap_or(s).to_owned();
+    let wanted = tail(name);
+    let chart = ChartDelta::open(root)?;
+    let mut scored: Vec<(usize, usize, String)> = live_defs(&chart)
+        .into_iter()
+        .map(|(_, callsign, _, _)| {
+            (
+                edit_distance(&wanted, &tail(&callsign)),
+                edit_distance(name, &callsign),
+                callsign,
+            )
+        })
+        .collect();
+    scored.sort();
+    scored.dedup_by(|a, b| a.2 == b.2);
+    Ok(scored.into_iter().take(k).map(|(_, _, c)| c).collect())
+}
+
+/// Levenshtein distance, plain DP — the inputs are callsigns, short enough
+/// that anything cleverer is noise.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut row = vec![i.saturating_add(1)];
+        for (j, cb) in b.iter().enumerate() {
+            let sub = prev[j] + usize::from(ca != cb);
+            let best = sub
+                .min(prev[j + 1].saturating_add(1))
+                .min(row[j].saturating_add(1));
+            row.push(best);
+        }
+        prev = row;
+    }
+    prev.last().copied().unwrap_or(0)
+}
+
+/// `grid resolve <file>` — every definition the file contains, in line
+/// order: the "what is in here" opener, half of `scope` for a whole file.
+///
+/// # Errors
+/// [`chart_provider::Error`] if the store cannot be opened.
+pub fn defs_in_file(
+    root: &std::path::Path,
+    path: &str,
+) -> Result<Vec<grid_wire::DefRef>, chart_provider::Error> {
+    let chart = ChartDelta::open(root)?;
+    let mut out = Vec::new();
+    for segment in chart.head().segments() {
+        for i in 0..segment.def_count() {
+            let ord = grid_chart::Ordinal(i);
+            let Some(loc) = segment.location(ord) else {
+                continue;
+            };
+            if loc.path != path {
+                continue;
+            }
+            let (Some(datum), Some(callsign)) = (segment.datum(ord), segment.callsign(ord)) else {
+                continue;
+            };
+            out.push(grid_wire::DefRef {
+                datum: grid_wire::Datum(datum.to_string()),
+                callsign: Some(grid_wire::Callsign(callsign.to_owned())),
+                lang: segment.lang(ord),
+                signature: None,
+                materialization: Some(grid_wire::DefRefMaterialization {
+                    file: loc.path.to_owned(),
+                    line: u64::from(loc.line),
+                }),
+            });
+        }
+    }
+    out.sort_by_key(|d| d.materialization.as_ref().map_or(0, |m| m.line));
+    Ok(out)
+}
+
 /// Does a def materialized at `path` fall under the `--under` prefix?
 /// Boundary-aware: `--under crates` keeps `crates/x.rs`, not `crates2/`.
 /// A def with no recorded location (an epoch-1 segment) matches nothing.
@@ -281,10 +369,22 @@ pub struct Hotspot {
     pub materialization: Option<grid_wire::DefRefMaterialization>,
 }
 
+/// Where the churn multiplier came from — named so the caller can say so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChurnSource {
+    /// The grid patch log: identity-level, rename-proof.
+    Legs,
+    /// `git log --numstat`, file-level: every def in a file inherits its
+    /// file's commit count. Coarser, but honest on a fresh checkout.
+    GitFiles,
+    /// Neither exists; the ranking is complexity alone.
+    None,
+}
+
 /// `grid.hotspots` — complexity × churn, descending. Churn is the number of
 /// legs in the datum's identity component of the patch log, so it survives
-/// renames; with no log yet, every def scores churn 0 and the ranking
-/// degrades to complexity alone.
+/// renames; with no log yet it falls back to file-level git history, so a
+/// fresh checkout still ranks by both axes.
 ///
 /// # Errors
 /// [`chart_provider::Error`] if the store cannot be opened.
@@ -292,7 +392,7 @@ pub fn hotspots(
     root: &std::path::Path,
     limit: usize,
     under: Option<&str>,
-) -> Result<Vec<Hotspot>, chart_provider::Error> {
+) -> Result<(Vec<Hotspot>, ChurnSource), chart_provider::Error> {
     let chart = ChartDelta::open(root)?;
     // Union legs into identity components by plain map-merging: the log is
     // small (one row per recorded modification), so O(legs · chain) is fine.
@@ -331,6 +431,18 @@ pub fn hotspots(
             *per_component.entry(*id).or_insert(0) += 1;
         }
     }
+    let file_churn = if legs.is_empty() {
+        git_file_churn(root)
+    } else {
+        std::collections::HashMap::new()
+    };
+    let source = if !legs.is_empty() {
+        ChurnSource::Legs
+    } else if file_churn.is_empty() {
+        ChurnSource::None
+    } else {
+        ChurnSource::GitFiles
+    };
 
     let mut out = Vec::new();
     for segment in chart.head().segments() {
@@ -347,11 +459,18 @@ pub fn hotspots(
                 continue;
             }
             let datum = datum.to_string();
-            let churn = component
-                .get(&datum)
-                .and_then(|id| per_component.get(id))
-                .copied()
-                .unwrap_or(0);
+            let churn = match source {
+                ChurnSource::GitFiles => segment
+                    .location(ord)
+                    .and_then(|loc| file_churn.get(loc.path))
+                    .copied()
+                    .unwrap_or(0),
+                _ => component
+                    .get(&datum)
+                    .and_then(|id| per_component.get(id))
+                    .copied()
+                    .unwrap_or(0),
+            };
             out.push(Hotspot {
                 callsign: callsign.to_owned(),
                 datum,
@@ -369,7 +488,37 @@ pub fn hotspots(
     }
     out.sort_by(|a, b| b.score.cmp(&a.score).then(a.callsign.cmp(&b.callsign)));
     out.truncate(limit);
-    Ok(out)
+    Ok((out, source))
+}
+
+/// Commits touching each file, from `git log --numstat`.
+/// ponytail: capped at the last 1000 commits — churn is a ranking input,
+/// and deep history stops changing the order long before it stops costing.
+fn git_file_churn(root: &std::path::Path) -> std::collections::HashMap<String, u64> {
+    let out = std::process::Command::new("git")
+        .args(["log", "--numstat", "--format=", "-n", "1000"])
+        .current_dir(root)
+        .output();
+    let Ok(out) = out else {
+        return std::collections::HashMap::new();
+    };
+    if !out.status.success() {
+        return std::collections::HashMap::new();
+    }
+    let mut churn = std::collections::HashMap::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        // "added\tdeleted\tpath"; a rename spells "{a => b}/c" and is left
+        // uncounted — an omission, never a wrong attribution.
+        let mut parts = line.split('\t');
+        let (Some(_), Some(_), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        if path.contains("=>") {
+            continue;
+        }
+        *churn.entry(path.to_owned()).or_insert(0) += 1;
+    }
+    churn
 }
 
 /// `grid.snapshot.current` — the published snapshot, or `None` for a store
