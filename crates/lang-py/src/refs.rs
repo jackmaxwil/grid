@@ -28,11 +28,15 @@ use grid_datum::{FileRefs, Import, ParseError, RefKind, Reference};
 pub fn references(source: &str) -> Result<FileRefs, ParseError> {
     let module =
         ast::ModModule::parse(source, "<datum>").map_err(|e| ParseError::new(e.to_string()))?;
+    Ok(references_of(module.body))
+}
+
+pub(crate) fn references_of(body: Vec<rustpython_parser::ast::Stmt>) -> FileRefs {
     let mut scan = Scan::default();
-    for stmt in module.body {
+    for stmt in body {
         scan.visit_stmt(stmt);
     }
-    Ok(scan.out)
+    scan.out
 }
 
 #[derive(Default)]

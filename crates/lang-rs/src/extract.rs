@@ -18,9 +18,13 @@ use crate::canon;
 /// Returns `ParseError` if the source is not valid Rust.
 pub fn definitions(source: &str) -> Result<Vec<Definition>, ParseError> {
     let file = syn::parse_file(source).map_err(|e| ParseError::new(e.to_string()))?;
+    Ok(definitions_of(&file, source))
+}
+
+pub(crate) fn definitions_of(file: &syn::File, source: &str) -> Vec<Definition> {
     let mut out = Vec::new();
     walk(&file.items, source, "", &mut out);
-    Ok(out)
+    out
 }
 
 fn join(prefix: &str, name: &str) -> String {

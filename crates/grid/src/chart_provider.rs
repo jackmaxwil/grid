@@ -198,7 +198,7 @@ impl ChartDelta {
                 let hit = match locator {
                     L::Datum { datum: want } => datum.to_string() == want.0,
                     L::Callsign { callsign: want } => suffix_matches(callsign, &want.0),
-                    L::Handle { handle } => suffix_matches(callsign, &handle.0),
+                    L::Handle { handle } => handle_matches(callsign, &datum.to_string(), &handle.0),
                     L::Fix { fix } => datum.to_string() == fix.datum.0,
                     // A file:line locator needs materialization, which the
                     // segment does not carry yet: an empty answer is honest.
@@ -304,6 +304,21 @@ impl DeltaProvider for ChartDelta {
 /// `validate` matches `pkg.TagContract.validate` but not `revalidate`: a
 /// suffix that starts mid-name is not a name, and matching it would resolve a
 /// locator to a definition the user did not ask for.
+/// Match `name@hexprefix` against a callsign and its datum. The suffix after
+/// the LAST `@` is a datum pin only when it is pure hex — a Rust trait-impl
+/// callsign (`Foo@Frob.go`) carries `@` in the name itself, and its
+/// trait/method suffix always holds a `.` or a non-hex letter. (A trait
+/// spelled only in hex letters and pinned bare would misparse; none exists.)
+pub(crate) fn handle_matches(callsign: &str, datum: &str, handle: &str) -> bool {
+    match handle.rsplit_once('@') {
+        Some((name, pin)) if !pin.is_empty() && pin.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            suffix_matches(callsign, name)
+                && datum.strip_prefix("b3:").unwrap_or(datum).starts_with(pin)
+        }
+        _ => suffix_matches(callsign, handle),
+    }
+}
+
 pub(crate) fn suffix_matches(callsign: &str, want: &str) -> bool {
     callsign == want
         || callsign

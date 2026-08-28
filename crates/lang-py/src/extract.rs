@@ -15,9 +15,13 @@ use rustpython_parser::ast::fold::Fold;
 pub fn definitions(source: &str) -> Result<Vec<Definition>, ParseError> {
     let module =
         ast::ModModule::parse(source, "<datum>").map_err(|e| ParseError::new(e.to_string()))?;
+    Ok(definitions_of(&module.body, source))
+}
+
+pub(crate) fn definitions_of(body: &[Stmt], source: &str) -> Vec<Definition> {
     let mut out = Vec::new();
-    walk(&module.body, source, "", &mut out);
-    Ok(out)
+    walk(body, source, "", &mut out);
+    out
 }
 
 fn walk(body: &[Stmt], source: &str, prefix: &str, out: &mut Vec<Definition>) {

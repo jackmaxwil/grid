@@ -236,7 +236,13 @@ impl Store {
         if !retained.exists() {
             write_atomic(&self.dir, &retained, &bytes, "snap.tmp")?;
         }
-        write_atomic(&self.dir, &self.dir.join(MANIFEST), &bytes, MANIFEST_TMP)?;
+        // The live manifest is content too: republishing an identical state
+        // must rewrite nothing (D5), and the unconditional rewrite here was
+        // measured as the whole fsync cost of an unchanged `grid survey`.
+        let live = self.dir.join(MANIFEST);
+        if !fs::read(&live).is_ok_and(|current| current == bytes) {
+            write_atomic(&self.dir, &live, &bytes, MANIFEST_TMP)?;
+        }
         let epoch = load_epoch(&self.dir, manifest)?;
         let id = epoch.snapshot_id().clone();
         self.epoch.store(Arc::new(epoch));

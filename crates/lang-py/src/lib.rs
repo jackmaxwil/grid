@@ -13,7 +13,7 @@ mod refs;
 pub use extract::definitions;
 pub use refs::references;
 
-use grid_datum::{Datum, ParseError};
+use grid_datum::{Datum, Definition, FileRefs, ParseError};
 use rustpython_parser::ast;
 use rustpython_parser::ast::fold::Fold;
 use rustpython_parser::{lexer, Mode, Parse, Tok};
@@ -38,6 +38,18 @@ pub struct Normalized {
     pub canonical: Vec<u8>,
     /// Comments, in source order. Metadata, never hashed.
     pub comments: Vec<Comment>,
+}
+
+/// Both extractions off one parse — the survey's hot path, where parsing
+/// every file twice was measured at half the whole extraction phase.
+///
+/// # Errors
+/// Returns [`ParseError`] if `source` is not valid Python.
+pub fn file_facts(source: &str) -> Result<(Vec<Definition>, FileRefs), ParseError> {
+    let module =
+        ast::ModModule::parse(source, "<datum>").map_err(|e| ParseError::new(e.to_string()))?;
+    let defs = extract::definitions_of(&module.body, source);
+    Ok((defs, refs::references_of(module.body)))
 }
 
 /// Parse -> alpha-rename locals -> erase ranges -> canonical bytes -> blake3.

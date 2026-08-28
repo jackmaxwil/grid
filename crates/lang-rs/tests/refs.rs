@@ -56,6 +56,27 @@ fn a_glob_import_binds_no_name() {
 }
 
 #[test]
+fn a_self_leaf_binds_the_module_itself() {
+    let i = imports("use crate::chart_provider::{self, ChartDelta};\nuse a::b::{self as c};");
+    assert_eq!(
+        i,
+        vec![
+            (
+                "chart_provider".into(),
+                "crate.chart_provider".into(),
+                String::new()
+            ),
+            (
+                "ChartDelta".into(),
+                "crate.chart_provider.ChartDelta".into(),
+                String::new()
+            ),
+            ("c".into(), "a.b".into(), String::new()),
+        ]
+    );
+}
+
+#[test]
 fn self_calls_are_kept_apart_and_stripped() {
     let src = "struct Foo;\nimpl Foo {\n  fn a(&self) { self.b(); Self::c(); }\n  fn b(&self) {}\n  fn c() {}\n}";
     let r = refs(src);
