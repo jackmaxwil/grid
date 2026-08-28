@@ -56,6 +56,19 @@ fn a_glob_import_binds_no_name() {
 }
 
 #[test]
+fn pub_use_is_a_reexport_and_plain_use_is_not() {
+    let refs = references("mod util;\npub use util::helper;\nuse util::other;").expect("valid");
+    let rx: Vec<(String, String)> = refs
+        .reexports
+        .iter()
+        .map(|i| (i.alias.clone(), i.target.clone()))
+        .collect();
+    assert_eq!(rx, vec![("helper".into(), "util.helper".into())]);
+    // Both bindings are still ordinary imports for this file's own refs.
+    assert_eq!(refs.imports.len(), 2);
+}
+
+#[test]
 fn a_self_leaf_binds_the_module_itself() {
     let i = imports("use crate::chart_provider::{self, ChartDelta};\nuse a::b::{self as c};");
     assert_eq!(

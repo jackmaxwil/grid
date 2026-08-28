@@ -226,12 +226,19 @@ impl<'ast> Visit<'ast> for Scan {
     }
 
     fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
+        let before = self.out.imports.len();
         flatten_use(
             &node.tree,
             &mut Vec::new(),
             &self.scope,
             &mut self.out.imports,
         );
+        // Any visibility beyond inherited makes the binding reachable from
+        // other files — the raw material of alias resolution.
+        if !matches!(node.vis, syn::Visibility::Inherited) {
+            let reexported = self.out.imports.get(before..).unwrap_or_default().to_vec();
+            self.out.reexports.extend(reexported);
+        }
     }
 
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {

@@ -92,6 +92,48 @@ fn glob_names_macro_bodies_and_typed_receivers_resolve_to_nothing() {
 }
 
 #[test]
+fn cross_crate_calls_resolve_through_manifest_names_and_reexports() {
+    // The package is named with a hyphen and a prefix its directory lacks,
+    // and the callee is only reachable through a `pub use` — the two ways
+    // cross-crate resolution failed before CrateRoots and aliases.
+    let dir = repo(&[
+        (
+            "crates/core/Cargo.toml",
+            "[package]\nname = \"app-core\"\nversion = \"0.1.0\"\n",
+        ),
+        (
+            "crates/core/src/lib.rs",
+            "mod util;\npub use util::helper;\n",
+        ),
+        ("crates/core/src/util.rs", "pub fn helper() -> u32 { 1 }\n"),
+        (
+            "crates/cli/Cargo.toml",
+            "[package]\nname = \"app-cli\"\nversion = \"0.1.0\"\n",
+        ),
+        (
+            "crates/cli/src/main.rs",
+            "fn main() { let _ = app_core::helper(); }\n",
+        ),
+    ]);
+    let s = survey(dir.path());
+    // main -> app_core.util.helper, through the alias.
+    assert_eq!(s.edges, 1);
+}
+
+#[test]
+fn a_reexport_never_shadows_a_real_definition() {
+    let dir = repo(&[(
+        "crates/app/src/lib.rs",
+        "mod inner;\npub use inner::helper;\npub fn helper() -> u32 { 2 }\npub fn f() -> u32 { helper() }\n",
+    ),
+    ("crates/app/src/inner.rs", "pub fn helper() -> u32 { 1 }\n")]);
+    let s = survey(dir.path());
+    // f -> the real lib.rs helper only; the alias must not add a second
+    // edge or divert the first.
+    assert_eq!(s.edges, 1);
+}
+
+#[test]
 fn python_and_rust_survey_side_by_side() {
     let dir = repo(&[
         (

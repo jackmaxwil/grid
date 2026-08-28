@@ -127,10 +127,11 @@ struct Located {
 
 /// Every definition in the tree, in `git ls-files` order then span order.
 fn locate_all(root: &Path) -> Result<Vec<Located>, Error> {
-    let sources = grid_survey::files::sources(root).map_err(|e| Error::Io(e.to_string()))?;
+    let (sources, roots) =
+        grid_survey::files::sources(root).map_err(|e| Error::Io(e.to_string()))?;
     let mut out = Vec::new();
     for file in &sources {
-        let module = grid_survey::files::module_of(file.lang, &file.path);
+        let module = grid_survey::files::module_of(file.lang, &file.path, &roots);
         for def in grid_survey::extract(file.lang, &file.source).defs {
             out.push(Located {
                 file: file.path.clone(),
@@ -276,6 +277,7 @@ fn plan<'a>(params: &'a EditApplyParams, defs: &[Located], root: &Path) -> Resul
 /// write. A file with no planned splice is never opened for writing, so a
 /// refused request is byte-identical to no request.
 fn build_and_write(plan: Plan<'_>, root: &Path) -> Result<Outcome, Error> {
+    let roots = grid_survey::files::crate_roots(root).map_err(|e| Error::Io(e.to_string()))?;
     let mut writes: Vec<(String, String)> = Vec::new();
     let mut applied: Vec<(usize, Datum)> = Vec::new();
     let mut details: Vec<(usize, EditDetail)> = Vec::new();
@@ -299,7 +301,7 @@ fn build_and_write(plan: Plan<'_>, root: &Path) -> Result<Outcome, Error> {
 
         let lang = grid_survey::files::lang_of(&file)
             .ok_or_else(|| Error::BrokenResult(format!("{file}: no frontend claims this file")))?;
-        let module = grid_survey::files::module_of(lang, &file);
+        let module = grid_survey::files::module_of(lang, &file, &roots);
         let new_defs = grid_survey::definitions(lang, &image)
             .map_err(|e| Error::BrokenResult(format!("{file}: {e}")))?;
         for (splice, start) in list.iter().zip(&new_starts) {
@@ -331,7 +333,7 @@ fn build_and_write(plan: Plan<'_>, root: &Path) -> Result<Outcome, Error> {
         // — for a config bootstrap that is nothing, which is the honest list.
         let mut defined = false;
         if let Some(lang) = grid_survey::files::lang_of(&path) {
-            let module = grid_survey::files::module_of(lang, &path);
+            let module = grid_survey::files::module_of(lang, &path, &roots);
             for def in grid_survey::definitions(lang, &spec.new_text)
                 .map_err(|e| Error::BrokenResult(format!("{path}: {e}")))?
             {

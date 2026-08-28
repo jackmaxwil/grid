@@ -180,12 +180,13 @@ expansion, a `modeled` tier) is a later wave with its own evidence story.
   `tests/identity.rs` so accidentally gaining the invariance (an epoch
   change) fails a test instead of passing silently. The upgrade is a
   scope-aware alpha renamer and a deliberate `grid-lang-rs/v2` epoch bump.
-- **The module-path ceiling bites this very repo.** Self-hosting works —
-  `grid survey` charts grid at ~920 defs / ~969 proven edges, and `grid`
-  diffs its own working tree in datum space — but every proven Rust edge is
-  intra-crate: the packages are named `grid-*` while their directories are
-  `lang-py`, `chart`, …, so a cross-crate path like `grid_chart::build`
-  never matches the dir-derived module root `chart`. The acceptance bar
-  ("`grid.edit` -> lang-py extraction") therefore stands amended to
-  intra-crate edges until the Cargo.toml-aware module root lands — the
-  additive fix this page already named.
+- **The module-path ceiling bit this very repo, then got fixed.** With
+  dir-derived roots every proven Rust edge was intra-crate: packages named
+  `grid-*` lived in directories named `chart`, `lang-py`. `CrateRoots` now
+  maps each file to its nearest manifest's `[package] name` (a line scan,
+  not a TOML parser), and `pub use` re-exports resolve through index
+  aliases — a real definition always shadows an alias, and an alias chain
+  deeper than 8 refuses. Cross-crate edges on this repo went from zero to
+  ~400, including through re-exports. Remaining ceilings: glob re-exports
+  (`pub use x::*`) stay omissions, and `[lib] name`/`#[path]` still fall
+  back to the directory name.
