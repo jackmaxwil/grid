@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/datum",
+    "crates/lang-py",
     "crates/survey",
     "crates/chart",
     "crates/chart-io",

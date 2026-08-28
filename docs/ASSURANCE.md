@@ -43,10 +43,13 @@ Every dependency in `Cargo.lock` gets a line here saying why it is in the TCB.
 - Wave 0: no dependencies.
 - Wave 1 (`wire`): `serde`, `serde_json` — the external vocabulary is boring
   serde by design (engine plan); the wire is the only place JSON is parsed.
-- Wave 2 (`datum`): `blake3` — the hash the `Datum` schema names, so it is
-  contract, not choice. `rustpython-parser` — a pure-Rust Python parser, no
-  Python runtime and no C in the build; a parser must exist somewhere and this
-  one keeps `forbid(unsafe_code)` intact outside `chart-io`. `proptest`
+- Wave 2 (`datum`, since split into `datum` + `lang-py`): `blake3` — the hash
+  the `Datum` schema names, so it is contract, not choice. `rustpython-parser`
+  — a pure-Rust Python parser, no Python runtime and no C in the build; a
+  parser must exist somewhere and this one keeps `forbid(unsafe_code)` intact
+  outside `chart-io`. The parser now lives only in `grid-lang-py`; `grid-datum`
+  is the parser-free identity vocabulary every frontend emits, so adding a
+  language adds a `grid-lang-*` crate, never a parser above one. `proptest`
   (dev-only) — the property harness C6 is evidenced by.
 - Wave 5 (`survey`): no new dependencies. Extraction reuses `datum`'s parser
   (one parse of a file serves identity and references alike), discovery is
@@ -73,7 +76,7 @@ Every dependency in `Cargo.lock` gets a line here saying why it is in the TCB.
   production cache-hit threshold.
 
 - Wave 6 (`grid` agent verbs): no new dependencies. The write path reuses
-  `grid-datum`'s parser — an edit's new identity is computed by the same
+  `grid-lang-py`'s parser — an edit's new identity is computed by the same
   normalization the survey would compute, so a post-edit survey can only
   agree — and file discovery stays `git ls-files` via `grid-survey`.
   `serde_json` becomes a *build* dependency of `grid` (the explain corpus is

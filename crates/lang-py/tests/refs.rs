@@ -5,7 +5,8 @@
 //! produced no reference at all" — the second kind matters more, because a
 //! reference invented here becomes a false edge in the chart, and a false
 //! proven edge is worse than a missing one.
-use grid_datum::{references, RefKind};
+use grid_datum::RefKind;
+use grid_lang_py::references;
 
 /// `(from, kind, dotted path)` — the shape assertions are written in.
 fn refs(src: &str) -> Vec<(String, RefKind, String)> {

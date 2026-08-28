@@ -1,4 +1,4 @@
-use grid_datum::normalize;
+use grid_lang_py::normalize;
 
 fn d(src: &str) -> String {
     normalize(src).unwrap().datum.to_string()

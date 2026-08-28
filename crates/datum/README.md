@@ -1,20 +1,15 @@
 # grid-datum
 
-Single responsibility: identity: parse -> normalize -> blake3. Pure, no I/O.
+Single responsibility: the identity vocabulary every frontend speaks. Pure,
+no I/O, no parser.
 
-A `Datum` answers "is this the same definition?" Reformat the code, rewrite its
-comments, rename its locals: same datum. Change what it calls, what it returns,
-or any name another file can see: different datum.
+A `Datum` answers "is this the same definition?" — `b3:` + blake3 of the
+canonical bytes a frontend's normalizer produced. `span_hash` is the inverse
+instrument: raw source bytes, sensitive to everything the datum ignores.
+`Definition`, `Reference`, `Import`, `FileRefs` are the shapes a frontend
+emits; a callsign is an opaque ordered string in the frontend's own spelling.
 
-```
-normalize(source) -> { datum, canonical, comments }
-definitions(source) -> [{ callsign, datum, span_hash, span, kind }]
-span_hash(source) -> b3:...      // the inverse: sensitive to everything
-```
-
-Not renamed, because they are interface: module- and class-level names, globals
-(`global x`), attributes, and every name the definition does not bind itself.
-
-The canonical bytes carry a `grid-datum/v1` prefix. Changing normalization
-changes every datum in the world, so that prefix is a declared epoch, bumped
-deliberately or not at all.
+Frontends (`grid-lang-py` today) own parsing and normalization for one
+language each. Dispatch by language lives in `grid-survey`, the one layer
+that knows what a file is. This crate exists so that adding a language never
+adds a parser to anything above a frontend.

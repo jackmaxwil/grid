@@ -131,7 +131,7 @@ fn locate_all(root: &Path) -> Result<Vec<Located>, Error> {
     let mut out = Vec::new();
     for file in &sources {
         let module = grid_survey::files::module_of(&file.path);
-        for def in grid_survey::extract(&file.source).defs {
+        for def in grid_survey::extract(file.lang, &file.source).defs {
             out.push(Located {
                 file: file.path.clone(),
                 span: whole_lines(&file.source, def.span),
@@ -298,7 +298,7 @@ fn build_and_write(plan: Plan<'_>, root: &Path) -> Result<Outcome, Error> {
         image.push_str(&original[cursor..]);
 
         let module = grid_survey::files::module_of(&file);
-        let new_defs = grid_datum::definitions(&image)
+        let new_defs = grid_lang_py::definitions(&image)
             .map_err(|e| Error::BrokenResult(format!("{file}: {e}")))?;
         for (splice, start) in list.iter().zip(&new_starts) {
             // The replacement def begins inside the region the new text
@@ -330,7 +330,7 @@ fn build_and_write(plan: Plan<'_>, root: &Path) -> Result<Outcome, Error> {
         let mut defined = false;
         if grid_survey::files::lang_of(&path).is_some() {
             let module = grid_survey::files::module_of(&path);
-            for def in grid_datum::definitions(&spec.new_text)
+            for def in grid_lang_py::definitions(&spec.new_text)
                 .map_err(|e| Error::BrokenResult(format!("{path}: {e}")))?
             {
                 defined = true;

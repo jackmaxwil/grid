@@ -11,6 +11,7 @@ workspace = true
 blake3 = "1"
 grid-chart = { path = "../chart", version = "0.1.0" }
 grid-datum = { path = "../datum", version = "0.1.0" }
+grid-lang-py = { path = "../lang-py", version = "0.1.0" }
 grid-wire = { path = "../wire", version = "0.1.0" }
 
 [dev-dependencies]

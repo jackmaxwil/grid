@@ -4,30 +4,8 @@ use rustpython_parser::ast::{self, EmptyRange, Ranged, Stmt};
 use rustpython_parser::Parse;
 
 use crate::canon::{self, Renamer};
-use crate::{span_hash, Datum, ParseError};
+use grid_datum::{span_hash, Datum, DefKind, Definition, ParseError};
 use rustpython_parser::ast::fold::Fold;
-
-/// What kind of definition a `Definition` names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DefKind {
-    Function,
-    Class,
-}
-
-/// One extracted definition.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Definition {
-    pub kind: DefKind,
-    /// Dotted path from module root, e.g. `TagContract.validate`.
-    pub callsign: String,
-    /// `blake3(normalized AST)` — invariant under formatting, comments and
-    /// local renaming.
-    pub datum: Datum,
-    /// `blake3(raw source bytes of the span)` — sensitive to exactly those.
-    pub span_hash: String,
-    /// Byte range of the definition in the source.
-    pub span: std::ops::Range<usize>,
-}
 
 /// Extract every `def`/`class` definition in a Python source file, outermost
 /// first, each nested definition following its parent.
@@ -35,7 +13,8 @@ pub struct Definition {
 /// # Errors
 /// Returns `ParseError` if the source is not valid Python.
 pub fn definitions(source: &str) -> Result<Vec<Definition>, ParseError> {
-    let module = ast::ModModule::parse(source, "<datum>").map_err(|e| ParseError(e.to_string()))?;
+    let module =
+        ast::ModModule::parse(source, "<datum>").map_err(|e| ParseError::new(e.to_string()))?;
     let mut out = Vec::new();
     walk(&module.body, source, "", &mut out);
     Ok(out)
@@ -68,7 +47,7 @@ fn walk(body: &[Stmt], source: &str, prefix: &str, out: &mut Vec<Definition>) {
         out.push(Definition {
             kind,
             callsign: callsign.clone(),
-            datum: Datum::of_bytes(&canon::canonical_bytes(&folded)),
+            datum: Datum::of_canonical_bytes(&canon::canonical_bytes(&folded)),
             span_hash: span_hash(text),
             span,
         });

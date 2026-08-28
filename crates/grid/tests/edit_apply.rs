@@ -68,7 +68,7 @@ fn columns(line: &str) -> Vec<&str> {
 /// wire result reports it.
 fn current_datum(dir: &Path) -> String {
     let source = std::fs::read_to_string(dir.join("util.py")).expect("read");
-    let defs = grid_survey::extract(&source).defs;
+    let defs = grid_survey::extract(grid_wire::Lang::Py, &source).defs;
     assert_eq!(defs.len(), 1);
     defs[0].datum.as_str().to_string()
 }
@@ -280,7 +280,7 @@ fn one_request_many_files_applies_in_order() {
     git(dir.path(), &["add", "a.py"]);
     let helper = current_datum(dir.path());
     let a_source = std::fs::read_to_string(dir.path().join("a.py")).expect("read");
-    let a_datum = grid_survey::extract(&a_source).defs[0]
+    let a_datum = grid_survey::extract(grid_wire::Lang::Py, &a_source).defs[0]
         .datum
         .as_str()
         .to_string();
