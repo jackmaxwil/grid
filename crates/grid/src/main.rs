@@ -400,13 +400,23 @@ fn diff(args: &[&str], json: bool) -> u8 {
 /// list is what makes the next command typeable.
 fn resolve(args: &[&str], json: bool) -> u8 {
     let Some(name) = args.first() else {
-        hint("usage: grid resolve <callsign>");
+        hint("usage: grid resolve <callsign|name@prefix>");
         return exit::BAD_INPUT;
     };
-    let params = grid_wire::methods::ResolveParams {
-        locator: grid_wire::Locator::Callsign {
+    // `@` may be a datum pin or a Rust trait-impl callsign; the Handle
+    // locator tells them apart by whether the suffix is hex, so a pinned
+    // name spells the same here as in `grid uses`.
+    let locator = if name.contains('@') {
+        grid_wire::Locator::Handle {
+            handle: grid_wire::Handle((*name).to_string()),
+        }
+    } else {
+        grid_wire::Locator::Callsign {
             callsign: grid_wire::Callsign((*name).to_string()),
-        },
+        }
+    };
+    let params = grid_wire::methods::ResolveParams {
+        locator,
         snapshot: None,
     };
     match rpc::resolve(&params, root()) {

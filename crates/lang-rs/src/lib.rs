@@ -12,3 +12,18 @@ mod refs;
 
 pub use extract::definitions;
 pub use refs::references;
+
+use grid_datum::{Definition, FileRefs, ParseError};
+
+/// Both extractions off one parse — the survey's hot path, where parsing
+/// every file twice was measured at half the whole extraction phase.
+///
+/// # Errors
+/// Returns [`ParseError`] if `source` is not valid Rust.
+pub fn file_facts(source: &str) -> Result<(Vec<Definition>, FileRefs), ParseError> {
+    let file = syn::parse_file(source).map_err(|e| ParseError::new(e.to_string()))?;
+    Ok((
+        extract::definitions_of(&file, source),
+        refs::references_of(&file),
+    ))
+}

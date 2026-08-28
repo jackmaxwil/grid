@@ -61,23 +61,45 @@ pub fn tracked(root: &Path) -> Result<Vec<PathBuf>, SurveyError> {
 /// # Errors
 /// [`SurveyError::Git`] if the file list cannot be obtained.
 pub fn sources(root: &Path) -> Result<Vec<SourceFile>, SurveyError> {
-    let mut out = Vec::new();
-    for rel in tracked(root)? {
-        let path = rel.to_string_lossy().replace('\\', "/");
-        let Some(lang) = lang_of(&path) else { continue };
-        let Ok(bytes) = std::fs::read(root.join(&rel)) else {
-            continue;
-        };
-        let Ok(source) = String::from_utf8(bytes) else {
-            continue;
-        };
-        out.push(SourceFile {
-            content_hash: *blake3::hash(source.as_bytes()).as_bytes(),
-            path,
-            lang,
-            source,
-        });
-    }
+    let claimed: Vec<(PathBuf, String, grid_wire::Lang)> = tracked(root)?
+        .into_iter()
+        .filter_map(|rel| {
+            let path = rel.to_string_lossy().replace('\\', "/");
+            let lang = lang_of(&path)?;
+            Some((rel, path, lang))
+        })
+        .collect();
+    // Reads are pure per-path, so they fan out on scoped threads; the sort
+    // below erases completion order the same way it erases git's order.
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let chunk = claimed.len().div_ceil(threads.max(1)).max(1);
+    let mut out: Vec<SourceFile> = std::thread::scope(|scope| {
+        let handles: Vec<_> = claimed
+            .chunks(chunk)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .filter_map(|(rel, path, lang)| {
+                            let bytes = std::fs::read(root.join(rel)).ok()?;
+                            let source = String::from_utf8(bytes).ok()?;
+                            Some(SourceFile {
+                                content_hash: *blake3::hash(source.as_bytes()).as_bytes(),
+                                path: path.clone(),
+                                lang: *lang,
+                                source,
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok())
+            .flatten()
+            .collect()
+    });
     // git's order is already stable, but sorting here makes the survey
     // independent of the git version that produced the list.
     out.sort_by(|a, b| a.path.cmp(&b.path));

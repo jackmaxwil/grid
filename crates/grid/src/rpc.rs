@@ -128,17 +128,23 @@ impl Chart {
     ) -> Result<(SurveyRunResult, u64), chart_provider::Error> {
         // Surveying "at a rev" means the tree at that rev, read out of the
         // object store; with no rev it is the working tree, labelled with the
-        // rev it was checked out from.
-        let (survey, rev) = match params.git_rev.as_ref() {
-            Some(rev) => (
-                grid_survey::run_at(&self.root, &rev.0, &mut self.cache)?,
-                chart_provider::resolve_rev(&self.root, &rev.0),
-            ),
-            None => (
-                grid_survey::run(&self.root, &mut self.cache)?,
-                chart_provider::resolve_rev(&self.root, "HEAD"),
-            ),
-        };
+        // rev it was checked out from. Resolving the label is a git
+        // subprocess that reads nothing the survey writes, so it runs
+        // alongside the survey instead of after it.
+        let named = params.git_rev.as_ref().map_or("HEAD", |rev| rev.0.as_str());
+        let root = &self.root;
+        let (survey, rev) = std::thread::scope(|scope| {
+            let resolver = scope.spawn(move || chart_provider::resolve_rev(root, named));
+            let survey = match params.git_rev.as_ref() {
+                Some(rev) => grid_survey::run_at(root, &rev.0, &mut self.cache),
+                None => grid_survey::run(root, &mut self.cache),
+            };
+            let rev = resolver
+                .join()
+                .unwrap_or_else(|_| chart_provider::resolve_rev(root, named));
+            (survey, rev)
+        });
+        let survey = survey?;
         // The daemon is the single writer (D6); `publish` takes `&mut self`,
         // which is that rule in the type system.
         let mut store = grid_chart_io::Store::open(chart_provider::store_dir(&self.root))

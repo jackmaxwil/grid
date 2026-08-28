@@ -52,11 +52,15 @@ const BUILTIN_ATTRS: &[&str] = &[
 /// Returns `ParseError` if the source is not valid Rust.
 pub fn references(source: &str) -> Result<FileRefs, ParseError> {
     let file = syn::parse_file(source).map_err(|e| ParseError::new(e.to_string()))?;
+    Ok(references_of(&file))
+}
+
+pub(crate) fn references_of(file: &syn::File) -> FileRefs {
     let mut scan = Scan::default();
     for item in &file.items {
         scan.visit_item(item);
     }
-    Ok(scan.out)
+    scan.out
 }
 
 #[derive(Default)]
@@ -297,9 +301,25 @@ fn flatten_use(tree: &UseTree, prefix: &mut Vec<String>, scope: &str, out: &mut 
             flatten_use(&p.tree, prefix, scope, out);
             prefix.pop();
         }
+        // `use x::{self}` binds the module x itself, under its own name or
+        // the rename — `self` is the one leaf that adds no segment.
+        UseTree::Name(n) if n.ident == "self" => {
+            if let Some(last) = prefix.last() {
+                out.push(Import {
+                    alias: last.clone(),
+                    target: prefix.join("."),
+                    scope: scope.to_owned(),
+                });
+            }
+        }
         UseTree::Name(n) => out.push(Import {
             alias: n.ident.to_string(),
             target: target_of(prefix, &n.ident.to_string()),
+            scope: scope.to_owned(),
+        }),
+        UseTree::Rename(r) if r.ident == "self" => out.push(Import {
+            alias: r.rename.to_string(),
+            target: prefix.join("."),
             scope: scope.to_owned(),
         }),
         UseTree::Rename(r) => out.push(Import {

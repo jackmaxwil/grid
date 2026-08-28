@@ -1,8 +1,8 @@
 //! grid-survey — extraction: repo -> defs + edges.
 //!
 //! A survey turns a working tree into a chart segment: every definition a
-//! frontend can find, and every edge between them it can *prove*. Python is
-//! the only frontend at this wave; a second language lands as a
+//! frontend can find, and every edge between them it can *prove*. Python and
+//! Rust are the frontends at this wave; the next language lands as a
 //! `grid-lang-*` crate, an extension in [`files::lang_of`], and a dispatch
 //! arm in [`extract`] — nothing above those knows what language a file was.
 //!
@@ -138,10 +138,15 @@ pub fn references(lang: Lang, source: &str) -> Result<FileRefs, ParseError> {
 /// alternative is a tool that cannot run on the tree it is meant to fix.
 #[must_use]
 pub fn extract(lang: Lang, source: &str) -> FileFacts {
-    FileFacts {
-        defs: definitions(lang, source).unwrap_or_default(),
-        refs: references(lang, source).unwrap_or_default(),
-    }
+    // One parse serves both extractions; parsing twice was measured at half
+    // the whole extraction phase on this repo.
+    let facts = match lang {
+        Lang::Py => grid_lang_py::file_facts(source),
+        Lang::Rs => grid_lang_rs::file_facts(source),
+        Lang::Ts | Lang::Js => Ok((Vec::new(), FileRefs::default())),
+    };
+    let (defs, refs) = facts.unwrap_or_default();
+    FileFacts { defs, refs }
 }
 
 /// Survey a working tree into a segment image, reusing `cache` where the file
@@ -171,21 +176,71 @@ pub fn run_at(root: &Path, rev: &str, cache: &mut Cache) -> Result<Survey, Surve
     run_sources(&files::sources_at(root, rev)?, cache)
 }
 
-fn run_sources(sources: &[SourceFile], cache: &mut Cache) -> Result<Survey, SurveyError> {
-    // Phase 1 — per-file, cacheable, order-independent.
+/// Phase 1 — per-file facts, cacheable, order-independent.
+/// Order-independence is what makes cache misses safe to extract on scoped
+/// threads: each miss is pure over its own source, and results land back by
+/// index. Returns the facts in source order plus the cache-hit count.
+fn extract_all<'s>(
+    sources: &'s [SourceFile],
+    cache: &mut Cache,
+) -> (Vec<(&'s SourceFile, FileFacts)>, u64) {
     let mut reread = 0;
-    let mut per_file = Vec::with_capacity(sources.len());
-    for file in sources {
-        let facts = if let Some(hit) = cache.get(&file.content_hash) {
+    let mut slots: Vec<Option<FileFacts>> = Vec::with_capacity(sources.len());
+    let mut misses = Vec::new();
+    for (i, file) in sources.iter().enumerate() {
+        if let Some(hit) = cache.get(&file.content_hash) {
             reread += 1;
-            hit.clone()
+            slots.push(Some(hit.clone()));
         } else {
+            slots.push(None);
+            misses.push(i);
+        }
+    }
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let extracted: Vec<(usize, FileFacts)> = std::thread::scope(|scope| {
+        let chunk = misses.len().div_ceil(threads.max(1)).max(1);
+        let handles: Vec<_> = misses
+            .chunks(chunk)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|&i| (i, extract(sources[i].lang, &sources[i].source)))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            // A panicked worker loses its chunk here; the sequential refill
+            // below re-extracts anything still empty, so the segment bytes
+            // cannot depend on whether a thread died.
+            .filter_map(|h| h.join().ok())
+            .flatten()
+            .collect()
+    });
+    for (i, facts) in extracted {
+        if let Some(file) = sources.get(i) {
+            cache.insert(file.content_hash, facts.clone());
+        }
+        if let Some(slot) = slots.get_mut(i) {
+            *slot = Some(facts);
+        }
+    }
+    let mut per_file = Vec::with_capacity(sources.len());
+    for (file, slot) in sources.iter().zip(slots) {
+        let facts = slot.unwrap_or_else(|| {
             let facts = extract(file.lang, &file.source);
             cache.insert(file.content_hash, facts.clone());
             facts
-        };
+        });
         per_file.push((file, facts));
     }
+    (per_file, reread)
+}
+
+fn run_sources(sources: &[SourceFile], cache: &mut Cache) -> Result<Survey, SurveyError> {
+    let (per_file, reread) = extract_all(sources, cache);
 
     // Phase 2 — index the whole tree. Edges cannot be resolved before every
     // definition is known, which is the reason for two phases and the reason
