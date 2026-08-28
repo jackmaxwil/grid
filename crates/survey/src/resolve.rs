@@ -38,8 +38,8 @@ pub struct ResolvedEdge {
 /// A binding applies to a reference only when the binding's scope is a prefix
 /// of the reference's callsign — Python's rule, and the reason a
 /// function-local `import os` cannot rewrite `os` in a sibling function.
-struct Bindings<'a> {
-    imports: &'a [Import],
+pub(crate) struct Bindings<'a> {
+    pub(crate) imports: &'a [Import],
 }
 
 impl Bindings<'_> {
@@ -47,7 +47,7 @@ impl Bindings<'_> {
     ///
     /// The innermost applicable binding wins, and among equals the last one
     /// wins, because a later `import` rebinds the name.
-    fn lookup(&self, scope: &str, name: &str) -> Option<&str> {
+    pub(crate) fn lookup(&self, scope: &str, name: &str) -> Option<&str> {
         self.imports
             .iter()
             .filter(|i| i.alias == name && scope_contains(&i.scope, scope))
@@ -58,7 +58,7 @@ impl Bindings<'_> {
 
 /// Is `outer` the scope `inner` sits in, or an ancestor of it? The empty
 /// scope is the module and contains everything.
-fn scope_contains(outer: &str, inner: &str) -> bool {
+pub(crate) fn scope_contains(outer: &str, inner: &str) -> bool {
     outer.is_empty()
         || inner == outer
         || inner
@@ -108,7 +108,7 @@ pub fn resolve(
 /// Calling a class constructs an instance; calling a function calls it. This
 /// is the only place the distinction is drawn, and it needs the *target*, so
 /// it cannot be decided at extraction time.
-fn relation_of(kind: RefKind, target_is_class: bool) -> Relation {
+pub(crate) fn relation_of(kind: RefKind, target_is_class: bool) -> Relation {
     match kind {
         RefKind::Base => Relation::Implements,
         // A decorator is applied to the definition, which is a call of the

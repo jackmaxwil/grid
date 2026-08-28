@@ -191,7 +191,6 @@ dependencies = [
  "grid-cache",
  "grid-chart",
  "grid-chart-io",
- "grid-lang-py",
  "grid-leadline",
  "grid-survey",
  "grid-wake",
@@ -251,6 +250,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "grid-lang-rs"
+version = "0.1.0"
+dependencies = [
+ "grid-datum",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "grid-leadline"
 version = "0.1.0"
 dependencies = [
@@ -268,6 +277,7 @@ dependencies = [
  "grid-chart",
  "grid-datum",
  "grid-lang-py",
+ "grid-lang-rs",
  "grid-wire",
  "tempfile",
 ]

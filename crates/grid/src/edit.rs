@@ -130,7 +130,7 @@ fn locate_all(root: &Path) -> Result<Vec<Located>, Error> {
     let sources = grid_survey::files::sources(root).map_err(|e| Error::Io(e.to_string()))?;
     let mut out = Vec::new();
     for file in &sources {
-        let module = grid_survey::files::module_of(&file.path);
+        let module = grid_survey::files::module_of(file.lang, &file.path);
         for def in grid_survey::extract(file.lang, &file.source).defs {
             out.push(Located {
                 file: file.path.clone(),
@@ -297,8 +297,10 @@ fn build_and_write(plan: Plan<'_>, root: &Path) -> Result<Outcome, Error> {
         }
         image.push_str(&original[cursor..]);
 
-        let module = grid_survey::files::module_of(&file);
-        let new_defs = grid_lang_py::definitions(&image)
+        let lang = grid_survey::files::lang_of(&file)
+            .ok_or_else(|| Error::BrokenResult(format!("{file}: no frontend claims this file")))?;
+        let module = grid_survey::files::module_of(lang, &file);
+        let new_defs = grid_survey::definitions(lang, &image)
             .map_err(|e| Error::BrokenResult(format!("{file}: {e}")))?;
         for (splice, start) in list.iter().zip(&new_starts) {
             // The replacement def begins inside the region the new text
@@ -328,9 +330,9 @@ fn build_and_write(plan: Plan<'_>, root: &Path) -> Result<Outcome, Error> {
         // A creation's applied identities are whatever the new file defines
         // — for a config bootstrap that is nothing, which is the honest list.
         let mut defined = false;
-        if grid_survey::files::lang_of(&path).is_some() {
-            let module = grid_survey::files::module_of(&path);
-            for def in grid_lang_py::definitions(&spec.new_text)
+        if let Some(lang) = grid_survey::files::lang_of(&path) {
+            let module = grid_survey::files::module_of(lang, &path);
+            for def in grid_survey::definitions(lang, &spec.new_text)
                 .map_err(|e| Error::BrokenResult(format!("{path}: {e}")))?
             {
                 defined = true;

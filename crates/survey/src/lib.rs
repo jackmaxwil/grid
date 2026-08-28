@@ -25,11 +25,12 @@
 pub mod files;
 pub mod index;
 pub mod resolve;
+mod resolve_rs;
 
 use std::collections::HashMap;
 use std::path::Path;
 
-use grid_datum::{Definition, FileRefs};
+use grid_datum::{Definition, FileRefs, ParseError};
 use grid_wire::Lang;
 
 pub use files::SourceFile;
@@ -103,26 +104,43 @@ pub struct Survey {
     pub ambiguous: u64,
 }
 
-/// Extract one file's facts with the frontend `lang` names. Pure: the same
-/// text is the same facts.
+/// The definitions the frontend `lang` names finds in `source`. This is the
+/// frontend seam: the one place a language is dispatched on. A language with
+/// no frontend yields nothing — [`files::lang_of`] never hands one out, so
+/// no file silently loses facts here.
 ///
-/// This is the frontend seam: the one place a language is dispatched on. A
-/// file the parser rejects yields no facts rather than failing the survey —
+/// # Errors
+/// `ParseError` if the frontend's parser rejects the source.
+pub fn definitions(lang: Lang, source: &str) -> Result<Vec<Definition>, ParseError> {
+    match lang {
+        Lang::Py => grid_lang_py::definitions(source),
+        Lang::Rs => grid_lang_rs::definitions(source),
+        Lang::Ts | Lang::Js => Ok(Vec::new()),
+    }
+}
+
+/// The imports and references the frontend `lang` names finds in `source`.
+///
+/// # Errors
+/// `ParseError` if the frontend's parser rejects the source.
+pub fn references(lang: Lang, source: &str) -> Result<FileRefs, ParseError> {
+    match lang {
+        Lang::Py => grid_lang_py::references(source),
+        Lang::Rs => grid_lang_rs::references(source),
+        Lang::Ts | Lang::Js => Ok(FileRefs::default()),
+    }
+}
+
+/// Extract one file's facts. Pure: the same text is the same facts.
+///
+/// A file the parser rejects yields no facts rather than failing the survey —
 /// a repo with one syntactically broken file still has a chart, and the
 /// alternative is a tool that cannot run on the tree it is meant to fix.
 #[must_use]
 pub fn extract(lang: Lang, source: &str) -> FileFacts {
-    match lang {
-        Lang::Py => FileFacts {
-            defs: grid_lang_py::definitions(source).unwrap_or_default(),
-            refs: grid_lang_py::references(source).unwrap_or_default(),
-        },
-        // No frontend claims these yet; [`files::lang_of`] never hands them
-        // out, so no file silently loses facts here.
-        Lang::Ts | Lang::Js | Lang::Rs => FileFacts {
-            defs: Vec::new(),
-            refs: FileRefs::default(),
-        },
+    FileFacts {
+        defs: definitions(lang, source).unwrap_or_default(),
+        refs: references(lang, source).unwrap_or_default(),
     }
 }
 
@@ -174,18 +192,24 @@ fn run_sources(sources: &[SourceFile], cache: &mut Cache) -> Result<Survey, Surv
     // the cache cannot hold edges.
     let mut index = DefIndex::default();
     for (file, facts) in &per_file {
-        index.insert_file(&files::module_of(&file.path), file.lang, &facts.defs);
+        index.insert_file(
+            &files::module_of(file.lang, &file.path),
+            file.lang,
+            &facts.defs,
+        );
     }
 
-    // Phase 3 — resolve names to datums.
+    // Phase 3 — resolve names to datums, under each file's own language
+    // rules: what "this name binds to" means is per-language, so the
+    // resolver dispatches exactly where extraction does.
     let mut edges = Vec::new();
     for (file, facts) in &per_file {
-        edges.extend(resolve::resolve(
-            &index,
-            &files::module_of(&file.path),
-            &facts.refs.imports,
-            &facts.refs.refs,
-        ));
+        let module = files::module_of(file.lang, &file.path);
+        edges.extend(match file.lang {
+            Lang::Py => resolve::resolve(&index, &module, &facts.refs.imports, &facts.refs.refs),
+            Lang::Rs => resolve_rs::resolve(&index, &module, &facts.refs.imports, &facts.refs.refs),
+            Lang::Ts | Lang::Js => Vec::new(),
+        });
     }
 
     let chart_defs: Vec<grid_chart::Def> = index
