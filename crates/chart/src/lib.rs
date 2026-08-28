@@ -18,19 +18,23 @@ mod build;
 mod delta;
 mod manifest;
 
-pub use build::{build, Def, Edge};
+pub use build::{build, Def, DefFacts, Edge};
 pub use delta::made_good;
 pub use manifest::{Manifest, SegmentEntry, SnapshotId};
 
 /// Bytes prefixing every segment image.
 pub const MAGIC: &[u8; 8] = b"GRIDSEG\x00";
 /// Segment format epoch. A change here is a declared re-survey, never a silent
-/// reinterpretation of bytes on disk (see ASSURANCE.md, normalization stability).
-pub const FORMAT_EPOCH: u32 = 1;
+/// reinterpretation of bytes on disk (see ASSURANCE.md, normalization
+/// stability). Epoch 1 images parse forever; their epoch-2 sections answer
+/// `None`.
+pub const FORMAT_EPOCH: u32 = 2;
+/// Sections an epoch-1 image declares — the first ten of [`Section`].
+pub const V1_SECTION_COUNT: usize = 10;
 /// Fixed-size header: magic, counts, and the checksum of everything after it.
 pub const HEADER_LEN: usize = 64;
-/// Number of sections a v1 image declares, in the order of [`Section`].
-pub const SECTION_COUNT: usize = 10;
+/// Number of sections a v2 image declares, in the order of [`Section`].
+pub const SECTION_COUNT: usize = 15;
 /// Bytes per section-table entry: `(offset: u64, len: u64)`.
 pub const SECTION_ENTRY_LEN: usize = 16;
 
@@ -58,6 +62,19 @@ pub enum Section {
     CallsignBytes = 8,
     /// One u8 language tag per def.
     Langs = 9,
+    /// `def_count + 1` u32 byte starts into [`Section::PathBytes`] (epoch 2).
+    PathOffsets = 10,
+    /// UTF-8 repo-relative paths, one per def, concatenated (epoch 2).
+    PathBytes = 11,
+    /// Per def: `(line: u32, line_end: u32, byte_start: u32, byte_end: u32)`
+    /// (epoch 2).
+    DefLocs = 12,
+    /// Per def: 32-byte shape — blake3 of the canonical bytes with the
+    /// definition's own name erased. The rename-join key; all-zero = absent
+    /// (epoch 2).
+    DefShapes = 13,
+    /// Per def: `(complexity: u16, reserved: u16)` (epoch 2).
+    DefMetrics = 14,
 }
 
 /// Why an image was rejected. Every variant is a refusal, never a panic: the
@@ -290,6 +307,20 @@ pub struct Segment<B> {
     spans: [Span; SECTION_COUNT],
     def_count: u32,
     edge_count: u32,
+    epoch: u32,
+}
+
+/// One definition's location, read back off an epoch-2 segment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefLoc<'a> {
+    /// Repo-relative path, slash-separated.
+    pub path: &'a str,
+    /// 1-based line of the definition's first byte at survey time.
+    pub line: u32,
+    /// 1-based line of the definition's last byte — containment's other end.
+    pub line_end: u32,
+    /// Byte range of the definition in its file.
+    pub span: std::ops::Range<u32>,
 }
 
 impl<B: AsRef<[u8]>> Segment<B> {
@@ -307,11 +338,13 @@ impl<B: AsRef<[u8]>> Segment<B> {
             return Err(ChartError::BadMagic);
         }
         let epoch = read_u32(header, 8).ok_or(ChartError::Truncated)?;
-        if epoch != FORMAT_EPOCH {
-            return Err(ChartError::BadEpoch(epoch));
-        }
+        let expected_sections = match epoch {
+            1 => V1_SECTION_COUNT,
+            2 => SECTION_COUNT,
+            other => return Err(ChartError::BadEpoch(other)),
+        };
         let sections = read_u32(header, 12).ok_or(ChartError::Truncated)?;
-        if sections as usize != SECTION_COUNT {
+        if sections as usize != expected_sections {
             return Err(ChartError::BadSectionCount(sections));
         }
         let def_count = read_u32(header, 16).ok_or(ChartError::Truncated)?;
@@ -327,7 +360,7 @@ impl<B: AsRef<[u8]>> Segment<B> {
             return Err(ChartError::ChecksumMismatch);
         }
 
-        let table_len = SECTION_COUNT
+        let table_len = expected_sections
             .checked_mul(SECTION_ENTRY_LEN)
             .ok_or(ChartError::Truncated)?;
         let table_end = HEADER_LEN
@@ -337,7 +370,7 @@ impl<B: AsRef<[u8]>> Segment<B> {
             return Err(ChartError::Truncated);
         }
         let mut spans = [Span::default(); SECTION_COUNT];
-        for (i, span) in spans.iter_mut().enumerate() {
+        for (i, span) in spans.iter_mut().enumerate().take(expected_sections) {
             let at = HEADER_LEN + i * SECTION_ENTRY_LEN;
             let off = read_u64(b, at).ok_or(ChartError::Truncated)?;
             let len = read_u64(b, at + 8).ok_or(ChartError::Truncated)?;
@@ -350,8 +383,9 @@ impl<B: AsRef<[u8]>> Segment<B> {
             *span = Span { start, end };
         }
         // Two sections claiming one byte would make an accessor's answer
-        // depend on which one you asked. Refuse rather than pick.
-        let mut order: Vec<Span> = spans.to_vec();
+        // depend on which one you asked. Refuse rather than pick. Absent
+        // epoch-2 sections are zero-length and cannot overlap anything.
+        let mut order: Vec<Span> = spans.iter().copied().filter(|s| s.end > s.start).collect();
         order.sort_unstable_by_key(|s| s.start);
         for pair in order.windows(2) {
             if pair[0].end > pair[1].start {
@@ -364,6 +398,7 @@ impl<B: AsRef<[u8]>> Segment<B> {
             spans,
             def_count,
             edge_count,
+            epoch,
         };
         seg.validate()?;
         Ok(seg)
@@ -401,6 +436,26 @@ impl<B: AsRef<[u8]>> Segment<B> {
         sized(Section::InAttrs, attr_bytes)?;
         sized(Section::CallsignOffsets, row_bytes)?;
         sized(Section::Langs, defs)?;
+        if self.epoch >= 2 {
+            sized(Section::PathOffsets, row_bytes)?;
+            sized(
+                Section::DefLocs,
+                defs.checked_mul(16).ok_or(ChartError::TooLarge)?,
+            )?;
+            sized(
+                Section::DefShapes,
+                defs.checked_mul(32).ok_or(ChartError::TooLarge)?,
+            )?;
+            sized(
+                Section::DefMetrics,
+                defs.checked_mul(4).ok_or(ChartError::TooLarge)?,
+            )?;
+            let paths_len = u32::try_from(self.section(Section::PathBytes).len())
+                .map_err(|_| ChartError::TooLarge)?;
+            self.check_csr(Section::PathOffsets, Section::PathBytes, paths_len)?;
+            std::str::from_utf8(self.section(Section::PathBytes))
+                .map_err(|_| ChartError::BadUtf8)?;
+        }
 
         // Ordinals are a binary search over the digests, which is only a
         // function if they are strictly ascending.
@@ -533,6 +588,53 @@ impl<B: AsRef<[u8]>> Segment<B> {
     pub fn lang(&self, ord: Ordinal) -> Option<grid_wire::Lang> {
         let tag = *self.section(Section::Langs).get(ord.0 as usize)?;
         lang_of_tag(tag)
+    }
+
+    /// Where the definition at `ord` lives. `None` on an epoch-1 image or
+    /// for a definition whose survey recorded no location.
+    #[must_use]
+    pub fn location(&self, ord: Ordinal) -> Option<DefLoc<'_>> {
+        let (start, end) = self.row(Section::PathOffsets, ord)?;
+        let raw = self
+            .section(Section::PathBytes)
+            .get(start as usize..end as usize)?;
+        let path = std::str::from_utf8(raw).ok()?;
+        if path.is_empty() {
+            return None;
+        }
+        let at = (ord.0 as usize).checked_mul(16)?;
+        let locs = self.section(Section::DefLocs);
+        let field = |k: usize| {
+            locs.get(at + k * 4..at + k * 4 + 4)
+                .and_then(|b| b.try_into().ok())
+                .map(u32::from_le_bytes)
+        };
+        Some(DefLoc {
+            path,
+            line: field(0)?,
+            line_end: field(1)?,
+            span: field(2)?..field(3)?,
+        })
+    }
+
+    /// The name-erased shape of the definition at `ord` — the rename-join
+    /// key. `None` on epoch-1 images and for the all-zero absent sentinel.
+    #[must_use]
+    pub fn shape(&self, ord: Ordinal) -> Option<[u8; 32]> {
+        let at = (ord.0 as usize).checked_mul(32)?;
+        let raw = self.section(Section::DefShapes).get(at..at + 32)?;
+        let shape: [u8; 32] = raw.try_into().ok()?;
+        (shape != [0u8; 32]).then_some(shape)
+    }
+
+    /// Cyclomatic complexity of the definition at `ord`, if surveyed. A
+    /// real complexity is at least 1, so zero is the absent sentinel.
+    #[must_use]
+    pub fn complexity(&self, ord: Ordinal) -> Option<u16> {
+        let at = (ord.0 as usize).checked_mul(4)?;
+        let raw = self.section(Section::DefMetrics).get(at..at + 2)?;
+        let cx = u16::from_le_bytes(raw.try_into().ok()?);
+        (cx > 0).then_some(cx)
     }
 
     fn row(&self, offsets: Section, ord: Ordinal) -> Option<(u32, u32)> {

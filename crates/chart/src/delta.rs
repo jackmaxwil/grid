@@ -19,12 +19,12 @@ use grid_wire::{
 
 use crate::{relation_tag, DatumId, Ordinal, Segment};
 
-/// Definitions of a chart, by callsign.
+/// Definitions of a chart, by callsign, with the shape as move evidence.
 ///
 /// A callsign two segments both define is a collision the survey already
 /// refused to resolve; here the lowest datum wins, so the comparison is a
 /// function of content rather than of segment order.
-type Defs = BTreeMap<String, DatumId>;
+type Defs = BTreeMap<String, (DatumId, Option<[u8; 32]>)>;
 
 /// Edges keyed by `(src callsign, relation tag, dst callsign)` — the
 /// name-space identity of a relationship — carrying the datums that prove it.
@@ -47,9 +47,10 @@ fn defs_of<B: AsRef<[u8]>>(segments: &[Segment<B>]) -> Defs {
             let (Some(datum), Some(callsign)) = (segment.datum(ord), segment.callsign(ord)) else {
                 continue;
             };
+            let facts = (datum, segment.shape(ord));
             out.entry(callsign.to_owned())
-                .and_modify(|d| *d = (*d).min(datum))
-                .or_insert(datum);
+                .and_modify(|d| *d = (*d).min(facts))
+                .or_insert(facts);
         }
     }
     out
@@ -117,15 +118,15 @@ pub fn made_good<B: AsRef<[u8]>>(
 ) -> MadeGood {
     let (base_defs, head_defs) = (defs_of(base), defs_of(head));
     let mut defs = Vec::new();
-    let mut added: Vec<(&String, DatumId)> = Vec::new();
-    let mut removed: Vec<(&String, DatumId)> = Vec::new();
-    for (callsign, after) in &head_defs {
+    let mut added: Vec<(&String, DatumId, Option<[u8; 32]>)> = Vec::new();
+    let mut removed: Vec<(&String, DatumId, Option<[u8; 32]>)> = Vec::new();
+    for (callsign, (after, shape)) in &head_defs {
         match base_defs.get(callsign) {
-            None => added.push((callsign, *after)),
+            None => added.push((callsign, *after, *shape)),
             // Same callsign, same datum: the definition did not change. Not a
             // record — a `MadeGood` reports what changed.
-            Some(before) if before == after => {}
-            Some(before) => defs.push(DefChange {
+            Some((before, _)) if before == after => {}
+            Some((before, _)) => defs.push(DefChange {
                 action: DefChangeAction::Modified,
                 callsign: Callsign(callsign.clone()),
                 before: Some(datum(*before)),
@@ -134,9 +135,9 @@ pub fn made_good<B: AsRef<[u8]>>(
             }),
         }
     }
-    for (callsign, before) in &base_defs {
+    for (callsign, (before, shape)) in &base_defs {
         if !head_defs.contains_key(callsign) {
-            removed.push((callsign, *before));
+            removed.push((callsign, *before, *shape));
         }
     }
     defs.extend(detect_def_moves(&added, &removed));
@@ -168,37 +169,47 @@ pub fn made_good<B: AsRef<[u8]>>(
     }
 }
 
-/// Pair a removed definition with an added one that carries the same datum:
-/// the ontology's definition of a rename (callsign rebound, datum held). The
-/// pairing must be unambiguous — a datum appearing more than once on either
-/// side stays -/+ rather than guessing which body went where. Refusal over
-/// invention, the same rule the index applies to name collisions.
+/// Pair a removed definition with an added one that carries the same
+/// *shape* — the name-erased identity, the ontology's definition of a
+/// rename (callsign rebound, body held). The datum cannot be the join key:
+/// it deliberately contains the name. The pairing must be unambiguous — a
+/// shape appearing more than once on either side stays -/+ rather than
+/// guessing which body went where. Refusal over invention, the same rule
+/// the index applies to name collisions. Epoch-1 sides carry no shapes and
+/// detect nothing.
 fn detect_def_moves(
-    added: &[(&String, DatumId)],
-    removed: &[(&String, DatumId)],
+    added: &[(&String, DatumId, Option<[u8; 32]>)],
+    removed: &[(&String, DatumId, Option<[u8; 32]>)],
 ) -> Vec<DefChange> {
     use std::collections::HashMap;
-    let mut add_count: HashMap<DatumId, usize> = HashMap::new();
-    let mut rem_at: HashMap<DatumId, (&String, usize)> = HashMap::new();
-    for (_, d) in added {
-        *add_count.entry(*d).or_insert(0) += 1;
+    let mut add_count: HashMap<[u8; 32], usize> = HashMap::new();
+    let mut rem_at: HashMap<[u8; 32], (&String, DatumId, usize)> = HashMap::new();
+    for (_, _, shape) in added {
+        if let Some(shape) = shape {
+            *add_count.entry(*shape).or_insert(0) += 1;
+        }
     }
-    for (name, d) in removed {
-        let entry = rem_at.entry(*d).or_insert((name, 0));
-        entry.1 += 1;
+    for (name, d, shape) in removed {
+        if let Some(shape) = shape {
+            let entry = rem_at.entry(*shape).or_insert((name, *d, 0));
+            entry.2 += 1;
+        }
     }
+    let unique = |shape: &Option<[u8; 32]>| {
+        shape.as_ref().is_some_and(|s| {
+            add_count.get(s) == Some(&1) && rem_at.get(s).is_some_and(|(_, _, n)| *n == 1)
+        })
+    };
     let mut out = Vec::new();
-    for (callsign, d) in added {
-        let unique_pair =
-            add_count.get(d) == Some(&1) && rem_at.get(d).is_some_and(|(_, count)| *count == 1);
-        if unique_pair {
-            let Some((old, _)) = rem_at.get(d) else {
+    for (callsign, d, shape) in added {
+        if unique(shape) {
+            let Some((old, before, _)) = shape.as_ref().and_then(|s| rem_at.get(s)) else {
                 continue;
             };
             out.push(DefChange {
                 action: DefChangeAction::Moved,
                 callsign: Callsign((*callsign).clone()),
-                before: Some(datum(*d)),
+                before: Some(datum(*before)),
                 after: Some(datum(*d)),
                 moved_from: Some(Callsign((*old).clone())),
             });
@@ -212,10 +223,8 @@ fn detect_def_moves(
             });
         }
     }
-    for (callsign, d) in removed {
-        let paired =
-            add_count.get(d) == Some(&1) && rem_at.get(d).is_some_and(|(_, count)| *count == 1);
-        if !paired {
+    for (callsign, d, shape) in removed {
+        if !unique(shape) {
             out.push(DefChange {
                 action: DefChangeAction::Removed,
                 callsign: Callsign((*callsign).clone()),

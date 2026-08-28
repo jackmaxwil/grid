@@ -183,8 +183,8 @@ expansion, a `modeled` tier) is a later wave with its own evidence story.
   the chart (a conformance test caught it). The name in the hash is what
   keeps datum a usable primary key. Resolution: datum keeps the name;
   rename detection joins on a name-erased **shape hash** carried as a
-  per-def segment column in the epoch-2 format — the `moved` delta
-  machinery is already in place and activates when shape lands. Second
+  per-def segment column in the epoch-2 format — landed: `DefShapes`
+  ships in epoch 2 and the `moved` join runs on it. Second
   lesson, paid for once: any datum-epoch change makes stored snapshots
   diff as "everything modified" — `.grid/chart` is a cache; delete it.
 - **The datum is not yet rename-invariant for locals.** v1 canonical bytes are token

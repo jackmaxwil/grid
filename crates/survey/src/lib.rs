@@ -257,6 +257,8 @@ fn run_sources(
             &files::module_of(file.lang, &file.path, roots),
             file.lang,
             &facts.defs,
+            &file.path,
+            &file.source,
         );
     }
     // Aliases go in after every definition, so a real name always wins over
@@ -290,6 +292,7 @@ fn run_sources(
             datum: grid_chart::DatumId(s.datum),
             callsign: s.absolute.clone(),
             lang: Some(s.lang),
+            facts: Some(s.facts.clone()),
         })
         .collect();
     let chart_edges: Vec<grid_chart::Edge> = edges

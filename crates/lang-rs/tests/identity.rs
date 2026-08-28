@@ -84,3 +84,34 @@ fn impl_methods_and_trait_impls_get_distinct_callsigns() {
     assert!(signs.contains(&"Foo"));
     assert!(signs.contains(&"Frob"));
 }
+
+#[test]
+fn shape_holds_under_rename_while_the_datum_moves() {
+    let old = definitions("fn old_name(x: u32) -> u32 { x + 1 }").expect("valid");
+    let new = definitions("fn new_name(x: u32) -> u32 { x + 1 }").expect("valid");
+    // The datum contains the name (the chart's primary key must not collapse
+    // same-body defs); the shape erases it — the rename-join key.
+    assert_ne!(old[0].datum, new[0].datum);
+    assert_eq!(old[0].shape, new[0].shape);
+    // A body change moves both.
+    let edited = definitions("fn old_name(x: u32) -> u32 { x + 2 }").expect("valid");
+    assert_ne!(old[0].shape, edited[0].shape);
+}
+
+#[test]
+fn complexity_counts_branch_points() {
+    let flat = definitions("fn f(x: u32) -> u32 { x + 1 }").expect("valid");
+    assert_eq!(flat[0].complexity, 1);
+    let branchy = definitions(
+        "fn f(x: u32) -> Option<u32> {\n\
+           if x > 1 && x < 10 { return Some(x); }\n\
+           match x { 0 => None, 1 => Some(1), _ => Some(2) }.map(|v| {\n\
+             for _ in 0..v {}\n\
+             v\n\
+           })\n\
+         }",
+    )
+    .expect("valid");
+    // 1 + if + && + two match arms beyond the first + for = 6.
+    assert_eq!(branchy[0].complexity, 6);
+}

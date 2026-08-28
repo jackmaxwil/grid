@@ -341,7 +341,13 @@ pub fn refs(defs: &[grid_wire::DefRef]) -> String {
     let mut out = String::new();
     for d in defs {
         let callsign = d.callsign.as_ref().map_or("", |c| c.0.as_str());
-        record(&mut out, "ref", &[callsign, &short(&d.datum)]);
+        // file:line last, so the row stays pasteable into an editor.
+        let at = d
+            .materialization
+            .as_ref()
+            .map(|m| format!("{}:{}", m.file, m.line))
+            .unwrap_or_default();
+        record(&mut out, "ref", &[callsign, &short(&d.datum), &at]);
     }
     out
 }

@@ -403,10 +403,20 @@ fn resolve(args: &[&str], json: bool) -> u8 {
         hint("usage: grid resolve <callsign|name@prefix>");
         return exit::BAD_INPUT;
     };
+    // `path:line` jumps from a location to the definitions containing it;
     // `@` may be a datum pin or a Rust trait-impl callsign; the Handle
     // locator tells them apart by whether the suffix is hex, so a pinned
     // name spells the same here as in `grid uses`.
-    let locator = if name.contains('@') {
+    let file_line = name
+        .rsplit_once(':')
+        .and_then(|(file, line)| Some((file, line.parse::<u64>().ok()?)))
+        .filter(|(file, _)| file.contains('/'));
+    let locator = if let Some((file, line)) = file_line {
+        grid_wire::Locator::FileLine {
+            file: file.to_owned(),
+            line,
+        }
+    } else if name.contains('@') {
         grid_wire::Locator::Handle {
             handle: grid_wire::Handle((*name).to_string()),
         }

@@ -15,6 +15,26 @@ pub struct Def {
     pub callsign: String,
     /// Language adapter, if the survey named one.
     pub lang: Option<grid_wire::Lang>,
+    /// Epoch-2 facts: location, shape, complexity. `None` writes the absent
+    /// sentinels, which read back as `None`.
+    pub facts: Option<DefFacts>,
+}
+
+/// The epoch-2 per-definition columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefFacts {
+    /// Repo-relative path, slash-separated.
+    pub path: String,
+    /// 1-based line of the definition's first byte at survey time.
+    pub line: u32,
+    /// 1-based line of its last byte.
+    pub line_end: u32,
+    /// Byte range in the file.
+    pub span: (u32, u32),
+    /// Name-erased canonical hash — the rename-join key.
+    pub shape: [u8; 32],
+    /// Cyclomatic complexity.
+    pub complexity: u16,
 }
 
 /// An edge to store. Edges naming an unknown datum are dropped by [`build`]:
@@ -40,6 +60,9 @@ pub struct Edge {
 /// # Errors
 /// [`ChartError::TooLarge`] if the graph exceeds what u32 ordinals address.
 pub fn build(defs: &[Def], edges: &[Edge]) -> Result<Vec<u8>, ChartError> {
+    fn path_of(d: &Def) -> &str {
+        d.facts.as_ref().map_or("", |f| f.path.as_str())
+    }
     let mut defs: Vec<&Def> = defs.iter().collect();
     defs.sort_unstable_by(|a, b| {
         a.datum
@@ -85,6 +108,36 @@ pub fn build(defs: &[Def], edges: &[Edge]) -> Result<Vec<u8>, ChartError> {
             .flat_map(|d| d.callsign.as_bytes().iter().copied())
             .collect(),
         defs.iter().map(|d| lang_tag(d.lang)).collect(),
+        csr_byte_offsets(defs.iter().map(|d| path_of(d).len()))?,
+        defs.iter()
+            .flat_map(|d| path_of(d).as_bytes().iter().copied())
+            .collect(),
+        defs.iter()
+            .flat_map(|d| {
+                let (line, line_end, s, e) = d
+                    .facts
+                    .as_ref()
+                    .map_or((0, 0, 0, 0), |f| (f.line, f.line_end, f.span.0, f.span.1));
+                [
+                    line.to_le_bytes(),
+                    line_end.to_le_bytes(),
+                    s.to_le_bytes(),
+                    e.to_le_bytes(),
+                ]
+            })
+            .flatten()
+            .collect(),
+        defs.iter()
+            .flat_map(|d| d.facts.as_ref().map_or([0u8; 32], |f| f.shape))
+            .collect(),
+        defs.iter()
+            .flat_map(|d| {
+                let cx = d.facts.as_ref().map_or(0u16, |f| f.complexity);
+                let mut m = [0u8; 4];
+                m[..2].copy_from_slice(&cx.to_le_bytes());
+                m
+            })
+            .collect(),
     ];
 
     let table_len = SECTION_COUNT * SECTION_ENTRY_LEN;
@@ -163,6 +216,11 @@ impl Section {
             Self::CallsignOffsets => "callsign_offsets",
             Self::CallsignBytes => "callsign_bytes",
             Self::Langs => "langs",
+            Self::PathOffsets => "path_offsets",
+            Self::PathBytes => "path_bytes",
+            Self::DefLocs => "def_locs",
+            Self::DefShapes => "def_shapes",
+            Self::DefMetrics => "def_metrics",
         }
     }
 }

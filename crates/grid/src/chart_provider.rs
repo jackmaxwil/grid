@@ -200,17 +200,26 @@ impl ChartDelta {
                     L::Callsign { callsign: want } => suffix_matches(callsign, &want.0),
                     L::Handle { handle } => handle_matches(callsign, &datum.to_string(), &handle.0),
                     L::Fix { fix } => datum.to_string() == fix.datum.0,
-                    // A file:line locator needs materialization, which the
-                    // segment does not carry yet: an empty answer is honest.
-                    L::FileLine { .. } => false,
+                    L::FileLine { file, line } => segment.location(ord).is_some_and(|loc| {
+                        loc.path == file.as_str()
+                            && u64::from(loc.line) <= *line
+                            && *line <= u64::from(loc.line_end)
+                    }),
                 };
                 if hit {
+                    let materialization =
+                        segment
+                            .location(ord)
+                            .map(|loc| grid_wire::DefRefMaterialization {
+                                file: loc.path.to_owned(),
+                                line: u64::from(loc.line),
+                            });
                     out.push(grid_wire::DefRef {
                         datum: Datum(datum.to_string()),
                         callsign: Some(Callsign(callsign.to_owned())),
                         lang: segment.lang(ord),
                         signature: None,
-                        materialization: None,
+                        materialization,
                     });
                 }
             }
