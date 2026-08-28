@@ -104,6 +104,7 @@ fn main() -> ExitCode {
         Some((&"orphans", args)) => orphans(args, json),
         Some((&"log", args)) => log(args, json),
         Some((&"bisect", args)) => bisect_verb(args, json),
+        Some((&"hotspots", args)) => hotspots(args, json),
         Some((&"review", args)) => review(args, json),
         Some((&"explain", args)) => explain::main(args),
         Some((&"suspects", args)) => suspects(args, json),
@@ -816,6 +817,39 @@ fn log(args: &[&str], json: bool) -> u8 {
     }
     print!("{}", porcelain::legs(&rows));
     exit::OK
+}
+
+/// `grid hotspots [--limit N]` — complexity × churn, descending: what to
+/// refactor first. No thresholds, no gate, no exit-code opinion — clippy
+/// owns lints; grid ranks, and the header names the evidence used.
+fn hotspots(args: &[&str], json: bool) -> u8 {
+    let mut limit = 20usize;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if *arg == "--limit" {
+            let Some(n) = it.next().and_then(|n| n.parse().ok()) else {
+                hint("usage: grid hotspots [--limit N]");
+                return exit::BAD_INPUT;
+            };
+            limit = n;
+        }
+    }
+    match rpc::hotspots(root(), limit) {
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            exit::BAD_INPUT
+        }
+        Ok(rows) => {
+            if json {
+                return emit_json(&rows);
+            }
+            if rows.iter().all(|r| r.legs == 0) {
+                hint("grid: no patch log yet — ranking by complexity alone; legs accrue from edits and surveys");
+            }
+            print!("{}", porcelain::hotspots(&rows));
+            exit::OK
+        }
+    }
 }
 
 /// `grid bisect <test> [<good> <bad>]` — first failing patch in the

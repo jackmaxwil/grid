@@ -963,3 +963,50 @@ fn lcov_ingests_as_a_reach_set_and_omits_what_it_cannot_map() {
         "the unmappable line is counted, never silently dropped:\n{err}"
     );
 }
+
+#[test]
+fn hotspots_rank_the_branchy_and_edited_above_the_large_and_flat() {
+    let dir = repo();
+    // branchy.py: complexity from real branches. flat.py: long but straight.
+    std::fs::write(
+        dir.path().join("branchy.py"),
+        "def hot(x):\n    if x:\n        return 1\n    if not x:\n        return 2\n    for i in [1]:\n        pass\n    return 3\n",
+    )
+    .expect("write");
+    let flat = format!(
+        "def cold(x):\n{}    return x\n",
+        "    x = x + 1\n".repeat(30)
+    );
+    std::fs::write(dir.path().join("flat.py"), flat).expect("write");
+    let ok = Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(dir.path())
+        .output()
+        .expect("git add")
+        .status
+        .success();
+    assert!(ok);
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    // Edit the branchy def twice so the log gives it churn.
+    for body in ["return 4", "return 5"] {
+        std::fs::write(
+            dir.path().join("branchy.py"),
+            format!("def hot(x):\n    if x:\n        return 1\n    if not x:\n        return 2\n    for i in [1]:\n        pass\n    {body}\n"),
+        )
+        .expect("write");
+        assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    }
+    let out = grid(dir.path(), &["hotspots", "--limit", "10"]);
+    assert_eq!(code(&out), 0);
+    let text = stdout(&out);
+    let pos = |name: &str| text.lines().position(|l| columns(l).get(1) == Some(&name));
+    let (hot, cold) = (pos("branchy.hot"), pos("flat.cold"));
+    assert!(
+        hot.is_some() && (cold.is_none() || hot < cold),
+        "branchy-and-edited outranks large-and-flat:\n{text}"
+    );
+    assert!(
+        text.lines().next().is_some_and(|l| l.contains("legs 2")),
+        "churn is the multiplier and is reported:\n{text}"
+    );
+}

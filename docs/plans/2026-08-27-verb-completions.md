@@ -1,6 +1,6 @@
 # Verb completions: materialize, remember, observe
 
-Status: planned, not started. Scope: the eight P0–P2 items from the
+Status: implemented, all eight steps (see git log from `0b6fd8d` to the step-8 commit). Deviations from plan are recorded per step in commit messages and LANG_RS.md. Scope: the eight P0–P2 items from the
 2026-08-27 verb-coverage review, ordered here by dependency and cost, not
 priority label. Authority: ONTOLOGY.md for vocabulary, ASSURANCE.md for
 dependency discipline, LANG_RS.md for the Rust frontend's ceilings.

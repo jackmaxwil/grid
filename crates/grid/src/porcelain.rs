@@ -358,6 +358,30 @@ pub fn refs_as(defs: &[grid_wire::DefRef], tag: &str) -> String {
     out
 }
 
+/// One row per hotspot: `hot  callsign  cx N  legs M  file:line`.
+#[must_use]
+pub fn hotspots(rows: &[crate::rpc::Hotspot]) -> String {
+    let mut out = String::new();
+    for r in rows {
+        let at = r
+            .materialization
+            .as_ref()
+            .map(|m| format!("{}:{}", m.file, m.line))
+            .unwrap_or_default();
+        record(
+            &mut out,
+            "hot",
+            &[
+                &r.callsign,
+                &format!("cx {}", r.complexity),
+                &format!("legs {}", r.legs),
+                &at,
+            ],
+        );
+    }
+    out
+}
+
 /// One row per leg, newest first: `leg  @from -> @to  rev`.
 #[must_use]
 pub fn legs(rows: &[grid_wire::Leg]) -> String {
