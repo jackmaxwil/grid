@@ -20,6 +20,7 @@ fn def(seed: u8, callsign: &str) -> Def {
         datum: datum(seed),
         callsign: callsign.to_string(),
         lang: Some(Lang::Py),
+        facts: None,
     }
 }
 

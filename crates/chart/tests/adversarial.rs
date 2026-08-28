@@ -13,6 +13,7 @@ fn sample() -> Vec<u8> {
             datum: DatumId([i; 32]),
             callsign: format!("pkg.mod.f{i}"),
             lang: Some(Lang::Py),
+            facts: None,
         })
         .collect();
     let edges: Vec<Edge> = (0u8..5)
@@ -262,6 +263,7 @@ fn edges_to_unknown_defs_are_dropped_not_dangling() {
         datum: DatumId([1; 32]),
         callsign: "a".into(),
         lang: None,
+        facts: None,
     }];
     let edges = vec![Edge {
         src: DatumId([1; 32]),

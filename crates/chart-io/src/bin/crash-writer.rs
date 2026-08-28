@@ -20,6 +20,7 @@ fn main() {
                 datum: DatumId([i; 32]),
                 callsign: format!("pkg.f{i}"),
                 lang: Some(Lang::Py),
+                facts: None,
             })
             .collect();
         let edges: Vec<Edge> = (0..n)

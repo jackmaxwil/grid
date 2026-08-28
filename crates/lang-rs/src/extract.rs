@@ -35,10 +35,19 @@ fn join(prefix: &str, name: &str) -> String {
     }
 }
 
+/// The placeholder the definition's own name becomes in the *shape* hash.
+/// The datum keeps the name (the chart interns datums uniquely, and two
+/// same-body defs must not collapse); the shape is the rename-join key.
+fn anon() -> proc_macro2::Ident {
+    proc_macro2::Ident::new("__shape", proc_macro2::Span::call_site())
+}
+
 fn push<T: ToTokens + Spanned>(
     kind: DefKind,
     callsign: String,
     node: &T,
+    shaped: &dyn ToTokens,
+    complexity: u16,
     source: &str,
     out: &mut Vec<Definition>,
 ) {
@@ -50,7 +59,56 @@ fn push<T: ToTokens + Spanned>(
         datum: Datum::of_canonical_bytes(&canon::canonical_bytes(node)),
         span_hash: span_hash(text),
         span,
+        shape: Datum::of_canonical_bytes(&canon::canonical_bytes(&shaped)),
+        complexity,
     });
+}
+
+/// Cyclomatic complexity: 1 + branch points. Branches: `if`, `match` arms
+/// beyond the first, loops, `&&`/`||`, `?`. A macro body is opaque tokens
+/// and contributes nothing, the same omission the extractor makes.
+fn complexity_of(block: &syn::Block) -> u16 {
+    struct Cx(u16);
+    impl Cx {
+        fn bump(&mut self, by: u16) {
+            self.0 = self.0.saturating_add(by);
+        }
+    }
+    impl<'ast> syn::visit::Visit<'ast> for Cx {
+        fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
+            self.bump(1);
+            syn::visit::visit_expr_if(self, node);
+        }
+        fn visit_expr_match(&mut self, node: &'ast syn::ExprMatch) {
+            self.bump(u16::try_from(node.arms.len().saturating_sub(1)).unwrap_or(u16::MAX));
+            syn::visit::visit_expr_match(self, node);
+        }
+        fn visit_expr_for_loop(&mut self, node: &'ast syn::ExprForLoop) {
+            self.bump(1);
+            syn::visit::visit_expr_for_loop(self, node);
+        }
+        fn visit_expr_while(&mut self, node: &'ast syn::ExprWhile) {
+            self.bump(1);
+            syn::visit::visit_expr_while(self, node);
+        }
+        fn visit_expr_loop(&mut self, node: &'ast syn::ExprLoop) {
+            self.bump(1);
+            syn::visit::visit_expr_loop(self, node);
+        }
+        fn visit_expr_try(&mut self, node: &'ast syn::ExprTry) {
+            self.bump(1);
+            syn::visit::visit_expr_try(self, node);
+        }
+        fn visit_expr_binary(&mut self, node: &'ast syn::ExprBinary) {
+            if matches!(node.op, syn::BinOp::And(_) | syn::BinOp::Or(_)) {
+                self.bump(1);
+            }
+            syn::visit::visit_expr_binary(self, node);
+        }
+    }
+    let mut cx = Cx(1);
+    syn::visit::visit_block(&mut cx, block);
+    cx.0
 }
 
 fn walk(items: &[Item], source: &str, prefix: &str, out: &mut Vec<Definition>) {
@@ -58,43 +116,54 @@ fn walk(items: &[Item], source: &str, prefix: &str, out: &mut Vec<Definition>) {
         match item {
             Item::Fn(f) => {
                 let callsign = join(prefix, &f.sig.ident.to_string());
-                push(DefKind::Function, callsign.clone(), f, source, out);
+                let mut shaped = f.clone();
+                shaped.sig.ident = anon();
+                let cx = complexity_of(&f.block);
+                push(
+                    DefKind::Function,
+                    callsign.clone(),
+                    f,
+                    &shaped,
+                    cx,
+                    source,
+                    out,
+                );
                 walk_stmts(&f.block.stmts, source, &callsign, out);
             }
-            Item::Struct(s) => push(
-                DefKind::Class,
-                join(prefix, &s.ident.to_string()),
-                s,
-                source,
-                out,
-            ),
-            Item::Enum(e) => push(
-                DefKind::Class,
-                join(prefix, &e.ident.to_string()),
-                e,
-                source,
-                out,
-            ),
-            Item::Union(u) => push(
-                DefKind::Class,
-                join(prefix, &u.ident.to_string()),
-                u,
-                source,
-                out,
-            ),
+            Item::Struct(s) => {
+                let mut shaped = s.clone();
+                shaped.ident = anon();
+                let callsign = join(prefix, &s.ident.to_string());
+                push(DefKind::Class, callsign, s, &shaped, 1, source, out);
+            }
+            Item::Enum(e) => {
+                let mut shaped = e.clone();
+                shaped.ident = anon();
+                let callsign = join(prefix, &e.ident.to_string());
+                push(DefKind::Class, callsign, e, &shaped, 1, source, out);
+            }
+            Item::Union(u) => {
+                let mut shaped = u.clone();
+                shaped.ident = anon();
+                let callsign = join(prefix, &u.ident.to_string());
+                push(DefKind::Class, callsign, u, &shaped, 1, source, out);
+            }
             Item::Trait(t) => {
                 let callsign = join(prefix, &t.ident.to_string());
-                push(DefKind::Class, callsign.clone(), t, source, out);
+                let mut shaped = t.clone();
+                shaped.ident = anon();
+                push(DefKind::Class, callsign.clone(), t, &shaped, 1, source, out);
                 for ti in &t.items {
                     // Only default-bodied methods carry code; a required
                     // signature has no behavior to identify.
                     if let TraitItem::Fn(m) = ti {
-                        if m.default.is_some() {
+                        if let Some(block) = &m.default {
                             let mc = format!("{callsign}.{}", m.sig.ident);
-                            push(DefKind::Function, mc.clone(), m, source, out);
-                            if let Some(block) = &m.default {
-                                walk_stmts(&block.stmts, source, &mc, out);
-                            }
+                            let mut shaped = m.clone();
+                            shaped.sig.ident = anon();
+                            let cx = complexity_of(block);
+                            push(DefKind::Function, mc.clone(), m, &shaped, cx, source, out);
+                            walk_stmts(&block.stmts, source, &mc, out);
                         }
                     }
                 }
@@ -111,7 +180,10 @@ fn walk(items: &[Item], source: &str, prefix: &str, out: &mut Vec<Definition>) {
                 for ii in &i.items {
                     if let ImplItem::Fn(m) = ii {
                         let mc = format!("{receiver}.{}", m.sig.ident);
-                        push(DefKind::Function, mc.clone(), m, source, out);
+                        let mut shaped = m.clone();
+                        shaped.sig.ident = anon();
+                        let cx = complexity_of(&m.block);
+                        push(DefKind::Function, mc.clone(), m, &shaped, cx, source, out);
                         walk_stmts(&m.block.stmts, source, &mc, out);
                     }
                 }

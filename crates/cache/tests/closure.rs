@@ -26,6 +26,7 @@ fn def(n: u8, callsign: &str) -> Def {
         datum: datum(n),
         callsign: callsign.to_string(),
         lang: Some(Lang::Py),
+        facts: None,
     }
 }
 
@@ -133,6 +134,7 @@ fn a_closure_past_fuel_is_rejected() {
             datum: chain_datum(i),
             callsign: format!("n{i}"),
             lang: None,
+            facts: None,
         })
         .collect();
     let edges: Vec<Edge> = (0..n - 1)

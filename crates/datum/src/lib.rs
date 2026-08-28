@@ -90,6 +90,14 @@ pub struct Definition {
     pub span_hash: String,
     /// Byte range of the definition in the source.
     pub span: std::ops::Range<usize>,
+    /// Identity with the definition's own name erased — the rename-join
+    /// key. Two same-shape defs are rename-equivalent; the datum itself
+    /// keeps the name, because the chart interns datums uniquely and
+    /// same-body defs must not collapse.
+    pub shape: Datum,
+    /// Cyclomatic complexity: 1 + branch points. A property of the
+    /// normalized AST, like the datum.
+    pub complexity: u16,
 }
 
 /// How a name was reached for. The kind decides the edge relation once the

@@ -455,11 +455,13 @@ fn seed_chart(dir: &Path) -> (String, String) {
                 datum: caller,
                 callsign: "app.caller".into(),
                 lang: Some(grid_wire::Lang::Py),
+                facts: None,
             },
             Def {
                 datum: target,
                 callsign: "app.callee".into(),
                 lang: Some(grid_wire::Lang::Py),
+                facts: None,
             },
         ],
         &[Edge {

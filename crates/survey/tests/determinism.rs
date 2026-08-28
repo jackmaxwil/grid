@@ -150,10 +150,14 @@ fn a_second_survey_of_an_unchanged_tree_parses_nothing() {
     assert_eq!(first.image, second.image);
 }
 
+type DefRow = (String, String, Vec<(u32, u8)>);
+
 #[test]
-fn a_reformatted_file_reuses_nothing_but_produces_the_same_chart() {
-    // The datum ignores formatting (C6), so the *segment* is unchanged even
-    // though the content hash — and therefore the cache key — is not.
+fn a_reformatted_file_reuses_nothing_but_keeps_every_identity() {
+    // The datum ignores formatting (C6). Since epoch 2 the segment also
+    // carries *locations*, which are physical and legitimately move under
+    // reformatting — so the contract is semantic: every datum, callsign and
+    // edge is unchanged, while the image as a whole may differ.
     let dir = repo(&[("pkg/caller.py", CALLER), ("pkg/util.py", UTIL)]);
     let mut cache = Cache::new();
     let before = run(dir.path(), &mut cache).expect("cold");
@@ -167,9 +171,27 @@ fn a_reformatted_file_reuses_nothing_but_produces_the_same_chart() {
     );
     readd(dir.path());
     let after = run(dir.path(), &mut cache).expect("warm");
+    let semantics = |image: &[u8]| -> Vec<DefRow> {
+        let seg = grid_chart::Segment::parse(image.to_vec()).expect("parse");
+        (0..seg.def_count())
+            .map(|i| {
+                let ord = grid_chart::Ordinal(i);
+                let edges = seg
+                    .out_edges(ord)
+                    .map(|n| (n.other.0, grid_chart::relation_tag(n.relation)))
+                    .collect();
+                (
+                    seg.datum(ord).map(|d| d.to_string()).unwrap_or_default(),
+                    seg.callsign(ord).unwrap_or_default().to_owned(),
+                    edges,
+                )
+            })
+            .collect()
+    };
     assert_eq!(
-        before.image, after.image,
-        "formatting is not identity, so the chart is unchanged"
+        semantics(&before.image),
+        semantics(&after.image),
+        "formatting is not identity, so every datum, name and edge holds"
     );
 }
 

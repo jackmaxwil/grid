@@ -16,6 +16,7 @@ fn def(seed: u8) -> Def {
         datum: datum(seed),
         callsign: format!("pkg.mod.f{seed}"),
         lang: Some(Lang::Py),
+        facts: None,
     }
 }
 

@@ -14,6 +14,25 @@ fn def(name: &str, fill: u8) -> Def {
         datum: DatumId([fill; 32]),
         callsign: name.to_owned(),
         lang: Some(grid_wire::Lang::Rs),
+        facts: None,
+    }
+}
+
+/// datum and shape filled independently: a rename holds the shape while the
+/// datum (which contains the name) moves.
+fn shaped(name: &str, datum_fill: u8, shape_fill: u8) -> Def {
+    Def {
+        datum: DatumId([datum_fill; 32]),
+        callsign: name.to_owned(),
+        lang: Some(grid_wire::Lang::Rs),
+        facts: Some(grid_chart::DefFacts {
+            path: "src/lib.rs".into(),
+            line: 1,
+            line_end: 1,
+            span: (0, 1),
+            shape: [shape_fill; 32],
+            complexity: 1,
+        }),
     }
 }
 
@@ -39,7 +58,8 @@ fn diff(base: &[Def], head: &[Def]) -> Result<Vec<Row>, Box<dyn Error>> {
 
 #[test]
 fn a_rename_is_one_moved_row() -> Result<(), Box<dyn Error>> {
-    let rows = diff(&[def("old_name", 7)], &[def("new_name", 7)])?;
+    // Different datums (the name is in them), same shape: a rename.
+    let rows = diff(&[shaped("old_name", 7, 42)], &[shaped("new_name", 8, 42)])?;
     assert_eq!(
         rows,
         vec![(
@@ -58,9 +78,9 @@ fn an_ambiguous_pairing_refuses_back_to_add_and_remove() -> Result<(), Box<dyn E
     // interns a datum once, so the duplicate arrives via a second segment —
     // exactly how identical bodies in two files reach a real live set.
     let (b1, b2, h) = (
-        chart(&[def("a", 7)])?,
-        chart(&[def("b", 7)])?,
-        chart(&[def("c", 7)])?,
+        chart(&[shaped("a", 1, 42)])?,
+        chart(&[shaped("b", 2, 42)])?,
+        chart(&[shaped("c", 3, 42)])?,
     );
     let (b1, b2, h) = (
         Segment::parse(b1.as_slice())?,
@@ -80,8 +100,17 @@ fn an_ambiguous_pairing_refuses_back_to_add_and_remove() -> Result<(), Box<dyn E
 
 #[test]
 fn a_body_edit_is_still_modified_not_moved() -> Result<(), Box<dyn Error>> {
-    let rows = diff(&[def("same_name", 7)], &[def("same_name", 9)])?;
+    let rows = diff(&[shaped("same_name", 7, 40)], &[shaped("same_name", 9, 41)])?;
     assert_eq!(rows[0].0, DefChangeAction::Modified);
     assert_eq!(rows[0].2, None);
+    Ok(())
+}
+
+#[test]
+fn an_epoch1_side_detects_no_moves_and_still_diffs() -> Result<(), Box<dyn Error>> {
+    // Shape-less defs (facts: None) are what an epoch-1 image answers.
+    let rows = diff(&[def("old_name", 7)], &[def("new_name", 8)])?;
+    assert!(rows.iter().all(|(a, _, _)| *a != DefChangeAction::Moved));
+    assert_eq!(rows.len(), 2);
     Ok(())
 }

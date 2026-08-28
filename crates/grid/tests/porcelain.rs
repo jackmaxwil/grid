@@ -386,11 +386,13 @@ fn seed_chart(dir: &Path, callee_byte: u8) -> (String, String) {
                 datum: caller,
                 callsign: "app.caller".into(),
                 lang: None,
+                facts: None,
             },
             Def {
                 datum: target,
                 callsign: "app.callee".into(),
                 lang: None,
+                facts: None,
             },
         ],
         &[Edge {

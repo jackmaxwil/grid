@@ -9,6 +9,19 @@ use std::collections::HashMap;
 use grid_datum::{DefKind, Definition};
 use grid_wire::Lang;
 
+/// 1-based line of `at` in `source` — counted once per definition at survey
+/// time, because the snapshot is of this exact text.
+fn line_of(source: &str, at: usize) -> u32 {
+    let head = source.get(..at).unwrap_or_default();
+    u32::try_from(
+        head.bytes()
+            .filter(|b| *b == b'\n')
+            .count()
+            .saturating_add(1),
+    )
+    .unwrap_or(u32::MAX)
+}
+
 /// One indexed definition, keyed by its absolute dotted name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Symbol {
@@ -20,6 +33,8 @@ pub struct Symbol {
     pub is_class: bool,
     /// The adapter that found it.
     pub lang: Lang,
+    /// The epoch-2 columns: location, shape, complexity.
+    pub facts: grid_chart::DefFacts,
 }
 
 /// Every definition in a tree, addressable by absolute dotted name.
@@ -45,7 +60,14 @@ pub struct DefIndex {
 
 impl DefIndex {
     /// Add one file's definitions under its module path.
-    pub fn insert_file(&mut self, module: &str, lang: Lang, defs: &[Definition]) {
+    pub fn insert_file(
+        &mut self,
+        module: &str,
+        lang: Lang,
+        defs: &[Definition],
+        path: &str,
+        source: &str,
+    ) {
         for def in defs {
             let absolute = format!("{module}.{}", def.callsign);
             let symbol = Symbol {
@@ -53,6 +75,17 @@ impl DefIndex {
                 absolute: absolute.clone(),
                 is_class: def.kind == DefKind::Class,
                 lang,
+                facts: grid_chart::DefFacts {
+                    path: path.to_owned(),
+                    line: line_of(source, def.span.start),
+                    line_end: line_of(source, def.span.end),
+                    span: (
+                        u32::try_from(def.span.start).unwrap_or(u32::MAX),
+                        u32::try_from(def.span.end).unwrap_or(u32::MAX),
+                    ),
+                    shape: shape_bytes(def),
+                    complexity: def.complexity,
+                },
             };
             // The same datum under the same name twice is the same definition
             // seen twice (a file listed twice, a re-survey), not a collision.
@@ -146,8 +179,18 @@ impl DefIndex {
 /// parse, not a re-hash: the identity is `grid-datum`'s, always.
 #[must_use]
 pub fn datum_bytes(def: &Definition) -> [u8; 32] {
+    hex_bytes(def.datum.as_str())
+}
+
+/// The shape digest, same wire-to-raw parse as the datum.
+#[must_use]
+pub fn shape_bytes(def: &Definition) -> [u8; 32] {
+    hex_bytes(def.shape.as_str())
+}
+
+fn hex_bytes(wire: &str) -> [u8; 32] {
     let mut out = [0u8; 32];
-    let hex = def.datum.as_str().strip_prefix("b3:").unwrap_or_default();
+    let hex = wire.strip_prefix("b3:").unwrap_or_default();
     for (i, byte) in out.iter_mut().enumerate() {
         *byte = hex
             .get(i * 2..i * 2 + 2)

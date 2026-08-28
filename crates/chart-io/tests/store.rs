@@ -10,6 +10,7 @@ fn image(n: u8) -> Vec<u8> {
             datum: DatumId([i; 32]),
             callsign: format!("pkg.f{i}"),
             lang: Some(Lang::Rs),
+            facts: None,
         })
         .collect();
     let edges: Vec<Edge> = (0..n)
