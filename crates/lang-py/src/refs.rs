@@ -109,6 +109,27 @@ impl Scan {
             self.visit_expr(target);
         }
     }
+
+    /// `self.x = ...` in a method writes a field of the enclosing class —
+    /// the one attribute write Python fixes lexically, no types needed.
+    /// Anything else (a typed receiver, a module-level `self`) is declined.
+    fn self_field_write(&mut self, target: &ast::Expr) {
+        let ast::Expr::Attribute(a) = target else {
+            return;
+        };
+        let ast::Expr::Name(n) = a.value.as_ref() else {
+            return;
+        };
+        if n.id.as_str() != "self" || !self.in_class.iter().rev().nth(1).copied().unwrap_or(false) {
+            return;
+        }
+        let segments: Vec<String> = self.scope.split('.').map(str::to_owned).collect();
+        if let Some((_, class)) = segments.split_last() {
+            if !class.is_empty() {
+                self.push(RefKind::FieldWrite, class.to_vec());
+            }
+        }
+    }
 }
 
 impl Visitor for Scan {
@@ -249,6 +270,23 @@ impl Visitor for Scan {
         for stmt in node.body {
             self.visit_stmt(stmt);
         }
+    }
+
+    fn visit_stmt_assign(&mut self, node: ast::StmtAssign) {
+        for target in &node.targets {
+            self.self_field_write(target);
+        }
+        self.generic_visit_stmt_assign(node);
+    }
+
+    fn visit_stmt_aug_assign(&mut self, node: ast::StmtAugAssign) {
+        self.self_field_write(&node.target);
+        self.generic_visit_stmt_aug_assign(node);
+    }
+
+    fn visit_stmt_ann_assign(&mut self, node: ast::StmtAnnAssign) {
+        self.self_field_write(&node.target);
+        self.generic_visit_stmt_ann_assign(node);
     }
 
     fn visit_expr_call(&mut self, node: ast::ExprCall) {

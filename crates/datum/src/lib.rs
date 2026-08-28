@@ -167,4 +167,8 @@ pub struct FileRefs {
     /// names other files may reach through this module. A subset of
     /// `imports` by construction.
     pub reexports: Vec<Import>,
+    /// Out-of-line module declarations that relocate their file:
+    /// `(mod name, declared file path)` from `#[path = "..."] mod name;`.
+    /// The path is as written — relative to the declaring file's directory.
+    pub path_mods: Vec<(String, String)>,
 }

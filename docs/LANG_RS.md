@@ -203,5 +203,8 @@ expansion, a `modeled` tier) is a later wave with its own evidence story.
   ~400, including through re-exports. `[lib] name` now wins over
   `[package] name` in that scan — a renamed library is imported by the lib
   name, so the package name never appears in a `use`. Remaining ceilings:
-  glob re-exports (`pub use x::*`) stay omissions, and `#[path]` still
-  falls back to the directory-derived module path.
+  glob re-exports (`pub use x::*`) stay omissions. Top-level
+  `#[path = "..."] mod x;` now relocates the target file's module to the
+  declaring file's module plus the mod name; a `#[path]` inside an inline
+  mod (whose path is relative to the mod's own directory) still falls back
+  to the directory-derived module path.
