@@ -1,3 +1,4 @@
 target/
 /.cargo/
 .grid/chart/
+.DS_Store
