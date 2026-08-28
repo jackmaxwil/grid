@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/datum",
     "crates/lang-py",
+    "crates/lang-rs",
     "crates/survey",
     "crates/chart",
     "crates/chart-io",

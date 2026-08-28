@@ -28,14 +28,12 @@ pub struct SourceFile {
     pub source: String,
 }
 
-/// The language an extension names, or `None` for a file no adapter claims.
-///
-/// Only Python is claimed at this wave. The others are named so the mapping
-/// lives in one place when their adapters arrive.
+/// The language an extension names, or `None` for a file no frontend claims.
 #[must_use]
 pub fn lang_of(path: &str) -> Option<Lang> {
     match path.rsplit_once('.')?.1 {
         "py" | "pyi" => Some(Lang::Py),
+        "rs" => Some(Lang::Rs),
         _ => None,
     }
 }
@@ -86,19 +84,46 @@ pub fn sources(root: &Path) -> Result<Vec<SourceFile>, SurveyError> {
     Ok(out)
 }
 
-/// The module path a file materializes: `pkg/mod.py` -> `pkg.mod`, and
-/// `pkg/__init__.py` -> `pkg`.
+/// The module path a file materializes. Python: `pkg/mod.py` -> `pkg.mod`,
+/// `pkg/__init__.py` -> `pkg`. Rust: `crates/chart/src/lib.rs` -> `chart`,
+/// `crates/survey/src/resolve.rs` -> `survey.resolve`.
 ///
 /// This is the one place a path becomes a name, so it is the one place that
-/// has to agree with what an `import` statement spells.
+/// has to agree with what an import statement spells. The Rust rule is the
+/// file tree's opinion, not cargo's — ceilings in `docs/LANG_RS.md`.
 #[must_use]
-pub fn module_of(path: &str) -> String {
-    let stem = path
-        .strip_suffix(".py")
-        .or_else(|| path.strip_suffix(".pyi"))
-        .unwrap_or(path);
-    let stem = stem.strip_suffix("/__init__").unwrap_or(stem);
-    stem.replace('/', ".")
+pub fn module_of(lang: Lang, path: &str) -> String {
+    if lang == Lang::Rs {
+        module_of_rs(path)
+    } else {
+        let stem = path
+            .strip_suffix(".py")
+            .or_else(|| path.strip_suffix(".pyi"))
+            .unwrap_or(path);
+        let stem = stem.strip_suffix("/__init__").unwrap_or(stem);
+        stem.replace('/', ".")
+    }
+}
+
+fn module_of_rs(path: &str) -> String {
+    let (root, rest) = if let Some(rest) = path.strip_prefix("src/") {
+        ("crate", rest)
+    } else if let Some((pre, rest)) = path.split_once("/src/") {
+        (pre.rsplit('/').next().unwrap_or("crate"), rest)
+    } else {
+        // build.rs, tests/, examples/ — approximate names, never false edges.
+        ("crate", path)
+    };
+    // The directory is the package name; the crate name a `use` spells swaps
+    // hyphens for underscores, so the module root must too.
+    let root = root.replace('-', "_");
+    let stem = rest.strip_suffix(".rs").unwrap_or(rest);
+    let stem = stem.strip_suffix("/mod").unwrap_or(stem);
+    if stem == "lib" || stem == "main" {
+        root
+    } else {
+        format!("{root}.{}", stem.replace('/', "."))
+    }
 }
 
 /// Tracked files at a git revision, with their contents.

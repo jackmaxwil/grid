@@ -51,6 +51,12 @@ Every dependency in `Cargo.lock` gets a line here saying why it is in the TCB.
   is the parser-free identity vocabulary every frontend emits, so adding a
   language adds a `grid-lang-*` crate, never a parser above one. `proptest`
   (dev-only) — the property harness C6 is evidenced by.
+- `lang-rs` (Rust frontend): `syn` (`full` + `visit`) — a pure-Rust parser
+  for the entire language, no C, same `forbid(unsafe_code)` posture as
+  rustpython; `proc-macro2` with `span-locations`, whose `Span::byte_range`
+  is exact outside a proc-macro context, the only place a survey runs;
+  `quote` for the `ToTokens` canonical printing. All three are one-author
+  (dtolnay) MIT/Apache staples already vetted by most of crates.io.
 - Wave 5 (`survey`): no new dependencies. Extraction reuses `datum`'s parser
   (one parse of a file serves identity and references alike), discovery is
   `git ls-files` rather than a walker crate so the repo's own ignore rules are

@@ -1,0 +1,18 @@
+[package]
+name = "grid-lang-rs"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+grid-datum = { path = "../datum", version = "0.1.0" }
+# Pure Rust, full-language, MIT/Apache — chosen over tree-sitter to keep the
+# no-C TCB claim (docs/LANG_RS.md). `span-locations` is what makes
+# Span::byte_range accurate outside a proc-macro context, the only place a
+# survey runs.
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"

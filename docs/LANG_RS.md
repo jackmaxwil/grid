@@ -1,7 +1,9 @@
-# grid-lang-rs — the Rust frontend (design, pre-implementation)
+# grid-lang-rs — the Rust frontend
 
-Status: proposed. Nothing here is built; this page exists so the callsign
-scheme is argued on paper before it becomes a cache key.
+Status: implemented (`crates/lang-rs`, plus the Rust resolver arm in
+`grid-survey`). The scheme below was argued on paper before it became a
+cache key; "What implementation taught" at the bottom records where the
+paper was wrong or silent.
 
 ## Goal
 
@@ -113,9 +115,10 @@ later, and a wrong module name costs an unresolved edge, never a false one.
 The existing vocabulary fits Rust better than expected; no core changes:
 
 - `use pkg::mod::Item as I` → `Import { alias: "I", target: "pkg.mod.Item",
-  scope }` — the same shape as a Python from-import. `crate::` anchors to
-  the crate root segment; `super::` becomes leading dots, reusing the
-  relative-import spelling the resolver already anchors. `self::` strips.
+  scope }` — the same shape as a Python from-import. `crate`, `super`, and
+  `self` stay as literal head segments in the target, and the Rust resolver
+  arm anchors them against the referencing module (Python's leading-dot
+  convention maps badly to `crate::`, so Rust spells its own anchors).
 - A path call `free()`, `mod::f()`, `Foo::new()` → `RefKind::Call` with the
   dotted path as written.
 - `impl Trait for Foo` → `RefKind::Base` from callsign `Foo` to the trait —
@@ -160,3 +163,29 @@ expansion, a `modeled` tier) is a later wave with its own evidence story.
   assertion either "this edge, from here" or "this construct produced
   nothing" — glob imports, macro bodies, and method receivers all in the
   second class.
+
+## What implementation taught
+
+- **Trailing commas are tokens, and rustfmt owns them.** The identity test
+  caught it before the paper did: `f(x: u32,)` and `f(x: u32)` are different
+  token streams, and rustfmt freely adds the comma — a pure reformat would
+  have moved the datum. Canonicalization strips trailing commas, except in a
+  paren group in value or pattern position with fewer than two commas, where
+  `(x,)` really is a one-tuple; the "call shape" is decided by the preceding
+  token (a non-keyword ident or a turbofish `>`). The one-tuple case is
+  pinned by a test that must never pass by stripping.
+- **The datum is not yet rename-invariant.** v1 canonical bytes are token
+  streams after doc erasure, so a local rename moves the datum — a false
+  "changed", never a false "same". The ceiling is asserted in
+  `tests/identity.rs` so accidentally gaining the invariance (an epoch
+  change) fails a test instead of passing silently. The upgrade is a
+  scope-aware alpha renamer and a deliberate `grid-lang-rs/v2` epoch bump.
+- **The module-path ceiling bites this very repo.** Self-hosting works —
+  `grid survey` charts grid at ~920 defs / ~969 proven edges, and `grid`
+  diffs its own working tree in datum space — but every proven Rust edge is
+  intra-crate: the packages are named `grid-*` while their directories are
+  `lang-py`, `chart`, …, so a cross-crate path like `grid_chart::build`
+  never matches the dir-derived module root `chart`. The acceptance bar
+  ("`grid.edit` -> lang-py extraction") therefore stands amended to
+  intra-crate edges until the Cargo.toml-aware module root lands — the
+  additive fix this page already named.
