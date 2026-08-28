@@ -17,6 +17,7 @@ document.
 | `ref` | callsign, datum prefix, `file:line` when the snapshot carries locations (`grid resolve` — a definition that exists, not one that changed) |
 | `orphan` | callsign, datum prefix, `file:line` — a definition with no *proven* caller (`grid orphans`); not the same as dead |
 | `leg` | `@from -> @to`, rev — one patch edge in the datum's history, newest first (`grid log`) |
+| `hot` | callsign, `cx N`, `legs M`, `file:line` — complexity × churn, descending (`grid hotspots`); a ranking, never a gate |
 | `edge` | glyph, verdict role, or evidence grade (query results), `src -relation-> dst`, evidence or context |
 | `test` | role, test id, `expected=actual` |
 | `inv` | status, invariant id |

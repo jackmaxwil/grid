@@ -252,6 +252,105 @@ pub fn orphans(
     Ok(out)
 }
 
+/// One hotspot row: a definition scored by complexity times churn.
+#[derive(Debug, serde::Serialize)]
+pub struct Hotspot {
+    pub callsign: String,
+    pub datum: String,
+    pub complexity: u16,
+    pub legs: u64,
+    pub score: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materialization: Option<grid_wire::DefRefMaterialization>,
+}
+
+/// `grid.hotspots` — complexity × churn, descending. Churn is the number of
+/// legs in the datum's identity component of the patch log, so it survives
+/// renames; with no log yet, every def scores churn 0 and the ranking
+/// degrades to complexity alone.
+///
+/// # Errors
+/// [`chart_provider::Error`] if the store cannot be opened.
+pub fn hotspots(
+    root: &std::path::Path,
+    limit: usize,
+) -> Result<Vec<Hotspot>, chart_provider::Error> {
+    let chart = ChartDelta::open(root)?;
+    // Union legs into identity components by plain map-merging: the log is
+    // small (one row per recorded modification), so O(legs · chain) is fine.
+    // ponytail: replace with union-find when a real log makes this slow.
+    let legs = crate::legs::read(root);
+    let mut component: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut next = 0usize;
+    for leg in &legs {
+        let ids = (
+            component.get(&leg.from.0).copied(),
+            component.get(&leg.to.0).copied(),
+        );
+        let id = match ids {
+            (Some(a), _) => a,
+            (None, Some(b)) => b,
+            (None, None) => {
+                next += 1;
+                next
+            }
+        };
+        component.insert(leg.from.0.clone(), id);
+        component.insert(leg.to.0.clone(), id);
+        if let (Some(a), Some(b)) = ids {
+            if a != b {
+                for v in component.values_mut() {
+                    if *v == b {
+                        *v = a;
+                    }
+                }
+            }
+        }
+    }
+    let mut per_component: std::collections::HashMap<usize, u64> = std::collections::HashMap::new();
+    for leg in &legs {
+        if let Some(id) = component.get(&leg.to.0) {
+            *per_component.entry(*id).or_insert(0) += 1;
+        }
+    }
+
+    let mut out = Vec::new();
+    for segment in chart.head().segments() {
+        for i in 0..segment.def_count() {
+            let ord = grid_chart::Ordinal(i);
+            let (Some(datum), Some(callsign), Some(complexity)) = (
+                segment.datum(ord),
+                segment.callsign(ord),
+                segment.complexity(ord),
+            ) else {
+                continue;
+            };
+            let datum = datum.to_string();
+            let churn = component
+                .get(&datum)
+                .and_then(|id| per_component.get(id))
+                .copied()
+                .unwrap_or(0);
+            out.push(Hotspot {
+                callsign: callsign.to_owned(),
+                datum,
+                complexity,
+                legs: churn,
+                score: u64::from(complexity).saturating_mul(1 + churn),
+                materialization: segment.location(ord).map(|loc| {
+                    grid_wire::DefRefMaterialization {
+                        file: loc.path.to_owned(),
+                        line: u64::from(loc.line),
+                    }
+                }),
+            });
+        }
+    }
+    out.sort_by(|a, b| b.score.cmp(&a.score).then(a.callsign.cmp(&b.callsign)));
+    out.truncate(limit);
+    Ok(out)
+}
+
 /// `grid.snapshot.current` — the published snapshot, or `None` for a store
 /// that has never been surveyed.
 ///
