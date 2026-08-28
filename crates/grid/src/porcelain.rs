@@ -358,6 +358,25 @@ pub fn refs_as(defs: &[grid_wire::DefRef], tag: &str) -> String {
     out
 }
 
+/// One row per leg, newest first: `leg  @from -> @to  rev`.
+#[must_use]
+pub fn legs(rows: &[grid_wire::Leg]) -> String {
+    let mut out = String::new();
+    for leg in rows {
+        let rev = leg
+            .git_rev
+            .as_ref()
+            .map(|r| r.0.clone())
+            .unwrap_or_default();
+        record(
+            &mut out,
+            "leg",
+            &[&format!("{} -> {}", short(&leg.from), short(&leg.to)), &rev],
+        );
+    }
+    out
+}
+
 /// `done` for what was stored, `warn` per refusal. A rejection is not an
 /// error — it is the cache declining to lie — so it prints and exits 0.
 #[must_use]

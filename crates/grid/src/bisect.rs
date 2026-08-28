@@ -39,7 +39,6 @@ impl From<chart_provider::Error> for Error {
 }
 
 /// Outcome for one retained patch probe.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Probe {
     pub culprit: Datum,
@@ -51,7 +50,6 @@ pub struct Probe {
 ///
 /// The boundary entries must be good then bad. `cache_hits` counts only
 /// midpoint outcomes supplied by retained cache data.
-#[allow(dead_code)]
 pub fn search(chain: &[Probe]) -> Result<BisectResult, Error> {
     if chain.len() < 2 || chain[0].fails || !chain[chain.len() - 1].fails {
         return Err(Error::InsufficientHistory(
@@ -77,13 +75,46 @@ pub fn search(chain: &[Probe]) -> Result<BisectResult, Error> {
     })
 }
 
-/// Production entry point. Snapshot presence is validated before refusing:
-/// Grid must not manufacture an ordering or test outcome from snapshot ids.
-pub fn run(params: &BisectParams, _root: &Path) -> Result<BisectResult, Error> {
-    Err(Error::InsufficientHistory(format!(
-        "no retained ordered patch outcomes for `{}`",
-        params.test
-    )))
+/// Production entry point: the retained patch log in append order, each leg
+/// probed with the outcome recorded for `(its datum, this test)`. A leg
+/// with no recorded outcome cannot be probed and is skipped; a chain whose
+/// probed ends are not good-then-bad still refuses — fail closed stays the
+/// contract, the condition just became satisfiable.
+pub fn run(params: &BisectParams, root: &Path) -> Result<BisectResult, Error> {
+    let outcomes = crate::legs::outcomes(root);
+    let verdict_of = |datum: &str| {
+        outcomes
+            .iter()
+            .rev()
+            .find(|o| o.test == params.test && o.datum == datum)
+            .map(|o| o.fails)
+    };
+    let mut chain = Vec::new();
+    for leg in crate::legs::read(root) {
+        if chain.is_empty() {
+            if let Some(fails) = verdict_of(&leg.from.0) {
+                chain.push(Probe {
+                    culprit: leg.from.clone(),
+                    fails,
+                    cached: true,
+                });
+            }
+        }
+        if let Some(fails) = verdict_of(&leg.to.0) {
+            chain.push(Probe {
+                culprit: leg.to.clone(),
+                fails,
+                cached: true,
+            });
+        }
+    }
+    if chain.len() < 2 {
+        return Err(Error::InsufficientHistory(format!(
+            "no retained ordered patch outcomes for `{}`",
+            params.test
+        )));
+    }
+    search(&chain)
 }
 
 #[cfg(test)]
