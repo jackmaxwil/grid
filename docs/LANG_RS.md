@@ -22,8 +22,9 @@ itself. A Rust frontend that cannot chart its own repository is not done.
   emits no modeled edges — same rule that keeps `obj.method()` out of the
   Python chart.
 - `#[path]` attributes and non-conventional module layouts.
-- TS/JS. That is a third frontend (`swc`-based, also pure Rust), not this
-  one.
+- TS/JS. That is a third frontend, not this one — `swc_ecma_parser` (pure
+  Rust, the parser under Next.js/Vite toolchains, near-complete test262
+  coverage) is the standing candidate.
 
 ## Parser: `syn`, not tree-sitter
 
@@ -34,7 +35,23 @@ name grammar. `syn` (with `full` + `proc-macro2` `span-locations` for byte
 spans) is pure Rust, parses the entire language, is MIT/Apache, and its
 `visit` module is the same shape as the rustpython `Visitor` the Python
 frontend already uses. One new TCB line, zero C. tree-sitter re-enters the
-conversation only for languages with no mature pure-Rust parser.
+conversation only for languages with no mature pure-Rust parser — and its
+upstream is a warning sign anyway: GitHub archived stack-graphs (its
+tree-sitter-based precise-navigation layer) on 2025-09-09.
+
+Two consequences of syn, both load-bearing:
+
+- `proc_macro2::Span::byte_range` is accurate *outside* a proc-macro
+  context, which is exactly where a survey runs — the accuracy caveat in its
+  docs applies only inside macro expansion, which we never do.
+- syn drops plain comments but keeps doc comments **as `#[doc = "..."]`
+  attributes in the AST**. Left alone they would enter the canonical bytes
+  and a doc edit would move the datum — breaking the invariant the ontology
+  states ("rewrite its comments — the datum holds"). The normalizer
+  therefore erases doc attributes before hashing, the same way the Python
+  normalizer never sees `#` comments. Plain-comment metadata (lang-py's
+  `Comment` list) is omitted at v1: syn cannot see them, no consumer exists
+  yet, and a lexer-level comment scan is additive later.
 
 ## Callsign scheme (the load-bearing decision)
 
@@ -59,7 +76,17 @@ is an address, the datum is the identity. Two impls that erase to the same
 callsign with different datums (e.g. `impl Frob<u8> for Foo` and
 `impl Frob<u16> for Foo`) collide into `DefIndex`'s existing ambiguity set
 and become unresolvable by name — refusal, not a wrong edge, and the
-ambiguity count already surfaces it.
+ambiguity count already surfaces it. `#[cfg]`-gated duplicate impls (the
+unix/windows pair defining the same method twice) land in the same refusal:
+two datums under one name, unresolvable, counted.
+
+Prior art says this is the right level of care: rust-analyzer's SCIP
+indexer spells impls `impl#[SelfType]` / `impl#[SelfType][TraitType]` — the
+same self-type + trait-type pair as `Foo@T` — and got there only after
+shipping ambiguous inherent-impl symbols (rust-analyzer #18772), while
+items nested inside functions *still* index without their enclosing
+function's name (#18771, open). The scheme above carries nesting and the
+trait discriminant from day one.
 
 `DefKind` maps without new variants: `fn` → `Function`; `struct`, `enum`,
 `union`, `trait` → `Class` (a base-position reference to one is
@@ -74,9 +101,12 @@ path-derived and deliberately dumb: strip `src/`, strip `.rs`, `mod.rs` and
 the root segment, `/` becomes `.`. So `crates/chart/src/lib.rs` roots
 `chart`, and `crates/survey/src/resolve.rs` is `survey.resolve`. Ceiling:
 this is the file tree's opinion, not cargo's — a crate whose package name
-differs from its directory, or a `#[path]` module, files under the wrong
-name. Documented, not defended; the fix (reading the nearest `Cargo.toml`)
-is additive later.
+differs from its directory (hyphens become underscores in the real crate
+name), a `#[path]` module, and cargo's extra target roots (`src/bin/*.rs`,
+`tests/`, `examples/`, `benches/` are each their own crate root, not
+submodules) all file under approximate names. Documented, not defended; the
+fix (reading the nearest `Cargo.toml` and its target table) is additive
+later, and a wrong module name costs an unresolved edge, never a false one.
 
 ## References and imports
 
