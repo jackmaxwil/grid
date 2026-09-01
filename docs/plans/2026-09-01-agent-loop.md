@@ -1,12 +1,14 @@
-# Agent loop: the honesty number, `grid test`, `grid check`, `grid inspect`
+# Agent loop: the honesty number, `grid test`, `grid check`, `grid scope --bodies`
 
 Status: **proposed**, 2026-09-01. Follows the drift plan
-(`2026-09-01-drift.md`, implemented). Scope: what survived a pressure test
-of grid's value to a coding agent on a Rust, Rust + Python, or Python
-repository — the areas the test kept, at the minimum each needs. Authority:
-ONTOLOGY.md for vocabulary, PORCELAIN.md for records and exit codes,
-ASSURANCE.md for claims and dependency discipline, LANG_RS.md for the Rust
-frontend's ceilings.
+(`2026-09-01-drift.md`, implemented) and the naming plan
+(`2026-09-01-naming.md`, which lands first so every verb here is born with
+its final name — this document already uses those names). Scope: what
+survived a pressure test of grid's value to a coding agent on a Rust,
+Rust + Python, or Python repository — the areas the test kept, at the
+minimum each needs. Authority: ONTOLOGY.md for vocabulary, PORCELAIN.md
+for records and exit codes, ASSURANCE.md for claims and dependency
+discipline, LANG_RS.md for the Rust frontend's ceilings.
 
 ---
 
@@ -27,7 +29,7 @@ Four things nobody else holds together, all already built:
 3. **Edges with an evidence grade** — `proven > observed > modeled >
    heuristic`. Proven and observed gate; modeled gates only when a human
    declared it; heuristic ranks and never gates.
-4. **Runtime traces keyed to closures** — wakes (what a test run did),
+4. **Runtime traces keyed to closures** — traces (what a test run did),
    closure keys (the transitive identity a verdict depended on), and an
    append-only verdict log.
 
@@ -94,35 +96,37 @@ the weight a compiler would otherwise carry.
 
 ### The agent-facing surface
 
-Fourteen verbs plus a nautical vocabulary is a tax. The agent-facing
-surface after this plan is three verbs and two hooks; everything else is a
-component they compose:
+Fourteen verbs plus a nautical vocabulary is a tax; the naming plan pays
+half of it. The agent-facing surface after both plans is three verbs and
+two hooks; everything else is a component they compose:
 
 ```
-grid test  [--trace] [--all] [-- <runner args>]     run what the change can reach; replay the rest
-grid check [-- <cargo check args>]                   callers the compile did not compile
-grid inspect [base] [head] [--track f] [--quick]     everything the change did that nobody checked
-grid pack <pattern>... [--bodies N] [--sigs M] [--budget T]   context, with its horizon
+grid check [base] [head] [--plan f] [--quick] [--why]      everything the change did that nobody checked
+grid check --compile [-- <cargo check args>]               wrap the compile; record what it did not compile
+grid test  [--trace] [--all] [-- <runner args>]            run what the change can reach; replay the rest
+grid scope <pattern>... [--bodies N] [--sigs M] [--budget T] [--since S]   context, with its horizon
 ```
 
-Hooks (documented, not shipped as code — Claude Code hooks are the user's
-configuration): PostToolUse → `grid inspect --quick` (drift + check, under
-50ms); pre-commit → `grid inspect`; CI → `grid test --trace --all`, which
-is what refreshes the traces local selection reads.
+`gate <plan>` stays as the plan-required CI form (exit code, nothing
+else). Hooks (documented, not shipped as code — Claude Code hooks are the
+user's configuration): PostToolUse → `grid check --quick` (drift plus the
+last compile record, under 50ms); pre-commit → `grid check`; CI →
+`grid test --trace --all`, which is what refreshes the traces local
+selection reads.
 
 ### Data flow
 
 ```
- survey ──► chart (segments, membership) ◄──── wake ingest (lcov | coverage.py JSON)
+ survey ──► chart (segments, membership) ◄──── trace ingest (lcov | coverage.py JSON)
    │             │            │                        ▲
    │             │            └── closure keys ─► verdict log      per-test traces
    │             ▼                                    │                  ▲
-   │        drift / leadline / scope                  │                  │
+   │        drift / walk / scope                      │                  │
    │             │                                    ▼                  │
    └──► grid test ───── selection = inbound walk from changed set ∩ tests; replay hits; run misses ──┘
-        grid check ──── proven callers ∩ cfg the check did not compile
-        grid inspect ── drift + check + stale + weak + uncovered + clone + compat + adherence
-        grid pack ───── bodies to hop N, sigs to hop M, budget, certificate
+        grid check --compile ── proven callers ∩ cfg the compile did not compile → compile record
+        grid check ──── drift + compile record + adherence + stale + covenant + compat | weak + uncovered + clone-of
+        grid scope --bodies ── bodies to hop N, sigs to hop M, budget, certificate
         grid suspects --closure ── closure(test) ∩ changed(since)
         grid interfere ── drift(A) ∩ touched(B), both ways, over two stores
 ```
@@ -145,12 +149,12 @@ declined count splits into `external` / `internal` / `method`, and Rust
 method calls are extracted as a reference kind the resolver always declines
 and always counts. Nothing else in this plan is honest without both.
 
-**Coverage as traces (step 1).** `grid wake ingest --lcov` exists and maps
+**Coverage as traces (step 1).** `grid trace ingest --lcov` exists and maps
 executed lines onto definitions. This step adds coverage.py's JSON report
-as a second input and the orchestration that produces *one wake per test*
-— which is what selection, weak, uncovered, and attribution need. Tracing
-cost is proportional to the tests that ran, and after step 2 only the
-selected tests run.
+as a second input and the orchestration that produces *one trace per
+test* — which is what selection, weak, uncovered, and attribution need.
+Tracing cost is proportional to the tests that ran, and after step 2 only
+the selected tests run.
 
 **`grid test` (step 2).** Test inventory from the runner (`cargo nextest
 list`, `pytest --collect-only`), selection by one inbound walk from the
@@ -161,25 +165,27 @@ so. A verdict that disagrees with a prior one under the same key is
 reported as `nondeterministic` — the fact, not a diagnosis. Changed
 definitions no test reaches are `uncovered`, a warning.
 
-**`grid check` (step 3).** Wraps `cargo check`, records the features and
-target it ran with, and reports every proven caller of a changed definition
-that sits under a `cfg` the check excluded — `cfg(test)` first, features
-second. Decidable exclusions gate; an unknown predicate warns.
+**`grid check --compile` (step 3).** Wraps `cargo check`, records the
+features and target it ran with, and reports every proven caller of a
+changed definition that sits under a `cfg` the compile excluded —
+`cfg(test)` first, features second. Decidable exclusions gate; an unknown
+predicate warns. The record it writes is what plain `grid check` reads.
 
 **Plan adherence (step 4).** A def promise may say whether the interface
 moves. A moved signature no promise covers holds the gate with reason
 `interface`; a body edit under a promise that said `interface: false` is
-tolerated. Tracks already exist; this is one optional field.
+tolerated. Plans already exist; this is one optional field.
 
-**`grid pack` (step 5).** The context pack with bodies to one depth, sigs to
-a further depth, a byte-derived token budget, and a certificate that names
-the depth each tier is complete to. Budget is spent in whole layers, so the
-certificate is never a lie. `--since <snapshot>` packs only what moved.
+**`grid scope --bodies` (step 5).** The context pack with bodies to one
+depth, sigs to a further depth, a byte-derived token budget, and a
+certificate that names the depth each tier is complete to. Budget is spent
+in whole layers, so the certificate is never a lie. `--since <snapshot>`
+packs only what moved.
 
 **Attribution (step 6).** `grid suspects <test> --closure <since>`: the
 definitions in the test's closure that changed since `since`, ranked by hop
 distance, with no run history required. When two traces of the test are
-retained, the first divergent hop (`grid wake diff`, C17) is appended.
+retained, the first divergent hop (`grid trace diff`, C17) is appended.
 
 **Deserialize compatibility (step 7).** For a type deriving `Deserialize`
 whose sig moved, a decidable check of the field-level diff against the
@@ -192,12 +198,13 @@ stores against a common base, the definitions both touched, and each
 side's drift suspects that land in the other's touched set. Semantic
 overlap git's merge cannot see.
 
-**`grid inspect` (step 9).** The composite: gates (drift, check,
-adherence, verdict-stale, covenant, compat-when-declared) and a ranked tail
-(weak, uncovered, clone-of, compat-when-not-declared). Exit is the max over
-gates; a component that refuses refuses the whole. A refactor certificate
-is one `done` record over the same data: interface-stable, tests replayed,
-definitions uncovered.
+**`grid check` (step 9).** The composite: gates (drift, the compile
+record, adherence, verdict-stale, covenant, compat-when-declared) and a
+ranked tail (weak, uncovered, clone-of, compat-when-not-declared). Exit is
+the max over gates; a component that refuses refuses the whole. `--why`
+embeds the gate's fulfilling paths (what `grid review` printed before the
+naming plan folded it). A refactor certificate is one `done` record over
+the same data: interface-stable, tests replayed, definitions uncovered.
 
 **Not built, recorded as decisions:** dependency-upgrade suspects (Rust:
 `cargo check` covers types and body diffs of dependencies are pure noise;
@@ -207,7 +214,8 @@ counts, not time), doc drift (low precision), near-duplicate detection
 (measure exact-shape hit rate first), V8 coverage (no TS frontend yet), a
 nextest wrapper script for single-run per-test tracing (ceiling marked in
 step 1), per-definition declined counts (a segment fact; step 0b's split is
-per file and summed).
+per file and summed), and the verbs `inspect` and `pack` (folded into
+`check` and `scope` by the naming plan).
 
 ---
 
@@ -236,19 +244,20 @@ up to `(package, binary)` and the runner is invoked as
 binaries are neither compiled nor linked. The saving is the link, not the
 run.
 
-**3. A green check that was not green.** Agent moves a signature, runs
-`cargo check`, sees green, commits; `cargo test` fails in CI on a caller
-under `mod tests`.
+**3. A green compile that was not green.** Agent moves a signature, runs
+the compile through grid, sees green, commits; `cargo test` fails in CI on
+a caller under `mod tests`.
 ```
-$ grid check
+$ grid check --compile
 drift proven  crate.mod.tests.round_trips  <-calls-  crate.mod.parse  1233→4bc4  uncompiled:cfg(test)  src/mod.rs:212
 ```
-Exit 3, before the commit. `grid check -- --tests` compiles it and the
-record disappears.
+Exit 3, before the commit. `grid check --compile -- --tests` compiles it
+and the record disappears; a later plain `grid check` reads the record and
+stays quiet.
 
 **4. "I only refactored."** Agent claims a pure refactor.
 ```
-$ grid inspect
+$ grid check
 done  refactor  interfaces held · 14 covering tests replayed pass · 2 changed defs uncovered
 warn  crate.io.flush   uncovered
 warn  crate.io.retry   uncovered
@@ -274,19 +283,19 @@ drift proven  yi_console.replay  <-calls-  yi_tui.drive.key_event  1233→4bc4  
 ```
 Exit 3 before either merges.
 
-**7. Plan mode → track → gate.** The plan says `parse`'s interface moves and
-nothing else's does. Implementation also moved `render`'s.
+**7. Plan mode → plan file → gate.** The plan says `parse`'s interface
+moves and nothing else's does. Implementation also moved `render`'s.
 ```
 $ grid gate plan.json
 hold  plan-42  @8ae0143
 def   ~  crate.view.render  5d1c→a90e  sig   unaccounted: interface
 ```
-Exit 3. `grid drift --track plan.json` on the same track suppresses the
+Exit 3. `grid drift --plan plan.json` on the same plan suppresses the
 promised callers and lists the rest.
 
 **8. Context for an edit, with a budget.**
 ```
-$ grid pack crate.parse.header --bodies 1 --sigs 3 --budget 3000
+$ grid scope crate.parse.header --bodies 1 --sigs 3 --budget 3000
 ## crate.parse.header  src/parse.rs:88   (body)
 ...
 ## crate.parse.read_u16  src/parse.rs:60   (body, hop 1)
@@ -302,7 +311,7 @@ a bounded answer usable.
 **9. A config struct that old files were written by.** A field added
 without `#[serde(default)]` to a type declared `persisted`.
 ```
-$ grid inspect
+$ grid check
 inv   violated  persisted:crate.cfg.Config   field `retries` required; bytes from @a1b2 lack it
 ```
 Exit 3, `modeled`, because the declaration is what makes old bytes a fact.
@@ -322,10 +331,11 @@ say flake.
 
 - **Additive wire evolution only.** New fields are `Option` +
   `skip_serializing_if`; new records are new structs; enum variants extend,
-  never repurpose. The one segment epoch bump is declared in step 3 and
-  batches every new per-definition fact this plan needs, so the store is
-  dropped once, not three times. `Segment::parse` keeps reading every epoch
-  ever shipped, pinned by a committed fixture.
+  never repurpose. The wire's one declared break is the naming plan's, and
+  it lands before this one. The one segment epoch bump is declared in step
+  3 and batches every new per-definition fact this plan needs, so the
+  store is dropped once, not three times. `Segment::parse` keeps reading
+  every epoch ever shipped, pinned by a committed fixture.
 - **No new dependencies.** coverage.py JSON and `cargo nextest list`'s
   JSON are `serde_json`, already in the TCB; lcov is the existing line
   scan; everything else is walks over data grid owns.
@@ -350,15 +360,15 @@ Sequencing (each step independently shippable, gates green between):
 
 ```
 0. prerequisites      rev-survey in one process; declined split + method-call counting
-1. traces             coverage.py JSON ingestion; one wake per test (recipes for `grid test --trace`)
+1. traces             coverage.py JSON ingestion; one trace per test (recipes for `grid test --trace`)
 2. grid test          inventory, selection, replay, record, nondeterministic, uncovered   (needs 1)
-3. grid check         cfg facts (segment epoch 4), cargo check wrapper, uncompiled callers
+3. check --compile    cfg facts (segment epoch 4), cargo check wrapper, uncompiled callers
 4. plan adherence     `interface` on a def promise                                        (small)
-5. grid pack          tiers, budget, certificate, --since
+5. scope --bodies     tiers, budget, certificate, --since
 6. attribution        `grid suspects --closure`                                            (needs 0a)
 7. compat             Deserialize rules + `persisted` invariant                            (needs 0a)
 8. interference       `grid interfere`                                                     (needs 0a)
-9. grid inspect       composition, clone-of, refactor certificate, orphans with traces     (needs 2, 3, 4, 7)
+9. grid check         composition, --why, clone-of, refactor certificate, orphans --traced (needs 2, 3, 4, 7)
 10. surface           README agent loop, hooks, PORCELAIN/ONTOLOGY/ASSURANCE closure       (needs 9)
 ```
 
@@ -447,27 +457,27 @@ which is the honest picture step 1 is built for.
 
 ### 1. Coverage as per-test traces
 
-**Problem.** Selection, weak, uncovered and attribution all need *one wake
-per test*. `grid wake ingest --lcov <report> --test <name>` already maps
-executed lines to definitions ([lcov.rs](../../crates/grid/src/lcov.rs))
-and retains one wake per call; what is missing is a second input format
+**Problem.** Selection, weak, uncovered and attribution all need *one
+trace per test*. `grid trace ingest --lcov <report> --test <name>` already
+maps executed lines to definitions ([lcov.rs](../../crates/grid/src/lcov.rs))
+and retains one trace per call; what is missing is a second input format
 for Python and the orchestration that produces one report per test.
 
 **Design.**
-- `grid wake ingest --coverage-json <file> --test <name>`: coverage.py's
+- `grid trace ingest --coverage-json <file> --test <name>`: coverage.py's
   JSON report (`files.<path>.executed_lines`) through the same
-  line-to-definition mapping `lcov::wake_of` uses; the parser is
-  `serde_json` into two typed structs. Same C16 accounting (unmapped lines
-  and unknown files counted, never dropped). The wake id is
-  `wake:cov:<test>`; the lcov path keeps `wake:lcov:<test>`.
-- `Wake` gains `snapshot: Option<SnapshotId>` (additive): the snapshot the
-  trace was mapped against, so decay grading and attribution can pin the
-  chart without resolving `git_rev` through git. `git_rev` stays.
+  line-to-definition mapping `lcov::wake_of` (renamed `trace_of`) uses;
+  the parser is `serde_json` into two typed structs. Same C16 accounting
+  (unmapped lines and unknown files counted, never dropped). The trace id
+  is `trace:cov:<test>`; the lcov path keeps `trace:lcov:<test>`.
+- `Trace` gains `snapshot: Option<SnapshotId>` (additive): the snapshot
+  the trace was mapped against, so decay grading and attribution can pin
+  the chart without resolving `git_rev` through git. `git_rev` stays.
 - Per-test orchestration lives in `grid test --trace` (step 2); this step
   ships the ingestion and a documented recipe per runner:
 
   Rust — `cargo llvm-cov nextest --lcov --output-path <f> -E 'test(=<name>)'`
-  per test, then `grid wake ingest --lcov <f> --test <name>`. Per-test
+  per test, then `grid trace ingest --lcov <f> --test <name>`. Per-test
   reports need one export per test because a single profile cannot be
   attributed to tests that shared a process; nextest runs one process per
   test, which is what makes the loop correct at all. `cargo llvm-cov` is
@@ -481,13 +491,13 @@ for Python and the orchestration that produces one report per test.
 
   Python — `pytest --cov --cov-context=test`, then per test
   `coverage json --contexts='<node id>' -o <f>` and
-  `grid wake ingest --coverage-json <f> --test <node id>`. No rerun per
+  `grid trace ingest --coverage-json <f> --test <node id>`. No rerun per
   test: the contexts are already in coverage.py's data file.
 
-- Wake volume: one JSON file per test under `.grid/wakes`; `retained()`
-  reads all of them per query. `ponytail:` O(wakes) per read; a
+- Trace volume: one JSON file per test under `.grid/traces`; `retained()`
+  reads all of them per query. `ponytail:` O(traces) per read; a
   membership-style packed index lands when a repo holds more than ~10k
-  retained wakes.
+  retained traces.
 
 **Tests.**
 - Ground truth: a coverage.py report fixture over the Python fixture repo
@@ -496,9 +506,9 @@ for Python and the orchestration that produces one report per test.
   and nothing else).
 - Conservatism: a report naming a file the chart does not hold, and lines
   outside any definition, are counted and reported; a malformed report is
-  bad input (exit 2), never an empty wake.
-- Property: ingesting the same report twice retains one wake with the same
-  bytes (idempotence, C2's shape).
+  bad input (exit 2), never an empty trace.
+- Property: ingesting the same report twice retains one trace with the
+  same bytes (idempotence, C2's shape).
 
 **Perf.** Ingestion of a 4312-def report under 50ms (one `BTreeMap` per
 path and a linear scan of lines).
@@ -536,7 +546,7 @@ grid test [base] [--trace] [--all] [--no-replay] [--json] [-- <runner args>]
    (rejection, never a shorter list). A test with **no retained trace** is
    selected regardless of the walk — the static closure alone does not
    license a skip, because the honesty number says it is incomplete.
-4. **Replay** — for each test not selected, `grid.cache.check` with
+4. **Replay** — for each test not selected, `grid.cache.lookup` with
    `Kind::Test` and this run's `env_hash`; a hit is replayed as a `hit`
    record; a miss (key moved, or never recorded) joins the run set.
 5. **Run** — Rust: selected tests roll up to `(package, binary)` and the
@@ -544,9 +554,9 @@ grid test [base] [--trace] [--all] [--no-replay] [--json] [-- <runner args>]
    + …'` (binary-level restriction is what skips links); Python: `pytest
    <node ids>`. Runner output passes through to stderr; grid's records
    stay on stdout. With `--trace`, each selected test runs under the
-   step-1 recipe and its wake is ingested afterwards, so traces are
+   step-1 recipe and its trace is ingested afterwards, so traces are
    refreshed exactly for the tests that ran.
-6. **Record** — every verdict through `grid.cache.record` with the wake
+6. **Record** — every verdict through `grid.cache.record` with the trace
    id when traced. A record whose key already holds the **opposite**
    verdict is reported: `warn <test>  nondeterministic  same closure key,
    same env: pass <t1>, fail <t2>` — detected at record time from the
@@ -603,16 +613,16 @@ replay and runs the inventory (the CI form).
   *adds* a selected test.
 
 **Perf.** `grid.test.plan` on grid under 20ms warm (one inbound walk over
-~2.5k edges plus one cache check per test). The run is the runner's.
+~2.5k edges plus one cache lookup per test). The run is the runner's.
 
 ---
 
-### 3. `grid check`
+### 3. `grid check --compile`
 
 **Problem.** `cargo check` does not compile `#[cfg(test)]` code, nor code
 behind features it was not given. Grid's chart is text, so it holds those
 callers. The gap between "green check" and "red test" is decidable from the
-chart plus the flags the check ran with.
+chart plus the flags the compile ran with.
 
 **Design.**
 - **Segment epoch 3 → 4** (the one bump in this plan, declared here):
@@ -623,56 +633,61 @@ chart plus the flags the check ran with.
   and evaluated as *unknown*). Epoch-3 images answer `cfg` with `None`.
   The epoch-3 fixture is committed before `FORMAT_EPOCH` flips; the
   superseded-store recovery from the drift plan handles the flip.
-- `grid check [-- <cargo check args>]` runs `cargo check` with the given
-  args (default: none), records `{features, all_features, no_default,
-  tests, target}` from the args plus `[features].default` from each
-  manifest, and evaluates each changed definition's proven callers' `cfg`s
-  against that record. A predicate that evaluates to *false* under the
-  record means the caller was not compiled: `drift proven <caller>
+- `grid check --compile [-- <cargo check args>]` runs `cargo check` with
+  the given args (default: none), records `{features, all_features,
+  no_default, tests, target, snapshot}` to `.grid/compile.json` (the
+  **compile record**), and evaluates each changed definition's proven
+  callers' `cfg`s against it. A predicate that evaluates to *false* under
+  the record means the caller was not compiled: `drift proven <caller>
   <-calls- <changed> <sig> uncompiled:<cfg> <file:line>`, exit `3`. A
   predicate the evaluator cannot decide (`cfg_attr`, a custom cfg, a
   `target_*` the record lacks) is `warn <caller>  cfg unknown: <text>`,
   exit unchanged — an unproven exclusion does not gate.
+- Plain `grid check` (step 9) reads the compile record when it is newer
+  than the last survey and re-evaluates against the current changed set;
+  when there is no record or it is older, it says `warn -  no compile
+  record since @<snapshot>` and gates nothing on it.
 - The evaluator: `all`, `any`, `not`, `test`, `feature = "…"`,
   `unix`/`windows`/`target_os`/`target_family`/`target_arch`, against the
   host triple when no `--target` was given. ~80 lines, no dependency.
-- Python: `grid check` prints one hint — there is no compile to wrap —
-  and exits `0`. Said, not silent.
+- Python: `grid check --compile` prints one hint — there is no compile to
+  wrap — and exits `0`. Said, not silent.
 - The changed set is the same `C` as `grid drift` (sig moved or unknown);
   a body-only edit has no uncompiled-caller problem.
 
-**Wire (additive).** `grid.check` → `CheckReport { compiled_with:
-CheckRecord, uncompiled: Vec<DriftSuspect>, unknown: Vec<DriftWarning> }`;
-`DriftSuspect.reason` carries `uncompiled:<cfg>`; `DefRef` gains
-`cfg: Option<String>`.
+**Wire (additive).** `grid.check` (step 9) embeds `CompileReport {
+compiled_with: CompileRecord, uncompiled: Vec<DriftSuspect>, unknown:
+Vec<DriftWarning> }`; `DriftSuspect.reason` carries `uncompiled:<cfg>`;
+`DefRef` gains `cfg: Option<String>`.
 
 **Tests.**
 - Ground truth: `#[cfg(test)] mod tests { fn t() { changed() } }` → one
-  `drift` record after a plain check; none after `-- --tests`. A
+  `drift` record after a plain compile; none after `-- --tests`. A
   `#[cfg(feature = "tui")]` caller → a record without the feature, none
   with `--features tui`, none with `--all-features`.
 - Conservatism (seen red first): a caller under `cfg_attr(…)` or a custom
   `cfg(kani)` is a `warn`, not a `drift` record, and the exit is `0`.
-- Epoch: the epoch-3 fixture parses; its `cfg` answers `None`, and a check
-  against it warns `cfg unknown: pre-epoch-4 snapshot` for every caller
-  rather than declaring anything compiled.
-- Property: `check` with `--all-features -- --tests` on a repo with no
-  custom cfgs emits nothing.
+- Epoch: the epoch-3 fixture parses; its `cfg` answers `None`, and a
+  compile check against it warns `cfg unknown: pre-epoch-4 snapshot` for
+  every caller rather than declaring anything compiled.
+- Property: `--compile -- --all-features --tests` on a repo with no
+  custom cfgs emits nothing; a plain `grid check` with a stale compile
+  record warns and gates nothing on it.
 
 **Perf.** cfg extraction adds an interned string per def; survey
-re-measured. The check itself is `cargo check`'s time plus under 20ms.
+re-measured. The compile itself is `cargo check`'s time plus under 20ms.
 
 ---
 
 ### 4. Plan adherence: `interface` on a def promise
 
-**Problem.** A track already holds the gate on unpromised work
-(`defs_unaccounted`, xte) at datum granularity. A plan says which
+**Problem.** A plan already holds the gate on unpromised work
+(`defs_unaccounted`, `grid-gate`) at datum granularity. A plan says which
 *interfaces* move; a body edit inside a promised definition is normal, a
 moved signature nobody promised is the thing to hold on.
 
-**Design.** `TrackDefPromise` gains `interface: Option<bool>` (additive).
-Semantics in `grid_xte::verdict`:
+**Design.** `PlanDefPromise` gains `interface: Option<bool>` (additive).
+Semantics in `grid_gate::verdict`:
 - `Some(true)`: made good only by a `DefChange` with `sig_changed ==
   Some(true)` (or `None` — unknown is treated as moved, conservative);
 - `Some(false)`: made good by a change with `sig_changed == Some(false)`;
@@ -680,12 +695,12 @@ Semantics in `grid_xte::verdict`:
 - `None`: today's behavior, either.
 A def whose sig moved and matches no promise with `interface` `true` or
 `None` is `unaccounted` with reason `interface`, which holds the gate.
-`grid track lint` rejects `interface` on an `add`/`remove` promise (bad
-input, exit 2). `grid drift --track` already suppresses promised callers.
+`grid plan lint` rejects `interface` on an `add`/`remove` promise (bad
+input, exit 2). `grid drift --plan` already suppresses promised callers.
 
 **Wire (additive).** The field, plus a second list beside the existing
 `defs_unaccounted` naming the changes held for this reason:
-`XteVerdict.interface_unaccounted: Option<Vec<DefChange>>` (a member of
+`GateVerdict.interface_unaccounted: Option<Vec<DefChange>>` (a member of
 both lists is held once, with reason `interface`).
 
 **Porcelain.** `def ~ <callsign> <old→new> sig  unaccounted: interface` as
@@ -701,39 +716,41 @@ existing verdict fixture byte-identical.
 
 ---
 
-### 5. `grid pack`
+### 5. `grid scope --bodies`
 
 **Problem.** `grid scope` returns names, edges, rules and churn, and
 deliberately no bodies. An agent's next call is to read the bodies, one by
 one, with no idea how much of the neighbourhood it has. A pack with a
-budget and a certificate closes that loop in one call.
+budget and a certificate closes that loop in one call — as flags on the
+verb that already walks the neighbourhood, not a second verb.
 
 **Design.**
 
 ```
-grid pack <pattern>... [--bodies N] [--sigs M] [--budget T] [--since <snapshot>] [--json]
+grid scope <pattern>... [--depth N] [--bodies N] [--sigs M] [--budget T] [--since <snapshot>] [--json]
 ```
 
-- Layers by hop from the roots (in and out edges, `scope`'s walk). Bodies
-  for hops `0..=N` (default 1), sig text for hops `N+1..=M` (default 3).
-  Sig text is rendered by the frontend from the worktree source at pack
-  time (`lang-rs`: the erased signature tokens `sig::of_fn` already
-  builds; `lang-py`: the sig encoding's `def` line) — the sig section's
-  own inclusion rule says this is exactly what a caller needs.
+- Without `--bodies`/`--sigs`, `scope` is unchanged. With them: bodies
+  for hops `0..=N`, sig text for hops `N+1..=M` (defaults 1 and 3 when
+  either flag is given). Sig text is rendered by the frontend from the
+  worktree source at pack time (`lang-rs`: the erased signature tokens
+  `sig::of_fn` already builds; `lang-py`: the sig encoding's `def` line) —
+  the sig section's own inclusion rule says this is exactly what a caller
+  needs.
 - Budget `T` in approximate tokens (`bytes / 4`, stated as `≈`; grid
   cannot run a tokenizer). Spent in **whole layers**, farthest first:
   when a layer does not fit, the whole layer is dropped and the
   certificate stops at the previous one. Never a partial layer — a
   certificate over a partial layer is the lie `complete_within` exists to
   prevent (C31).
-- Output is a **document** on stdout (`## callsign  file:line  (body|sig,
-  hop k)` headers, then the text), closed by one `# horizon:` line naming
-  both depths and the estimate. PORCELAIN.md gains a "text-mode verbs"
-  paragraph: `grid pack` and `grid explain` emit prose, and `--json` is
-  the record form. `--json` extends `ScopePack` additively: `bodies:
-  Option<Vec<PackText>>`, `sigs: Option<Vec<PackText>>`, `horizon:
-  Option<PackHorizon { bodies_complete_within, sigs_complete_within,
-  approx_tokens }>`.
+- With bodies requested, stdout is a **document** (`## callsign
+  file:line  (body|sig, hop k)` headers, then the text), closed by one
+  `# horizon:` line naming both depths and the estimate. PORCELAIN.md
+  gains a "text-mode output" paragraph: `scope --bodies` and `explain`
+  emit prose, and `--json` is the record form. `--json` extends
+  `ScopePack` additively: `bodies: Option<Vec<PackText>>`, `sigs:
+  Option<Vec<PackText>>`, `horizon: Option<PackHorizon {
+  bodies_complete_within, sigs_complete_within, approx_tokens }>`.
 - `--since <snapshot>`: keep only definitions whose datum or sig moved
   since — the delta-map a returning agent reads instead of the repo.
 - Docs, ranking, hub maps: not built. The pack is ordered by hop, then
@@ -744,7 +761,8 @@ grid pack <pattern>... [--bodies N] [--sigs M] [--budget T] [--since <snapshot>]
   0–1, sigs for 2–3, nothing beyond, horizon `1`/`3`.
 - Property: a bigger budget's pack is a superset of a smaller one's
   (monotone); the set of definitions at each certified depth equals
-  `grid scope --depth k`'s (differential against the existing walk).
+  `grid scope --depth k`'s (differential against the existing walk);
+  `scope` without the new flags is byte-identical to today's.
 - Conservatism (seen red first): a budget too small for the roots' own
   bodies emits the roots' sigs only and a horizon of `bodies: none, sigs:
   0` — never a truncated body, never a missing horizon line.
@@ -767,9 +785,9 @@ refusal):
 - candidates = `closure(test datum, Kind::Test, at head)` ∩ the `Removed`
   half of `membership.changed_between(since, head)` — the definitions the
   test could reach whose bodies moved;
-- ranked by hop distance from the test (leadline walk depth), then datum;
-- when two retained wakes of the test exist (one at or before `since`),
-  `grid_wake::diff`'s first divergence is appended as a `fork` record —
+- ranked by hop distance from the test (walk depth), then datum;
+- when two retained traces of the test exist (one at or before `since`),
+  `grid_trace::diff`'s first divergence is appended as a `fork` record —
   the existing C17 machinery;
 - the closing `miss` carries the step-0 split *restricted to the closure*
   when the survey can say it (per-file counts summed over the closure's
@@ -834,8 +852,8 @@ brainstorm's "every derive is a boundary" to what is actually decidable.
   no attribute vocabulary to read yet — recorded, not built.
 
 **Wire (additive).** `CompatFinding { def: DefRef, rule: String, declared:
-bool }` on `InspectReport` (step 9); `InvariantRule` gains the
-`persisted` variant.
+bool }` on `CheckReport` (step 9); `InvariantRule` gains the `persisted`
+variant.
 
 **Tests.** Ground truth per rule (six fixtures, each the smallest struct
 that trips exactly one rule); property: a type whose sig held produces
@@ -890,59 +908,67 @@ inbound walks).
 
 ---
 
-### 9. `grid inspect`
+### 9. `grid check`
 
 **Problem.** Each finding above is a verb; an agent needs one call after
-an edit and one exit code. `grid review <track>` is the *gate's* pack and
-keeps its meaning; `inspect` is the track-optional composite.
+an edit and one exit code. After the naming plan, `check` is that verb:
+plan-optional, and with `--why` it carries what `grid review` used to
+print.
 
 **Design.**
 
 ```
-grid inspect [base] [head] [--track <file>] [--quick] [--json]
+grid check [base] [head] [--plan <file>] [--quick] [--why] [--json]
 ```
-- **Gates** (any → exit `3`): drift suspects, `check` findings when a
-  check record from this worktree exists and is newer than the last
-  survey, adherence when `--track`, verdict-stale (`drift --tests`),
-  covenant fires, compat findings on `persisted` types.
+- **Gates** (any → exit `3`): drift suspects, the compile record's
+  uncompiled callers (step 3; warns instead when the record is absent or
+  stale), adherence when `--plan` (the gate verdict, embedded), verdict-
+  stale (`drift --tests`), covenant fires, compat findings on `persisted`
+  types.
 - **Ranked tail** (never moves the exit): weak-for, uncovered (from the
   last `grid test` plan, or recomputed when traces exist), clone-of
   (definitions **added** since base whose `shape` equals an existing
   definition's — the `Added` half of the membership diff joined against
   the shape column; exact match only, `warn <new>  clone-of <existing>`),
   undeclared compat findings.
+- **`--why`**: with `--plan`, embeds each fulfilled promise's paths
+  (`ReviewPackFulfillingItem`'s content under a new name) and the open
+  anchors — the reviewer's pack, now a flag on the verb the reviewer
+  already runs.
 - **Refactor certificate**: one `done` record when no gate fired —
   `done  refactor  interfaces held · <n> covering tests replayed pass ·
   <m> changed defs uncovered`; the phrase "behavior-preserving" appears
   nowhere.
-- `--quick`: drift + check only, no wake or verdict-log reads; the
-  PostToolUse form, budgeted under 50ms.
+- `--quick`: drift + compile record only, no trace or verdict-log reads;
+  the PostToolUse form, budgeted under 50ms.
 - Composition rule: every section is the corresponding verb's own result
-  (`InspectReport` embeds `DriftReport`, `CheckReport`, `XteVerdict`,
+  (`CheckReport` embeds `DriftReport`, `CompileReport`, `GateVerdict`,
   `Vec<StaleTest>`, `Vec<WeakTest>`, `Vec<CompatFinding>`, …), not a
   re-implementation; a section that **refuses** (aground, unknown
-  snapshot, superseded store) refuses the whole inspect with that reason
-  (exit `1`/`2`), never an inspect with a missing section.
+  snapshot, superseded store) refuses the whole check with that reason
+  (exit `1`/`2`), never a check with a missing section.
 - `grid orphans` gains a `--traced` flag: an `orphan` record also carries
-  `wake 0` when no retained trace hits the definition either, which is the
-  workspace-level unused-`pub` question rustc cannot ask (it checks per
-  crate). Heuristic; `pub` in a published crate stays a maybe.
+  `trace 0` when no retained trace hits the definition either, which is
+  the workspace-level unused-`pub` question rustc cannot ask (it checks
+  per crate). Heuristic; `pub` in a published crate stays a maybe.
 
-**Wire (additive).** `grid.inspect` → `InspectReport`; `CloneFinding`;
-the orphans result gains `traces: Option<u64>` per item (a new struct if
-the item is a bare `DefRef` today — never a repurposed column).
+**Wire (additive).** `grid.check` → `CheckReport`; `CloneFinding`; the
+orphans result gains `traces: Option<u64>` per item (a new struct if the
+item is a bare `DefRef` today — never a repurposed column).
 
 **Porcelain.** Sections print in gate-first order with the existing
 records (`drift`, `def`, `inv`, `miss`, `warn`, `done`); the version bumps
-to 1.7.0 for the new columns and the text-mode paragraph.
+to 2.1.0 (2.0.0 is the naming plan's) for the new columns and the
+text-mode paragraph.
 
-**Tests.** Differential: each section of `inspect --json` is
-byte-identical to the standalone verb's `--json`; exit is the max over
-gates on a fixture that trips two of them; conservatism (seen red first):
-an aground drift section makes inspect exit `1` with the reason, not a
-report without a drift section; clone-of on a fixture with two
-name-erased-identical functions and one near-duplicate finds exactly the
-pair.
+**Tests.** Differential: each section of `check --json` is byte-identical
+to the standalone verb's `--json`, and `check --plan f --why` carries what
+`grid review f` carried before the fold (the retired verb's fixtures are
+re-pointed, not deleted); exit is the max over gates on a fixture that
+trips two of them; conservatism (seen red first): an aground drift section
+makes check exit `1` with the reason, not a report without a drift
+section; clone-of on a fixture with two name-erased-identical functions
+and one near-duplicate finds exactly the pair.
 
 **Perf.** `--quick` under 50ms on grid; full under 200ms.
 
@@ -951,13 +977,14 @@ pair.
 ### 10. Surface
 
 README's "why an agent wants it" is rewritten around the loop above
-(locate → `pack`; edit → `edit apply`; verify → `test`, `check`,
-`inspect`), with the two hook lines, and the honest sentence about Rust.
-ONTOLOGY.md gains `trace` (a per-test wake), `selection`, `replay`,
-`uncompiled`, `pack`, `horizon`, `interference`, `persisted`, `clone-of`,
-`nondeterministic`. PORCELAIN.md gains the text-mode paragraph and the new
-columns. ASSURANCE.md gains C33–C42 (one per step 0b through 9) and the
-dependency line "this plan: no new packages". CURRENT_WAVE → 11.
+(locate → `scope --bodies`; edit → `edit apply`; verify → `test`, `check`),
+with the two hook lines, and the honest sentence about Rust. ONTOLOGY.md
+gains `selection`, `replay`, `uncompiled`, `compile record`, `horizon`,
+`interference`, `persisted`, `clone-of`, `nondeterministic` (`trace` is
+already there after the naming plan). PORCELAIN.md gains the text-mode
+paragraph and the new columns. ASSURANCE.md gains C33–C42 (one per step 0b
+through 9) and the dependency line "this plan: no new packages".
+CURRENT_WAVE → 11.
 
 ---
 
@@ -967,19 +994,21 @@ dependency line "this plan: no new packages". CURRENT_WAVE → 11.
   conservatism assertion is a named test seen red first, with the mutation
   recorded in the commit message.
 - Rung 3: declined sum identity (0b); ingestion idempotence (1); selection
-  determinism and monotonicity (2); `check` silence under `--all-features
-  -- --tests` (3); adherence fixtures byte-identical under `interface:
-  None` (4); pack monotone in budget (5); interference symmetry (8).
+  determinism and monotonicity (2); compile-check silence under
+  `--all-features --tests` (3); adherence fixtures byte-identical under
+  `interface: None` (4); scope monotone in budget and byte-identical
+  without the new flags (5); interference symmetry (8).
 - Rung 5 (differential): batch blob read vs `git show` (0a); lcov vs
   coverage.py ingestion over the same lines (1); **selection vs running
-  everything over a seeded edit sequence** (2); pack layers vs `scope`
-  (5); closure attribution vs an independent `scope ∩ diff` (6); each
-  `inspect` section vs its verb (9).
+  everything over a seeded edit sequence** (2); pack layers vs `scope
+  --depth` (5); closure attribution vs an independent `scope ∩ diff` (6);
+  each `check` section vs its verb, and `check --why` vs the retired
+  `review` fixtures (9).
 - Fuzz/miri/loom/kani: the epoch-4 segment section is parsed by
   `grid-chart`'s validate-then-accept path and joins the adversarial
   corpus (C1); nothing else here parses untrusted bytes, owns `unsafe`, or
   adds concurrency. coverage.py JSON and nextest's JSON are serde into
-  typed structs — the same trust posture as tracks and covenants.
+  typed structs — the same trust posture as plans and covenants.
 
 ## Perf ledger
 
@@ -992,12 +1021,12 @@ grid at 1395 defs / 2535 edges unless a row names yi).
 | `grid survey` with method-call refs and cfg facts | within noise of ~114ms | one visitor arm; one interned string per def |
 | segment size, epoch 4 | +4 B/def + cfg table | one index per def; predicates repeat |
 | coverage ingestion, 4312 defs | < 50ms | one map per path, linear over lines |
-| `grid.test.plan` | < 20ms warm | one inbound walk + one cache check per test |
-| `grid check` over `cargo check` | < 20ms | cfg evaluation per proven caller of `C` |
-| `grid pack`, 3 hops | < 30ms | `scope`'s walk + one file read per body |
+| `grid.test.plan` | < 20ms warm | one inbound walk + one cache lookup per test |
+| `grid check --compile` over `cargo check` | < 20ms | cfg evaluation per proven caller of `C` |
+| `grid scope --bodies`, 3 hops | < 30ms | `scope`'s walk + one file read per body |
 | `grid suspects --closure` | < 15ms | one closure walk + one merge-diff |
 | `grid interfere`, both stores warm | < 100ms | two diffs, two walks, one extra store open |
-| `grid inspect --quick` / full | < 50ms / < 200ms | drift + check / plus wake and verdict reads |
+| `grid check --quick` / full | < 50ms / < 200ms | drift + compile record / plus trace and verdict reads |
 
 Two rows from the drift plan stay corrected, not restored: `grid survey`
 is ~114ms, not under 50ms, and a watch event is O(tree). Neither is touched
@@ -1025,5 +1054,7 @@ Recorded so each is a decision, not an omission:
   configuration, not grid; when the loop is measured too slow.
 - **Per-definition declined counts.** A segment fact; step 0b's split is
   per file and summed, which is enough for every consumer here.
-- **`grid map`.** Hub ranking by in-degree finds `Error::new`; `pack
+- **`grid map`.** Hub ranking by in-degree finds `Error::new`; `scope
   --since` is the delta-map that was actually wanted.
+- **`inspect` and `pack` as verbs.** Folded into `check` and `scope` by
+  the naming plan; one verb per question.
