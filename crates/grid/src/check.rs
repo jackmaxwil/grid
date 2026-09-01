@@ -14,21 +14,21 @@
 //! Traversal is [`grid_leadline::query`], the same engine `grid.query.walk`
 //! serves, so a path a reviewer sees is a path the query verb would produce.
 //! Nothing here re-implements a walk, and nothing here upgrades evidence: a
-//! hop renders with the [`grid_wire::Zoc`] the chart stored for it.
+//! hop renders with the [`grid_wire::Grade`] the chart stored for it.
 use std::path::Path;
 
-use grid_wire::methods::{ReviewPackParams, ReviewPackResult};
+use grid_wire::methods::CheckParams;
 use grid_wire::{
-    Callsign, Datum, DefChangeAction, Fuel, LeadlineQuery, LeadlineQueryDirection, Locator,
-    ReviewPack, ReviewPackFulfillingItem, SnapshotOrRev, TrackEdgePromise, Zoc,
+    Callsign, CheckResult, CheckWhy, CheckWhyFulfillingItem, Datum, DefChangeAction, Fuel, Grade,
+    Locator, PlanEdgePromise, SnapshotOrRev, WalkQuery, WalkQueryDirection,
 };
 use grid_xte::DeltaProvider as _;
 
 use crate::chart_provider::{self, ChartDelta};
 use crate::{rpc, standing};
 
-/// Where wakes live, relative to the repo root. The same directory
-/// `grid.wake.ingest` writes: a review reads the log, never a second one.
+/// Where traces live, relative to the repo root. The same directory
+/// `grid.trace.ingest` writes: a review reads the log, never a second one.
 const WAKE_STORE: &str = ".grid/wakes";
 
 /// Budget for one promise's path search.
@@ -51,18 +51,18 @@ const MAX_ENDPOINTS: usize = 32;
 #[derive(Debug)]
 pub enum Error {
     /// The chart could not answer (unknown snapshot, failed survey, unknown
-    /// track).
+    /// plan).
     Chart(chart_provider::Error),
-    /// A wake id was supplied and the log does not hold it. Coverage without
-    /// the wake it names would be a different question silently answered.
-    UnknownWake(String),
+    /// A trace id was supplied and the log does not hold it. Coverage without
+    /// the trace it names would be a different question silently answered.
+    UnknownTrace(String),
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Chart(e) => write!(f, "{e}"),
-            Self::UnknownWake(id) => write!(f, "no wake `{id}` in {WAKE_STORE}"),
+            Self::UnknownTrace(id) => write!(f, "no trace `{id}` in {WAKE_STORE}"),
         }
     }
 }
@@ -75,31 +75,31 @@ impl From<chart_provider::Error> for Error {
     }
 }
 
-/// `grid.review.pack` — verdict, fulfilling paths, surplus, coverage, anchors.
+/// `grid.check` — verdict, and why: fulfilling paths, surplus, coverage, anchors.
 ///
 /// The verdict is the gate's, computed here the way `grid.todo` computes it:
 /// one engine, so a review and a gate can never disagree about whether a
 /// promise was kept.
 ///
 /// # Errors
-/// [`Error::Chart`] when the track, the base or the head cannot be resolved;
-/// [`Error::UnknownWake`] when a supplied wake id names nothing retained.
-pub fn pack(params: &ReviewPackParams, root: &Path) -> Result<ReviewPackResult, Error> {
-    let track = crate::plan::load(&params.track.0).map_err(chart_provider::Error::Track)?;
-    let track = standing::fold(
-        &track,
+/// [`Error::Chart`] when the plan, the base or the head cannot be resolved;
+/// [`Error::UnknownTrace`] when a supplied trace id names nothing retained.
+pub fn answer(params: &CheckParams, root: &Path) -> Result<CheckResult, Error> {
+    let plan = crate::plan::load(&params.plan.0).map_err(chart_provider::Error::Plan)?;
+    let plan = standing::fold(
+        &plan,
         standing::load(root).map_err(chart_provider::Error::Config)?,
     );
     let mut chart = rpc::Chart::new(root);
-    chart.ensure(&track.base)?;
+    chart.ensure(&plan.base)?;
     if let SnapshotOrRev::GitRev { .. } = params.head {
         chart.ensure(&params.head)?;
     }
     let provider = ChartDelta::open(root)?;
-    let made_good = provider.made_good(&track.base, &params.head)?;
+    let diff = provider.diff(&plan.base, &params.head)?;
     let verdict = rpc::gate_check(
         &grid_wire::methods::GateCheckParams {
-            track: track.clone(),
+            plan: plan.clone(),
             head: params.head.clone(),
         },
         root,
@@ -114,22 +114,24 @@ pub fn pack(params: &ReviewPackParams, root: &Path) -> Result<ReviewPackResult, 
         .iter()
         .filter_map(|promise| {
             let hops = hops_for(&provider, &names, promise, &snapshot);
-            (!hops.is_empty()).then(|| ReviewPackFulfillingItem {
+            (!hops.is_empty()).then(|| CheckWhyFulfillingItem {
                 promise: promise.clone(),
                 hops,
             })
         })
         .collect();
 
-    Ok(ReviewPack {
-        surplus: verdict.surplus.clone(),
-        coverage: coverage(&made_good, params.wake.as_ref(), root)?,
-        // Grid stores no anchors: nothing writes them, so the honest answer
-        // is none, not an invented one. The field is the consumer's (an
-        // Artifacts review, say) once a store exists.
-        open_anchors: Vec::new(),
+    Ok(CheckResult {
+        why: Some(CheckWhy {
+            surplus: verdict.surplus.clone(),
+            coverage: coverage(&diff, params.trace.as_ref(), root)?,
+            // Grid stores no anchors: nothing writes them, so the honest
+            // answer is none, not an invented one. The field is the
+            // consumer's (an Artifacts review, say) once a store exists.
+            open_anchors: Vec::new(),
+            fulfilling,
+        }),
         verdict,
-        fulfilling,
     })
 }
 
@@ -171,7 +173,7 @@ fn endpoints(names: &[String], pattern: &str) -> Vec<Locator> {
 fn hops_for(
     provider: &ChartDelta,
     names: &[String],
-    promise: &TrackEdgePromise,
+    promise: &PlanEdgePromise,
     snapshot: &grid_wire::SnapshotId,
 ) -> Vec<grid_wire::Path> {
     let from = endpoints(names, &promise.src.0);
@@ -179,10 +181,10 @@ fn hops_for(
     if from.is_empty() || to.is_empty() {
         return Vec::new();
     }
-    let query = LeadlineQuery {
+    let query = WalkQuery {
         from,
         to: Some(to),
-        direction: Some(LeadlineQueryDirection::Out),
+        direction: Some(WalkQueryDirection::Out),
         relations: Some(vec![promise.relation]),
         at_or_above: None,
         fuel: Some(Fuel {
@@ -195,7 +197,8 @@ fn hops_for(
     let mut paths = Vec::new();
     for segment in provider.head().segments() {
         // A segment that holds none of the endpoints answers nothing about
-        // this promise; leadline would call the unresolved root an error,
+        // this promise; the walk engine would call the unresolved root an
+        // error,
         // and across segments it is simply an absence.
         let Ok(result) = grid_leadline::query(segment, &query, snapshot.clone()) else {
             continue;
@@ -210,33 +213,33 @@ fn hops_for(
     paths
 }
 
-/// Changed but not reached by the supplied wake — the reviewer's red flags.
+/// Changed but not reached by the supplied trace — the reviewer's red flags.
 ///
-/// No wake, no claim: coverage is empty rather than "everything is uncovered",
+/// No trace, no claim: coverage is empty rather than "everything is uncovered",
 /// because an absent test run is not evidence that code never ran.
 fn coverage(
-    made_good: &grid_wire::MadeGood,
-    wake: Option<&grid_wire::WakeId>,
+    diff: &grid_wire::Diff,
+    trace: Option<&grid_wire::TraceId>,
     root: &Path,
 ) -> Result<Vec<Datum>, Error> {
-    let Some(wake_id) = wake else {
+    let Some(trace_id) = trace else {
         return Ok(Vec::new());
     };
     let store = grid_wake::Store::open(root.join(WAKE_STORE))
         .map_err(|e| Error::Chart(chart_provider::Error::Config(e.to_string())))?;
     let stored = store
-        .get(&wake_id.0)
+        .get(&trace_id.0)
         .map_err(|e| Error::Chart(chart_provider::Error::Config(e.to_string())))?
-        .ok_or_else(|| Error::UnknownWake(wake_id.0.clone()))?;
+        .ok_or_else(|| Error::UnknownTrace(trace_id.0.clone()))?;
     let mut reached: Vec<String> = stored
-        .trace
+        .hops
         .iter()
         .flat_map(|(caller, callee)| [caller.to_string(), callee.to_string()])
         .collect();
     reached.sort();
     reached.dedup();
 
-    let mut out: Vec<Datum> = made_good
+    let mut out: Vec<Datum> = diff
         .defs
         .iter()
         .filter(|d| d.action != DefChangeAction::Removed)
@@ -255,10 +258,13 @@ fn coverage(
 /// What follows is the review's own: a `path` per fulfilling route, its `hop`
 /// records beneath it, and a `miss` per changed-but-unexecuted definition.
 #[must_use]
-pub fn porcelain(pack: &ReviewPack, name: &crate::porcelain::NameOf) -> String {
+pub fn porcelain(answer: &CheckResult, name: &crate::porcelain::NameOf) -> String {
     let show = |d: &Datum| name(d).unwrap_or_else(|| format!("@{}", prefix(d)));
-    let mut out = crate::porcelain::verdict(&pack.verdict, name);
-    for item in &pack.fulfilling {
+    let mut out = crate::porcelain::verdict(&answer.verdict, name);
+    let Some(why) = answer.why.as_ref() else {
+        return out;
+    };
+    for item in &why.fulfilling {
         for path in &item.hops {
             let head = path.nodes.first().map_or_else(String::new, &show);
             record(
@@ -273,13 +279,13 @@ pub fn porcelain(pack: &ReviewPack, name: &crate::porcelain::NameOf) -> String {
                     &[
                         grid_xte::lint::relation_name(edge.relation),
                         &show(&edge.dst),
-                        zoc(edge.zoc),
+                        grade(edge.grade),
                     ],
                 );
             }
         }
     }
-    for datum in &pack.coverage {
+    for datum in &why.coverage {
         record(&mut out, "miss", &[&show(datum), "unexecuted"]);
     }
     out
@@ -290,26 +296,26 @@ pub fn porcelain(pack: &ReviewPack, name: &crate::porcelain::NameOf) -> String {
 fn weakest(edges: &[grid_wire::Edge]) -> &'static str {
     edges
         .iter()
-        .map(|e| e.zoc)
+        .map(|e| e.grade)
         .max_by_key(|z| rank(*z))
-        .map_or("proven", zoc)
+        .map_or("proven", grade)
 }
 
-const fn rank(z: Zoc) -> u8 {
+const fn rank(z: Grade) -> u8 {
     match z {
-        Zoc::Proven => 0,
-        Zoc::Observed => 1,
-        Zoc::Modeled => 2,
-        Zoc::Heuristic => 3,
+        Grade::Proven => 0,
+        Grade::Observed => 1,
+        Grade::Modeled => 2,
+        Grade::Heuristic => 3,
     }
 }
 
-const fn zoc(z: Zoc) -> &'static str {
+const fn grade(z: Grade) -> &'static str {
     match z {
-        Zoc::Proven => "proven",
-        Zoc::Observed => "observed",
-        Zoc::Modeled => "modeled",
-        Zoc::Heuristic => "heuristic",
+        Grade::Proven => "proven",
+        Grade::Observed => "observed",
+        Grade::Modeled => "modeled",
+        Grade::Heuristic => "heuristic",
     }
 }
 

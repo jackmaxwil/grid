@@ -136,8 +136,8 @@ fn chart_error(e: &crate::chart_provider::Error) -> (i32, String) {
         E::NoSnapshotForRev(_) | E::Store(_) | E::NotLive(_) => WireError::UnknownSnapshot.code(),
         E::NoSnapshot => WireError::NoSnapshot.code(),
         E::Survey(_) => WireError::SurveyFailed.code(),
-        E::Config(_) => WireError::InvalidTrack.code(),
-        E::Track(_) => WireError::UnknownTrack.code(),
+        E::Config(_) => WireError::InvalidPlan.code(),
+        E::Plan(_) => WireError::UnknownPlan.code(),
     };
     (code, e.to_string())
 }
@@ -161,10 +161,10 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
 
     match method {
         "grid.version" => Ok(encode(&rpc::version(root))),
-        "grid.track.lint" => {
+        "grid.plan.lint" => {
             let params = serde_json::from_value(params).map_err(bad_params)?;
             let result =
-                rpc::track_lint(&params, root).map_err(|e| (WireError::InvalidTrack.code(), e))?;
+                rpc::plan_lint(&params, root).map_err(|e| (WireError::InvalidPlan.code(), e))?;
             Ok(encode(&result))
         }
         "grid.gate.check" => {
@@ -208,11 +208,11 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
                 .map(|d| encode(&d))
                 .map_err(|e| match &e {
                     crate::drift::Error::Chart(chart) => chart_error(chart),
-                    // A refused walk and an unreadable wake store are both
+                    // A refused walk and an unreadable trace store are both
                     // the engine declining to serve an answer it cannot
                     // stand behind — internal conditions, not bad input.
                     crate::drift::Error::BudgetRejected(_)
-                    | crate::drift::Error::Wake(_)
+                    | crate::drift::Error::Trace(_)
                     | crate::drift::Error::Stale(_) => (-32603, e.to_string()),
                     // An unreadable declaration file is repo configuration,
                     // which is the caller's to fix.
@@ -262,8 +262,8 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
             crate::suspects::rank(&params, root)
                 .map(|v| encode(&v))
                 .map_err(|e| match &e {
-                    crate::suspects::Error::UnknownWake(_) => {
-                        (WireError::UnknownWake.code(), e.to_string())
+                    crate::suspects::Error::UnknownTrace(_) => {
+                        (WireError::UnknownTrace.code(), e.to_string())
                     }
                     crate::suspects::Error::InsufficientHistory(_) => {
                         (WireError::NoSnapshot.code(), e.to_string())
@@ -276,8 +276,8 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
             crate::bisect::run(&params, root)
                 .map(|v| encode(&v))
                 .map_err(|e| match &e {
-                    crate::bisect::Error::UnknownWake(_) => {
-                        (WireError::UnknownWake.code(), e.to_string())
+                    crate::bisect::Error::UnknownTrace(_) => {
+                        (WireError::UnknownTrace.code(), e.to_string())
                     }
                     crate::bisect::Error::InsufficientHistory(_) => {
                         (WireError::NoSnapshot.code(), e.to_string())
@@ -286,12 +286,12 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
                 })
         }
         other => dispatch_wake(other, &params, root, &bad_params, &encode)
-            .or_else(|| dispatch_query_review(other, &params, root, &bad_params, &encode))
+            .or_else(|| dispatch_query_check(other, &params, root, &bad_params, &encode))
             .unwrap_or_else(|| Err((-32601, format!("no such method: {other}")))),
     }
 }
 
-/// Wake methods, split out of `dispatch` only to stay under the line budget;
+/// Trace methods, split out of `dispatch` only to stay under the line budget;
 /// the match is logically one.
 #[allow(clippy::too_many_lines)]
 fn dispatch_wake(
@@ -302,26 +302,26 @@ fn dispatch_wake(
     encode: &dyn Fn(&dyn erased::Serialize) -> Value,
 ) -> Option<Result<Value, (i32, String)>> {
     Some(match method {
-        "grid.wake.ingest" => {
+        "grid.trace.ingest" => {
             let params = match serde_json::from_value(params.clone()).map_err(bad_params) {
                 Ok(p) => p,
                 Err(e) => return Some(Err(e)),
             };
-            rpc::wake_ingest(&params, root)
+            rpc::trace_ingest(&params, root)
                 .map(|v| encode(&v))
                 .map_err(|e| (WireError::UnknownSnapshot.code(), e))
         }
-        "grid.wake.diff" => {
+        "grid.trace.diff" => {
             let params = match serde_json::from_value(params.clone()).map_err(bad_params) {
                 Ok(p) => p,
                 Err(e) => return Some(Err(e)),
             };
-            rpc::wake_diff(&params, root)
+            rpc::trace_diff(&params, root)
                 .map(|v| encode(&v))
                 .map_err(|e| {
                     let code = match e {
-                        rpc::WakeDiffError::UnknownWake(_) => WireError::UnknownWake.code(),
-                        rpc::WakeDiffError::Store(_) => WireError::CorruptSegment.code(),
+                        rpc::TraceDiffError::UnknownTrace(_) => WireError::UnknownTrace.code(),
+                        rpc::TraceDiffError::Store(_) => WireError::CorruptSegment.code(),
                     };
                     (code, e.to_string())
                 })
@@ -330,11 +330,11 @@ fn dispatch_wake(
     })
 }
 
-/// Wave 9's two methods: the leadline walk and the reviewer's bundle. Both
+/// Wave 9's two methods: the budgeted walk and the check's answer. Both
 /// answer from the chart, so both fail the way every other chart method
-/// fails — the coordinate you named is not in the store — except for a wake
+/// fails — the coordinate you named is not in the store — except for a trace
 /// id a review named and the log does not hold.
-fn dispatch_query_review(
+fn dispatch_query_check(
     method: &str,
     params: &Value,
     root: &Path,
@@ -351,17 +351,17 @@ fn dispatch_query_review(
                 .map(|v| encode(&v))
                 .map_err(|e| chart_error(&e))
         }
-        "grid.review.pack" => {
+        "grid.check" => {
             let params = match serde_json::from_value(params.clone()).map_err(bad_params) {
                 Ok(p) => p,
                 Err(e) => return Some(Err(e)),
             };
-            crate::check::pack(&params, root)
+            crate::check::answer(&params, root)
                 .map(|v| encode(&v))
                 .map_err(|e| match &e {
                     crate::check::Error::Chart(chart) => chart_error(chart),
-                    crate::check::Error::UnknownWake(_) => {
-                        (WireError::UnknownWake.code(), e.to_string())
+                    crate::check::Error::UnknownTrace(_) => {
+                        (WireError::UnknownTrace.code(), e.to_string())
                     }
                 })
         }

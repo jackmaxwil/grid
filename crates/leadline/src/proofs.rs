@@ -17,7 +17,7 @@ use crate::walk::{walk, Filter, Status};
 /// would loop forever.
 struct AnyGraph<const N: u32> {
     relation: grid_wire::Relation,
-    zoc: grid_wire::Zoc,
+    grade: grid_wire::Grade,
 }
 
 impl<const N: u32> Graph for AnyGraph<N> {
@@ -44,7 +44,7 @@ impl<const N: u32> Graph for AnyGraph<N> {
             .map(|other| Neighbour {
                 other: Ordinal(other),
                 relation: self.relation,
-                zoc: self.zoc,
+                grade: self.grade,
             })
             .collect()
     }
@@ -98,7 +98,7 @@ fn walk_terminates_within_fuel() {
     }));
     let graph: AnyGraph<N> = AnyGraph {
         relation: grid_wire::Relation::Calls,
-        zoc: grid_wire::Zoc::Proven,
+        grade: grid_wire::Grade::Proven,
     };
     let root = Ordinal(kani::any());
     kani::assume(root.0 < N);
@@ -124,7 +124,7 @@ fn paths_terminate() {
     const N: u32 = 3;
     let graph: AnyGraph<N> = AnyGraph {
         relation: grid_wire::Relation::Calls,
-        zoc: grid_wire::Zoc::Proven,
+        grade: grid_wire::Grade::Proven,
     };
     let budget = Budget::new(None);
     let w = walk(

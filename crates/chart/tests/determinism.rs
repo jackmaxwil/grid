@@ -4,7 +4,7 @@
 //! the multiplicity of the input must not change one byte of the image — and
 //! therefore must not change the snapshot id derived from it (D5).
 use grid_chart::{build, DatumId, Def, Edge, Manifest, Segment, SegmentEntry};
-use grid_wire::{Lang, Relation, Zoc};
+use grid_wire::{Grade, Lang, Relation};
 use proptest::prelude::*;
 
 fn datum(seed: u8) -> DatumId {
@@ -31,7 +31,7 @@ fn arb_edges(n: usize) -> impl Strategy<Value = Vec<Edge>> {
                 src: datum(s),
                 dst: datum(d),
                 relation: relation(r),
-                zoc: zoc(z),
+                grade: grade(z),
             })
             .collect()
     })
@@ -54,8 +54,13 @@ fn relation(tag: u8) -> Relation {
     ][tag as usize % 12]
 }
 
-fn zoc(tag: u8) -> Zoc {
-    [Zoc::Proven, Zoc::Observed, Zoc::Modeled, Zoc::Heuristic][tag as usize % 4]
+fn grade(tag: u8) -> Grade {
+    [
+        Grade::Proven,
+        Grade::Observed,
+        Grade::Modeled,
+        Grade::Heuristic,
+    ][tag as usize % 4]
 }
 
 proptest! {
@@ -117,10 +122,10 @@ proptest! {
         for i in 0..seg.def_count() {
             let ord = grid_chart::Ordinal(i);
             for n in seg.out_edges(ord) {
-                out.push((i, n.other.0, n.relation, n.zoc));
+                out.push((i, n.other.0, n.relation, n.grade));
             }
             for n in seg.in_edges(ord) {
-                inc.push((n.other.0, i, n.relation, n.zoc));
+                inc.push((n.other.0, i, n.relation, n.grade));
             }
         }
         out.sort_by_key(|e| (e.0, e.1));

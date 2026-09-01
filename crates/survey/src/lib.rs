@@ -342,7 +342,7 @@ pub fn run_sources(
             src: grid_chart::DatumId(e.src),
             dst: grid_chart::DatumId(e.dst),
             relation: e.relation,
-            zoc: e.zoc,
+            grade: e.grade,
         })
         .collect();
 

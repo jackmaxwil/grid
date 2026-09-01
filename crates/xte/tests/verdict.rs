@@ -38,7 +38,7 @@ impl Table {
 impl DeltaProvider for Table {
     type Error = std::convert::Infallible;
 
-    fn made_good(&self, _: &SnapshotOrRev, _: &SnapshotOrRev) -> Result<MadeGood, Self::Error> {
+    fn diff(&self, _: &SnapshotOrRev, _: &SnapshotOrRev) -> Result<Diff, Self::Error> {
         unreachable!("these tests supply the delta directly")
     }
 
@@ -58,15 +58,15 @@ fn datum(tag: &str) -> Datum {
     Datum(format!("b3:{}", tag.repeat(64 / tag.len().max(1))))
 }
 
-fn track(edges: Vec<TrackEdgePromise>) -> Track {
-    Track {
-        track_id: "track:test".into(),
+fn plan(edges: Vec<PlanEdgePromise>) -> Plan {
+    Plan {
+        plan_id: "plan:test".into(),
         pr: None,
         plan_rev: None,
         base: SnapshotOrRev::GitRev {
             git_rev: GitRev("base".into()),
         },
-        delta: TrackDelta {
+        delta: PlanDelta {
             defs: Vec::new(),
             edges,
         },
@@ -76,8 +76,8 @@ fn track(edges: Vec<TrackEdgePromise>) -> Track {
     }
 }
 
-fn promise(action: TrackEdgePromiseAction, src: &str, dst: &str) -> TrackEdgePromise {
-    TrackEdgePromise {
+fn promise(action: PlanEdgePromiseAction, src: &str, dst: &str) -> PlanEdgePromise {
+    PlanEdgePromise {
         action,
         src: CallsignPattern(src.into()),
         relation: Relation::Calls,
@@ -85,22 +85,22 @@ fn promise(action: TrackEdgePromiseAction, src: &str, dst: &str) -> TrackEdgePro
     }
 }
 
-fn edge_change(action: EdgeChangeAction, src: &str, dst: &str, zoc: Zoc) -> EdgeChange {
+fn edge_change(action: EdgeChangeAction, src: &str, dst: &str, grade: Grade) -> EdgeChange {
     EdgeChange {
         action,
         edge: Edge {
             src: datum(src),
             relation: Relation::Calls,
             dst: datum(dst),
-            zoc,
+            grade,
             via: None,
         },
         moved_from: None,
     }
 }
 
-fn made_good(defs: Vec<DefChange>, edges: Vec<EdgeChange>) -> MadeGood {
-    MadeGood {
+fn diff(defs: Vec<DefChange>, edges: Vec<EdgeChange>) -> Diff {
+    Diff {
         base: SnapshotId("snap:b3:base".into()),
         head: SnapshotId("snap:b3:head".into()),
         defs,
@@ -116,23 +116,23 @@ fn a_promise_the_delta_makes_good_matches() {
             datum("bb").0.as_str(),
             "cortana.reaper.TagContract.validate",
         );
-    let track = track(vec![promise(
-        TrackEdgePromiseAction::Add,
+    let plan = plan(vec![promise(
+        PlanEdgePromiseAction::Add,
         "cortana.reaper.Reaper.sweep",
         "cortana.reaper.TagContract.*",
     )]);
-    let delta = made_good(
+    let delta = diff(
         vec![],
         vec![edge_change(
             EdgeChangeAction::Added,
             "aa",
             "bb",
-            Zoc::Proven,
+            Grade::Proven,
         )],
     );
 
-    let v = verdict(&track, &delta, &provider);
-    assert_eq!(v.gate, XteVerdictGate::Pass);
+    let v = verdict(&plan, &delta, &provider);
+    assert_eq!(v.gate, GateVerdictGate::Pass);
     assert_eq!(v.matched.len(), 1);
     assert!(v.missing.is_empty() && v.surplus.is_empty());
     assert_eq!(v.reasons.as_deref(), Some(&[][..]));
@@ -140,13 +140,13 @@ fn a_promise_the_delta_makes_good_matches() {
 
 #[test]
 fn a_promise_nothing_made_good_is_missing() {
-    let track = track(vec![promise(
-        TrackEdgePromiseAction::Add,
+    let plan = plan(vec![promise(
+        PlanEdgePromiseAction::Add,
         "cortana.reaper.Reaper.sweep",
         "cortana.reaper.TagContract.validate",
     )]);
-    let v = verdict(&track, &made_good(vec![], vec![]), &Table::new());
-    assert_eq!(v.gate, XteVerdictGate::Hold);
+    let v = verdict(&plan, &diff(vec![], vec![]), &Table::new());
+    assert_eq!(v.gate, GateVerdictGate::Hold);
     assert_eq!(v.missing.len(), 1);
     assert_eq!(v.reasons.unwrap(), ["1 promised edge never built"]);
 }
@@ -158,19 +158,19 @@ fn the_wrong_tense_does_not_match() {
     let provider = Table::new()
         .naming(datum("aa").0.as_str(), "a")
         .naming(datum("bb").0.as_str(), "b");
-    let track = track(vec![promise(TrackEdgePromiseAction::Remove, "a", "b")]);
-    let delta = made_good(
+    let plan = plan(vec![promise(PlanEdgePromiseAction::Remove, "a", "b")]);
+    let delta = diff(
         vec![],
         vec![edge_change(
             EdgeChangeAction::Added,
             "aa",
             "bb",
-            Zoc::Proven,
+            Grade::Proven,
         )],
     );
 
-    let v = verdict(&track, &delta, &provider);
-    assert_eq!(v.gate, XteVerdictGate::Hold);
+    let v = verdict(&plan, &delta, &provider);
+    assert_eq!(v.gate, GateVerdictGate::Hold);
     assert_eq!(v.missing.len(), 1, "the removal was never made good");
     assert_eq!(v.surplus.len(), 1, "and an unpromised addition appeared");
 }
@@ -180,25 +180,25 @@ fn tolerate_moves_surplus_out_of_the_hold() {
     let provider = Table::new()
         .naming(datum("aa").0.as_str(), "cortana.reaper.Reaper.sweep")
         .naming(datum("bb").0.as_str(), "cortana.reaper.Tag.field");
-    let mut t = track(vec![]);
+    let mut t = plan(vec![]);
     t.tolerate = Some(vec![EdgeRule {
         src: CallsignPattern("cortana.reaper.**".into()),
         relation: Some(Relation::Calls),
         dst: CallsignPattern("cortana.reaper.**".into()),
         at_or_above: None,
     }]);
-    let delta = made_good(
+    let delta = diff(
         vec![],
         vec![edge_change(
             EdgeChangeAction::Added,
             "aa",
             "bb",
-            Zoc::Proven,
+            Grade::Proven,
         )],
     );
 
     let v = verdict(&t, &delta, &provider);
-    assert_eq!(v.gate, XteVerdictGate::Pass);
+    assert_eq!(v.gate, GateVerdictGate::Pass);
     assert_eq!(v.tolerated.len(), 1);
     assert!(
         v.surplus.is_empty(),
@@ -213,29 +213,29 @@ fn tolerance_respects_its_evidence_floor() {
     let provider = Table::new()
         .naming(datum("aa").0.as_str(), "a")
         .naming(datum("bb").0.as_str(), "b");
-    let mut t = track(vec![]);
+    let mut t = plan(vec![]);
     t.tolerate = Some(vec![EdgeRule {
         src: CallsignPattern("**".into()),
         relation: None,
         dst: CallsignPattern("**".into()),
-        at_or_above: Some(Zoc::Proven),
+        at_or_above: Some(Grade::Proven),
     }]);
-    let weak = made_good(
+    let weak = diff(
         vec![],
         vec![edge_change(
             EdgeChangeAction::Added,
             "aa",
             "bb",
-            Zoc::Heuristic,
+            Grade::Heuristic,
         )],
     );
-    let strong = made_good(
+    let strong = diff(
         vec![],
         vec![edge_change(
             EdgeChangeAction::Added,
             "aa",
             "bb",
-            Zoc::Proven,
+            Grade::Proven,
         )],
     );
 
@@ -247,27 +247,27 @@ fn tolerance_respects_its_evidence_floor() {
 fn an_unnamed_datum_matches_no_promise() {
     // The provider knows no names: a promise in name-space cannot be made
     // good by an edge nobody can name. Surplus, not a false match.
-    let track = track(vec![promise(TrackEdgePromiseAction::Add, "**", "**")]);
-    let delta = made_good(
+    let plan = plan(vec![promise(PlanEdgePromiseAction::Add, "**", "**")]);
+    let delta = diff(
         vec![],
         vec![edge_change(
             EdgeChangeAction::Added,
             "aa",
             "bb",
-            Zoc::Proven,
+            Grade::Proven,
         )],
     );
 
-    let v = verdict(&track, &delta, &Table::new());
-    assert_eq!(v.gate, XteVerdictGate::Hold);
+    let v = verdict(&plan, &delta, &Table::new());
+    assert_eq!(v.gate, GateVerdictGate::Hold);
     assert_eq!(v.surplus.len(), 1);
 }
 
 #[test]
 fn def_promises_cover_def_changes_by_pattern() {
-    let mut t = track(vec![]);
-    t.delta.defs = vec![TrackDefPromise {
-        action: TrackDefPromiseAction::Add,
+    let mut t = plan(vec![]);
+    t.delta.defs = vec![PlanDefPromise {
+        action: PlanDefPromiseAction::Add,
         callsign: CallsignPattern("cortana.reaper.TagContract.*".into()),
     }];
     let covered = DefChange {
@@ -287,17 +287,17 @@ fn def_promises_cover_def_changes_by_pattern() {
         after: Some(datum("cc")),
     };
 
-    let v = verdict(&t, &made_good(vec![covered.clone()], vec![]), &Table::new());
-    assert_eq!(v.gate, XteVerdictGate::Pass);
+    let v = verdict(&t, &diff(vec![covered.clone()], vec![]), &Table::new());
+    assert_eq!(v.gate, GateVerdictGate::Pass);
 
-    let v = verdict(&t, &made_good(vec![covered, stray], vec![]), &Table::new());
-    assert_eq!(v.gate, XteVerdictGate::Hold);
+    let v = verdict(&t, &diff(vec![covered, stray], vec![]), &Table::new());
+    assert_eq!(v.gate, GateVerdictGate::Hold);
     assert_eq!(v.defs_unaccounted.len(), 1);
 }
 
 #[test]
 fn a_test_that_disagrees_holds_the_gate() {
-    let mut t = track(vec![]);
+    let mut t = plan(vec![]);
     t.tests = Some(vec![ExpectedTest {
         test: "tests/test_tag_contract.py::test_retry_window".into(),
         expect: ExpectedTestExpect::Pass,
@@ -305,16 +305,16 @@ fn a_test_that_disagrees_holds_the_gate() {
     }]);
 
     // No runner report: the test reads `missing`, which is a disagreement.
-    let v = verdict(&t, &made_good(vec![], vec![]), &Table::new());
-    assert_eq!(v.gate, XteVerdictGate::Hold);
+    let v = verdict(&t, &diff(vec![], vec![]), &Table::new());
+    assert_eq!(v.gate, GateVerdictGate::Hold);
     assert_eq!(v.tests[0].actual, TestComparisonActual::Missing);
 
     let ran = Table::new().ran(
         "tests/test_tag_contract.py::test_retry_window",
         TestComparisonActual::Pass,
     );
-    let v = verdict(&t, &made_good(vec![], vec![]), &ran);
-    assert_eq!(v.gate, XteVerdictGate::Pass);
+    let v = verdict(&t, &diff(vec![], vec![]), &ran);
+    assert_eq!(v.gate, GateVerdictGate::Pass);
     assert!(v.tests[0].ok);
 }
 
@@ -323,8 +323,8 @@ fn a_forbidden_edge_is_witnessed_by_the_edge_itself() {
     let provider = Table::new()
         .naming(datum("aa").0.as_str(), "cortana.boards.render")
         .naming(datum("bb").0.as_str(), "cortana.persistence.write");
-    let mut t = track(vec![promise(
-        TrackEdgePromiseAction::Add,
+    let mut t = plan(vec![promise(
+        PlanEdgePromiseAction::Add,
         "cortana.boards.render",
         "cortana.persistence.write",
     )]);
@@ -340,13 +340,13 @@ fn a_forbidden_edge_is_witnessed_by_the_edge_itself() {
             },
         },
     }]);
-    let delta = made_good(
+    let delta = diff(
         vec![],
         vec![edge_change(
             EdgeChangeAction::Added,
             "aa",
             "bb",
-            Zoc::Proven,
+            Grade::Proven,
         )],
     );
 
@@ -354,7 +354,7 @@ fn a_forbidden_edge_is_witnessed_by_the_edge_itself() {
     // The promise matched — and the gate still holds. An invariant outranks a
     // promise: promising to break a standing rule does not license breaking it.
     assert_eq!(v.matched.len(), 1);
-    assert_eq!(v.gate, XteVerdictGate::Hold);
+    assert_eq!(v.gate, GateVerdictGate::Hold);
     assert_eq!(v.invariant_violations.len(), 1);
     assert_eq!(v.invariant_violations[0].witness.edges.len(), 1);
     assert_eq!(
@@ -376,18 +376,18 @@ proptest! {
             .iter()
             .enumerate()
             .fold(Table::new(), |t, (i, n)| t.naming(datum(&"a".repeat(i + 1)).0.as_str(), n));
-        let t = track(
+        let t = plan(
             promises
                 .iter()
-                .map(|&i| promise(TrackEdgePromiseAction::Add, names[i], names[i]))
+                .map(|&i| promise(PlanEdgePromiseAction::Add, names[i], names[i]))
                 .collect(),
         );
         let tags: Vec<String> = (0..3).map(|i| "a".repeat(i + 1)).collect();
-        let delta = made_good(
+        let delta = diff(
             vec![],
             changes
                 .iter()
-                .map(|&i| edge_change(EdgeChangeAction::Added, &tags[i], &tags[i], Zoc::Proven))
+                .map(|&i| edge_change(EdgeChangeAction::Added, &tags[i], &tags[i], Grade::Proven))
                 .collect(),
         );
 
@@ -397,7 +397,7 @@ proptest! {
             || !v.defs_unaccounted.is_empty()
             || v.tests.iter().any(|t| !t.ok)
             || !v.invariant_violations.is_empty();
-        prop_assert_eq!(v.gate == XteVerdictGate::Hold, diverged);
+        prop_assert_eq!(v.gate == GateVerdictGate::Hold, diverged);
         // The reasons list is the decision, not a decoration on it.
         prop_assert_eq!(v.reasons.as_ref().is_some_and(|r| !r.is_empty()), diverged);
     }
@@ -415,18 +415,18 @@ proptest! {
             .iter()
             .enumerate()
             .fold(Table::new(), |t, (i, n)| t.naming(datum(&tags[i]).0.as_str(), n));
-        let mut t = track(vec![promise(TrackEdgePromiseAction::Add, "a", "a")]);
+        let mut t = plan(vec![promise(PlanEdgePromiseAction::Add, "a", "a")]);
         t.tolerate = Some(vec![EdgeRule {
             src: CallsignPattern("b".into()),
             relation: None,
             dst: CallsignPattern("b".into()),
             at_or_above: None,
         }]);
-        let delta = made_good(
+        let delta = diff(
             vec![],
             changes
                 .iter()
-                .map(|&(i, _)| edge_change(EdgeChangeAction::Added, &tags[i], &tags[i], Zoc::Proven))
+                .map(|&(i, _)| edge_change(EdgeChangeAction::Added, &tags[i], &tags[i], Grade::Proven))
                 .collect(),
         );
 

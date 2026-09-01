@@ -8,7 +8,7 @@
 //! bound by extraction, so it falls through and resolves to nothing — the
 //! omission `docs/LANG_RS.md` promises, never a guess.
 use grid_datum::{Import, RefKind, Reference};
-use grid_wire::Zoc;
+use grid_wire::Grade;
 
 use crate::index::{DefIndex, Symbol};
 use crate::resolve::{relation_of, Bindings, Resolved, ResolvedEdge};
@@ -40,7 +40,7 @@ pub(crate) fn resolve(
             src,
             dst: target.datum,
             relation: relation_of(r.kind, target.is_class),
-            zoc: Zoc::Proven,
+            grade: Grade::Proven,
         });
     }
     out

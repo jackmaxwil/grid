@@ -209,7 +209,7 @@ one-liner.** Four independent reasons:
    rebuild, and sparse graphs have almost no transitive edges — so
    nearly every edit invalidates the index.
 4. **No filtered queries.** The index encodes one fixed edge set; grid
-   filters every walk by zoc floor × relation subset. One index per
+   filters every walk by grade floor × relation subset. One index per
    filter combination, each invalidated per edit.
 
 **Salvage — three small pieces, none actually requiring the paper:**

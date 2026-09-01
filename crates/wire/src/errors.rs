@@ -14,12 +14,12 @@ pub enum WireError {
     SurveyFailed = -32004,
     /// no language adapter for file
     UnsupportedLang = -32005,
-    /// track failed validation
-    InvalidTrack = -32006,
-    /// unknown track id
-    UnknownTrack = -32007,
-    /// unknown wake id
-    UnknownWake = -32008,
+    /// plan failed validation
+    InvalidPlan = -32006,
+    /// unknown plan id
+    UnknownPlan = -32007,
+    /// unknown trace id
+    UnknownTrace = -32008,
 }
 
 impl WireError {

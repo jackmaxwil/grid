@@ -1,8 +1,8 @@
-//! grid-xte — spec gate: `Track` (promised, name-space) vs `MadeGood`
-//! (actual, datum-space) -> `XteVerdict`.
+//! grid-xte — spec gate: `Plan` (promised, name-space) vs `Diff`
+//! (actual, datum-space) -> `GateVerdict`.
 //!
-//! Two spaces meet here. A track is authored before the code exists, so it
-//! references code by [`CallsignPattern`]; a `MadeGood` is a diff of surveyed
+//! Two spaces meet here. A plan is authored before the code exists, so it
+//! references code by [`CallsignPattern`]; a `Diff` is a diff of surveyed
 //! reality, so it references code by `Datum`. Unification is one step:
 //! [`DeltaProvider::callsign`] names each datum, and the named edge is matched
 //! against the promise patterns.
@@ -15,11 +15,10 @@ pub mod lint;
 pub mod pattern;
 
 use grid_wire::{
-    Callsign, CallsignPattern, Datum, DefChange, Edge, EdgeChange, EdgeChangeAction, EdgeRule,
-    Invariant, InvariantRule, InvariantViolation, MadeGood, Path, SnapshotId, SnapshotOrRev,
-    TestComparison, TestComparisonActual, TestComparisonExpected, Track, TrackDefPromise,
-    TrackDefPromiseAction, TrackEdgePromise, TrackEdgePromiseAction, XteVerdict, XteVerdictGate,
-    Zoc,
+    Callsign, CallsignPattern, Datum, DefChange, Diff, Edge, EdgeChange, EdgeChangeAction,
+    EdgeRule, GateVerdict, GateVerdictGate, Grade, Invariant, InvariantRule, InvariantViolation,
+    Path, Plan, PlanDefPromise, PlanDefPromiseAction, PlanEdgePromise, PlanEdgePromiseAction,
+    SnapshotId, SnapshotOrRev, TestComparison, TestComparisonActual, TestComparisonExpected,
 };
 
 /// The seam. A provider answers two questions about a pair of snapshots: what
@@ -34,11 +33,7 @@ pub trait DeltaProvider {
     ///
     /// # Errors
     /// Provider-defined: typically an unknown snapshot or a failed diff.
-    fn made_good(
-        &self,
-        base: &SnapshotOrRev,
-        head: &SnapshotOrRev,
-    ) -> Result<MadeGood, Self::Error>;
+    fn diff(&self, base: &SnapshotOrRev, head: &SnapshotOrRev) -> Result<Diff, Self::Error>;
 
     /// The callsign a datum is known by, if the provider knows one. A datum
     /// with no name matches no promise pattern — it lands in `surplus`, which
@@ -54,31 +49,31 @@ pub trait DeltaProvider {
 }
 
 /// Rank of an evidence grade, strongest first — `at_or_above` semantics.
-const fn rank(z: Zoc) -> u8 {
+const fn rank(z: Grade) -> u8 {
     match z {
-        Zoc::Proven => 0,
-        Zoc::Observed => 1,
-        Zoc::Modeled => 2,
-        Zoc::Heuristic => 3,
+        Grade::Proven => 0,
+        Grade::Observed => 1,
+        Grade::Modeled => 2,
+        Grade::Heuristic => 3,
     }
 }
 
 /// Promise actions and change actions are the same alphabet in two tenses.
-const fn tense(promise: TrackEdgePromiseAction) -> EdgeChangeAction {
+const fn tense(promise: PlanEdgePromiseAction) -> EdgeChangeAction {
     match promise {
-        TrackEdgePromiseAction::Add => EdgeChangeAction::Added,
-        TrackEdgePromiseAction::Remove => EdgeChangeAction::Removed,
-        TrackEdgePromiseAction::Move => EdgeChangeAction::Moved,
+        PlanEdgePromiseAction::Add => EdgeChangeAction::Added,
+        PlanEdgePromiseAction::Remove => EdgeChangeAction::Removed,
+        PlanEdgePromiseAction::Move => EdgeChangeAction::Moved,
     }
 }
 
-const fn def_tense(promise: TrackDefPromiseAction) -> grid_wire::DefChangeAction {
+const fn def_tense(promise: PlanDefPromiseAction) -> grid_wire::DefChangeAction {
     use grid_wire::DefChangeAction as A;
     match promise {
-        TrackDefPromiseAction::Add => A::Added,
-        TrackDefPromiseAction::Remove => A::Removed,
-        TrackDefPromiseAction::Modify => A::Modified,
-        TrackDefPromiseAction::Move => A::Moved,
+        PlanDefPromiseAction::Add => A::Added,
+        PlanDefPromiseAction::Remove => A::Removed,
+        PlanDefPromiseAction::Modify => A::Modified,
+        PlanDefPromiseAction::Move => A::Moved,
     }
 }
 
@@ -106,61 +101,57 @@ impl Named<'_> {
                 .is_some_and(|d| pattern::matches(&dst.0, d))
     }
 
-    fn satisfies(&self, promise: &TrackEdgePromise) -> bool {
+    fn satisfies(&self, promise: &PlanEdgePromise) -> bool {
         self.change.action == tense(promise.action)
             && self.change.edge.relation == promise.relation
             && self.endpoints_match(&promise.src, &promise.dst)
     }
 
     fn matches_rule(&self, rule: &EdgeRule) -> bool {
-        let floor = rule.at_or_above.unwrap_or(Zoc::Heuristic);
+        let floor = rule.at_or_above.unwrap_or(Grade::Heuristic);
         rule.relation.is_none_or(|r| r == self.change.edge.relation)
-            && rank(self.change.edge.zoc) <= rank(floor)
+            && rank(self.change.edge.grade) <= rank(floor)
             && self.endpoints_match(&rule.src, &rule.dst)
     }
 }
 
-/// Check a track against the delta a provider reports at `head`.
+/// Check a plan against the delta a provider reports at `head`.
 ///
 /// The verdict itemizes every divergence rather than reducing to a boolean:
 /// `hold` is the summary, the arrays are the reason. Surplus is computed
-/// after `tolerate` filtering (wire contract, `XteVerdict`).
+/// after `tolerate` filtering (wire contract, `GateVerdict`).
 ///
 /// # Errors
 /// Propagates the provider's error when the delta cannot be produced.
 pub fn check<P: DeltaProvider>(
-    track: &Track,
+    plan: &Plan,
     head: &SnapshotOrRev,
     provider: &P,
-) -> Result<XteVerdict, P::Error> {
-    let made_good = provider.made_good(&track.base, head)?;
-    Ok(verdict(track, &made_good, provider))
+) -> Result<GateVerdict, P::Error> {
+    let diff = provider.diff(&plan.base, head)?;
+    Ok(verdict(plan, &diff, provider))
 }
 
-/// Def promises split by whether the `MadeGood` made them good.
+/// Def promises split by whether the `Diff` made them good.
 ///
 /// The gate's `defs_unaccounted` answers the other direction (which changes
 /// no promise covers); this is the promise-side view `grid.todo` renders, so
 /// the worklist and the verdict are two readings of one judgment, never two
 /// engines (CLI plan §5: `todo` is a *view* over the gate).
 #[must_use]
-pub fn def_progress(
-    track: &Track,
-    made_good: &MadeGood,
-) -> (Vec<TrackDefPromise>, Vec<TrackDefPromise>) {
-    track
-        .delta
+pub fn def_progress(plan: &Plan, diff: &Diff) -> (Vec<PlanDefPromise>, Vec<PlanDefPromise>) {
+    plan.delta
         .defs
         .iter()
         .cloned()
-        .partition(|p| made_good.defs.iter().any(|d| covers(p, d)))
+        .partition(|p| diff.defs.iter().any(|d| covers(p, d)))
 }
 
 /// The pure core: a verdict over a delta already in hand.
 #[must_use]
-pub fn verdict<P: DeltaProvider>(track: &Track, made_good: &MadeGood, provider: &P) -> XteVerdict {
+pub fn verdict<P: DeltaProvider>(plan: &Plan, diff: &Diff, provider: &P) -> GateVerdict {
     let name = |d: &Datum| provider.callsign(d).map(|c| c.0);
-    let named: Vec<Named<'_>> = made_good
+    let named: Vec<Named<'_>> = diff
         .edges
         .iter()
         .map(|change| Named {
@@ -171,7 +162,7 @@ pub fn verdict<P: DeltaProvider>(track: &Track, made_good: &MadeGood, provider: 
         .collect();
 
     // Every promise, split by whether some change made it good.
-    let (matched, missing): (Vec<_>, Vec<_>) = track
+    let (matched, missing): (Vec<_>, Vec<_>) = plan
         .delta
         .edges
         .iter()
@@ -179,10 +170,10 @@ pub fn verdict<P: DeltaProvider>(track: &Track, made_good: &MadeGood, provider: 
         .partition(|p| named.iter().any(|n| n.satisfies(p)));
 
     // Every change not accounted for by a promise, split by tolerance.
-    let tolerate = track.tolerate.as_deref().unwrap_or_default();
+    let tolerate = plan.tolerate.as_deref().unwrap_or_default();
     let (tolerated, surplus): (Vec<_>, Vec<_>) = named
         .iter()
-        .filter(|n| !track.delta.edges.iter().any(|p| n.satisfies(p)))
+        .filter(|n| !plan.delta.edges.iter().any(|p| n.satisfies(p)))
         .map(|n| (n.change.clone(), tolerate.iter().any(|r| n.matches_rule(r))))
         .fold(
             (vec![], vec![]),
@@ -196,14 +187,14 @@ pub fn verdict<P: DeltaProvider>(track: &Track, made_good: &MadeGood, provider: 
             },
         );
 
-    let defs_unaccounted: Vec<DefChange> = made_good
+    let defs_unaccounted: Vec<DefChange> = diff
         .defs
         .iter()
-        .filter(|d| !track.delta.defs.iter().any(|p| covers(p, d)))
+        .filter(|d| !plan.delta.defs.iter().any(|p| covers(p, d)))
         .cloned()
         .collect();
 
-    let tests: Vec<TestComparison> = track
+    let tests: Vec<TestComparison> = plan
         .tests
         .as_deref()
         .unwrap_or_default()
@@ -219,7 +210,7 @@ pub fn verdict<P: DeltaProvider>(track: &Track, made_good: &MadeGood, provider: 
         })
         .collect();
 
-    let invariant_violations = violations(track.invariants.as_deref().unwrap_or_default(), &named);
+    let invariant_violations = violations(plan.invariants.as_deref().unwrap_or_default(), &named);
 
     let reasons = reasons(
         &missing,
@@ -229,15 +220,15 @@ pub fn verdict<P: DeltaProvider>(track: &Track, made_good: &MadeGood, provider: 
         &invariant_violations,
     );
     let gate = if reasons.is_empty() {
-        XteVerdictGate::Pass
+        GateVerdictGate::Pass
     } else {
-        XteVerdictGate::Hold
+        GateVerdictGate::Hold
     };
 
-    XteVerdict {
+    GateVerdict {
         gate,
-        track_id: track.track_id.clone(),
-        head: made_good.head.clone(),
+        plan_id: plan.plan_id.clone(),
+        head: diff.head.clone(),
         matched,
         missing,
         surplus,
@@ -251,7 +242,7 @@ pub fn verdict<P: DeltaProvider>(track: &Track, made_good: &MadeGood, provider: 
 
 /// A def promise covers a def change when the action agrees and the pattern
 /// matches the callsign.
-fn covers(promise: &TrackDefPromise, change: &DefChange) -> bool {
+fn covers(promise: &PlanDefPromise, change: &DefChange) -> bool {
     change.action == def_tense(promise.action)
         && pattern::matches(&promise.callsign.0, &change.callsign.0)
 }
@@ -278,7 +269,7 @@ const fn agrees(expected: grid_wire::ExpectedTestExpect, actual: TestComparisonA
 ///
 /// The witness is the single hop that violates the rule — the concrete
 /// evidence chain, one edge long, which is all a file-level delta can prove.
-/// Multi-hop witnesses arrive with leadline (Wave 9).
+/// Multi-hop witnesses arrive with the walk engine (Wave 9).
 fn violations(invariants: &[Invariant], named: &[Named<'_>]) -> Vec<InvariantViolation> {
     let mut out = Vec::new();
     for inv in invariants {
@@ -326,7 +317,7 @@ fn witness(edge: &Edge) -> Path {
 /// One human-readable line per contributing hold cause; empty on pass. This
 /// list *is* the gate decision: `hold` iff it is non-empty.
 fn reasons(
-    missing: &[TrackEdgePromise],
+    missing: &[PlanEdgePromise],
     surplus: &[EdgeChange],
     defs_unaccounted: &[DefChange],
     tests: &[TestComparison],

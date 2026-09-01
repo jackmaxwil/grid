@@ -3,7 +3,7 @@
 //! back into add/remove rather than guessing which body went where.
 use std::error::Error;
 
-use grid_chart::{build, made_good, DatumId, Def, Segment};
+use grid_chart::{build, diff, DatumId, Def, Segment};
 use grid_wire::DefChangeAction;
 use grid_wire::SnapshotId;
 
@@ -41,10 +41,10 @@ fn chart(defs: &[Def]) -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(build(defs, &[])?)
 }
 
-fn diff(base: &[Def], head: &[Def]) -> Result<Vec<Row>, Box<dyn Error>> {
+fn rows(base: &[Def], head: &[Def]) -> Result<Vec<Row>, Box<dyn Error>> {
     let (b, h) = (chart(base)?, chart(head)?);
     let (b, h) = (Segment::parse(b.as_slice())?, Segment::parse(h.as_slice())?);
-    let mg = made_good(
+    let mg = diff(
         SnapshotId("snap:b3:base".into()),
         &[b],
         SnapshotId("snap:b3:head".into()),
@@ -60,7 +60,7 @@ fn diff(base: &[Def], head: &[Def]) -> Result<Vec<Row>, Box<dyn Error>> {
 #[test]
 fn a_rename_is_one_moved_row() -> Result<(), Box<dyn Error>> {
     // Different datums (the name is in them), same shape: a rename.
-    let rows = diff(&[shaped("old_name", 7, 42)], &[shaped("new_name", 8, 42)])?;
+    let rows = rows(&[shaped("old_name", 7, 42)], &[shaped("new_name", 8, 42)])?;
     assert_eq!(
         rows,
         vec![(
@@ -88,7 +88,7 @@ fn an_ambiguous_pairing_refuses_back_to_add_and_remove() -> Result<(), Box<dyn E
         Segment::parse(b2.as_slice())?,
         Segment::parse(h.as_slice())?,
     );
-    let mg = made_good(
+    let mg = diff(
         SnapshotId("snap:b3:base".into()),
         &[b1, b2],
         SnapshotId("snap:b3:head".into()),
@@ -101,7 +101,7 @@ fn an_ambiguous_pairing_refuses_back_to_add_and_remove() -> Result<(), Box<dyn E
 
 #[test]
 fn a_body_edit_is_still_modified_not_moved() -> Result<(), Box<dyn Error>> {
-    let rows = diff(&[shaped("same_name", 7, 40)], &[shaped("same_name", 9, 41)])?;
+    let rows = rows(&[shaped("same_name", 7, 40)], &[shaped("same_name", 9, 41)])?;
     assert_eq!(rows[0].0, DefChangeAction::Modified);
     assert_eq!(rows[0].2, None);
     Ok(())
@@ -110,7 +110,7 @@ fn a_body_edit_is_still_modified_not_moved() -> Result<(), Box<dyn Error>> {
 #[test]
 fn an_epoch1_side_detects_no_moves_and_still_diffs() -> Result<(), Box<dyn Error>> {
     // Shape-less defs (facts: None) are what an epoch-1 image answers.
-    let rows = diff(&[def("old_name", 7)], &[def("new_name", 8)])?;
+    let rows = rows(&[def("old_name", 7)], &[def("new_name", 8)])?;
     assert!(rows.iter().all(|(a, _, _)| *a != DefChangeAction::Moved));
     assert_eq!(rows.len(), 2);
     Ok(())

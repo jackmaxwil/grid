@@ -13,7 +13,7 @@
 //!
 //! Covenants fire on **datum** change, not on `sig`: the coupling is
 //! semantic, and a normalizer's *body* is the contract. A covenant suspect is
-//! `Zoc::Modeled` and it **gates**, which is the one exception to "modeled
+//! `Grade::Modeled` and it **gates**, which is the one exception to "modeled
 //! never gates" — and it is exception-by-declaration, so the honesty rule is
 //! holding rather than breaking. A human said these two move together.
 
@@ -40,7 +40,7 @@ pub fn load(root: &Path) -> Result<Vec<Covenant>, String> {
 }
 
 /// Write the covenant set back, pretty-printed so a human can edit it — which
-/// is how one is removed, exactly as a track is edited.
+/// is how one is removed, exactly as a plan is edited.
 ///
 /// # Errors
 /// A human-readable message when the file cannot be written.

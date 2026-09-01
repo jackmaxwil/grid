@@ -1,14 +1,14 @@
 //! Method layer shared by CLI and daemon.
 use grid_wire::methods::{
     CacheCheckParams, CacheRecordParams, CacheRecordResult, CacheRecordResultRejectedItem,
-    DeltaParams, DeltaResult, GateCheckParams, GateCheckResult, QueryWalkParams, QueryWalkResult,
-    ResolveParams, ResolveResult, ScopeParams, ScopeResult, SnapshotCurrentResult, SurveyRunParams,
-    SurveyRunResult, TodoParams, TodoResult, TrackLintParams, TrackLintResult, VersionResult,
-    WakeDiffParams, WakeIngestParams, WakeIngestResult,
+    DeltaParams, DeltaResult, GateCheckParams, GateCheckResult, PlanLintParams, PlanLintResult,
+    QueryWalkParams, QueryWalkResult, ResolveParams, ResolveResult, ScopeParams, ScopeResult,
+    SnapshotCurrentResult, SurveyRunParams, SurveyRunResult, TodoParams, TodoResult,
+    TraceDiffParams, TraceIngestParams, TraceIngestResult, VersionResult,
 };
 use grid_wire::{
-    CacheCheckResult, CacheHit, CacheHitVerdict, CacheResultEntryVerdict, GitRev, LeadlineResult,
-    LeadlineResultStats, LeadlineResultStatus, Snapshot, SnapshotId, SnapshotOrRev, SnapshotStats,
+    CacheCheckResult, CacheHit, CacheHitVerdict, CacheResultEntryVerdict, GitRev, Snapshot,
+    SnapshotId, SnapshotOrRev, SnapshotStats, WalkResult, WalkResultStatus, WalkStats,
 };
 
 use grid_xte::DeltaProvider as _;
@@ -30,22 +30,22 @@ pub fn version(root: &std::path::Path) -> VersionResult {
     }
 }
 
-/// `grid.track.lint` — pure validation, no survey, no snapshot. Pure of the
+/// `grid.plan.lint` — pure validation, no survey, no snapshot. Pure of the
 /// chart, that is: the repo's standing invariants are part of the rules a
 /// promise is judged against, and reading them touches no snapshot.
 ///
 /// # Errors
 /// Returns a message when the standing invariant file exists but is invalid;
 /// a broken rule file must not be mistaken for an absence of rules.
-pub fn track_lint(
-    params: &TrackLintParams,
+pub fn plan_lint(
+    params: &PlanLintParams,
     root: &std::path::Path,
-) -> Result<TrackLintResult, String> {
-    let track = standing::fold(&params.track, standing::load(root)?);
-    Ok(grid_xte::lint::lint(&track))
+) -> Result<PlanLintResult, String> {
+    let plan = standing::fold(&params.plan, standing::load(root)?);
+    Ok(grid_xte::lint::lint(&plan))
 }
 
-/// `grid.gate.check` — the track against the delta at head.
+/// `grid.gate.check` — the plan against the delta at head.
 ///
 /// The provider is the chart now, not Wave 3's file-level stand-in, so a
 /// promise about an edge is checked against a surveyed edge rather than
@@ -62,11 +62,11 @@ pub fn gate_check(
     root: &std::path::Path,
 ) -> Result<GateCheckResult, chart_provider::Error> {
     let standing = standing::load(root).map_err(chart_provider::Error::Config)?;
-    let track = standing::fold(&params.track, standing);
+    let plan = standing::fold(&params.plan, standing);
     let mut chart = Chart::new(root);
-    chart.ensure(&track.base)?;
+    chart.ensure(&plan.base)?;
     chart.ensure(&params.head)?;
-    grid_xte::check(&track, &params.head, &ChartDelta::open(root)?)
+    grid_xte::check(&plan, &params.head, &ChartDelta::open(root)?)
 }
 
 /// What one survey *run* did, as opposed to what the snapshot *is*. Neither
@@ -173,18 +173,18 @@ impl Chart {
             .publish(&rev, None, &[survey.image])
             .map_err(chart_provider::Error::Store)?;
         // Every modification between the previous live set and this one is a
-        // leg: edits made outside `grid edit` are still captured, one leg
+        // edit: edits made outside `grid edit` are still captured, one edit
         // per survey interval. Best effort — an unwritable log costs
         // history, never the snapshot that already published.
         if !prev.segments().is_empty() && prev.snapshot_id() != &id {
             let next = store.load();
-            let delta = grid_chart::made_good(
+            let delta = grid_chart::diff(
                 grid_wire::SnapshotId(prev.snapshot_id().as_str().to_owned()),
                 prev.segments(),
                 grid_wire::SnapshotId(id.as_str().to_owned()),
                 next.segments(),
             );
-            let legs: Vec<grid_wire::Leg> = delta
+            let edits: Vec<grid_wire::Edit> = delta
                 .defs
                 .iter()
                 .filter(|d| {
@@ -194,7 +194,7 @@ impl Chart {
                     )
                 })
                 .filter_map(|d| {
-                    Some(grid_wire::Leg {
+                    Some(grid_wire::Edit {
                         from: d.before.clone()?,
                         to: d.after.clone()?,
                         git_rev: Some(GitRev(rev.clone())),
@@ -202,7 +202,7 @@ impl Chart {
                     })
                 })
                 .collect();
-            let _unwritable = crate::legs::append(&self.root, &legs);
+            let _unwritable = crate::history::append(&self.root, &edits);
         }
         Ok((
             Snapshot {
@@ -268,7 +268,7 @@ pub fn drift(
             floor: params
                 .floor
                 .unwrap_or(crate::drift::Query::new(&params.base, &params.head).floor),
-            track: params.track.as_ref(),
+            plan: params.plan.as_ref(),
             covenants: &covenants,
             declined_refs: declined,
             ..crate::drift::Query::new(&params.base, &params.head)
@@ -466,7 +466,7 @@ pub fn orphans(
             let ord = grid_chart::Ordinal(i);
             if segment
                 .in_edges(ord)
-                .any(|n| n.zoc == grid_wire::Zoc::Proven)
+                .any(|n| n.grade == grid_wire::Grade::Proven)
             {
                 continue;
             }
@@ -516,7 +516,7 @@ pub struct Hotspot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChurnSource {
     /// The grid patch log: identity-level, rename-proof.
-    Legs,
+    Edits,
     /// `git log --numstat`, file-level: every def in a file inherits its
     /// file's commit count. Coarser, but honest on a fresh checkout.
     GitFiles,
@@ -525,7 +525,7 @@ pub enum ChurnSource {
 }
 
 /// `grid.hotspots` — complexity × churn, descending. Churn is the number of
-/// legs in the datum's identity component of the patch log, so it survives
+/// edits in the datum's identity component of the patch log, so it survives
 /// renames; with no log yet it falls back to file-level git history, so a
 /// fresh checkout still ranks by both axes.
 ///
@@ -537,16 +537,16 @@ pub fn hotspots(
     under: Option<&str>,
 ) -> Result<(Vec<Hotspot>, ChurnSource), chart_provider::Error> {
     let chart = ChartDelta::open(root)?;
-    // Union legs into identity components by plain map-merging: the log is
-    // small (one row per recorded modification), so O(legs · chain) is fine.
+    // Union edits into identity components by plain map-merging: the log is
+    // small (one row per recorded modification), so O(edits · chain) is fine.
     // ponytail: replace with union-find when a real log makes this slow.
-    let legs = crate::legs::read(root);
+    let edits = crate::history::read(root);
     let mut component: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut next = 0usize;
-    for leg in &legs {
+    for edit in &edits {
         let ids = (
-            component.get(&leg.from.0).copied(),
-            component.get(&leg.to.0).copied(),
+            component.get(&edit.from.0).copied(),
+            component.get(&edit.to.0).copied(),
         );
         let id = match ids {
             (Some(a), _) => a,
@@ -556,8 +556,8 @@ pub fn hotspots(
                 next
             }
         };
-        component.insert(leg.from.0.clone(), id);
-        component.insert(leg.to.0.clone(), id);
+        component.insert(edit.from.0.clone(), id);
+        component.insert(edit.to.0.clone(), id);
         if let (Some(a), Some(b)) = ids {
             if a != b {
                 for v in component.values_mut() {
@@ -569,18 +569,18 @@ pub fn hotspots(
         }
     }
     let mut per_component: std::collections::HashMap<usize, u64> = std::collections::HashMap::new();
-    for leg in &legs {
-        if let Some(id) = component.get(&leg.to.0) {
+    for edit in &edits {
+        if let Some(id) = component.get(&edit.to.0) {
             *per_component.entry(*id).or_insert(0) += 1;
         }
     }
-    let file_churn = if legs.is_empty() {
+    let file_churn = if edits.is_empty() {
         git_file_churn(root)
     } else {
         std::collections::HashMap::new()
     };
-    let source = if !legs.is_empty() {
-        ChurnSource::Legs
+    let source = if !edits.is_empty() {
+        ChurnSource::Edits
     } else if file_churn.is_empty() {
         ChurnSource::None
     } else {
@@ -696,7 +696,7 @@ pub fn delta(
     let mut chart = Chart::new(root);
     chart.ensure(&params.base)?;
     chart.ensure(&params.head)?;
-    ChartDelta::open(root)?.made_good(&params.base, &params.head)
+    ChartDelta::open(root)?.diff(&params.base, &params.head)
 }
 
 /// `grid.resolve` — a locator to the definitions it names.
@@ -713,7 +713,7 @@ pub fn resolve(
     Ok(ChartDelta::open(root)?.resolve(&params.locator))
 }
 
-/// `grid.query.walk` — the leadline engine over the live chart.
+/// `grid.query.walk` — the walk engine over the live chart.
 ///
 /// The chart is a set of segments and [`grid_leadline::query`] walks one
 /// graph, so the walk runs per segment and the answers are merged. A segment
@@ -743,13 +743,13 @@ pub fn query_walk(
         return Err(chart_provider::Error::NoSnapshot);
     };
     let sweep = params.query.to.is_none();
-    let mut merged = LeadlineResult {
-        status: LeadlineResultStatus::Complete,
+    let mut merged = WalkResult {
+        status: WalkResultStatus::Complete,
         snapshot: snapshot.clone(),
         paths: (!sweep).then(Vec::new),
         reached: sweep.then(Vec::new),
         frontier: None,
-        stats: LeadlineResultStats {
+        stats: WalkStats {
             visited: 0,
             hops: 0,
             ms: 0,
@@ -766,8 +766,8 @@ pub fn query_walk(
         let Ok(part) = grid_leadline::query(segment, &params.query, snapshot.clone()) else {
             continue;
         };
-        if part.status == LeadlineResultStatus::Aground {
-            merged.status = LeadlineResultStatus::Aground;
+        if part.status == WalkResultStatus::Aground {
+            merged.status = WalkResultStatus::Aground;
         }
         merged.stats.visited += part.stats.visited;
         merged.stats.hops = merged.stats.hops.max(part.stats.hops);
@@ -863,7 +863,7 @@ pub fn cache_check(
                     grid_cache::Verdict::Fail => CacheHitVerdict::Fail,
                 },
                 recorded_at: entry.recorded_at,
-                wake_id: entry.wake_id,
+                trace_id: entry.trace_id,
             }),
             None => misses.push(datum.clone()),
         }
@@ -900,14 +900,14 @@ pub fn cache_record(
     let kind = grid_cache::Kind::from(params.kind);
     let recorded_at = grid_cache::now_rfc3339();
 
-    // A verdict tied to a retained wake also lands in the datum-outcome
+    // A verdict tied to a retained trace also lands in the datum-outcome
     // log: that pairing — this test, this datum version, this verdict — is
     // what bisect searches. Best effort, like every history writer.
-    let outcome_test = params.wake_id.as_deref().and_then(|id| {
-        grid_wake::Store::open(wake_dir(root))
+    let outcome_test = params.trace_id.as_deref().and_then(|id| {
+        grid_wake::Store::open(trace_dir(root))
             .ok()
             .and_then(|s| s.get(id).ok().flatten())
-            .and_then(|stored| stored.wake.command)
+            .and_then(|stored| stored.trace.command)
     });
     let mut recorded = 0u64;
     let mut rejected = Vec::new();
@@ -930,7 +930,7 @@ pub fn cache_record(
                                 CacheResultEntryVerdict::Fail => grid_cache::Verdict::Fail,
                             },
                             recorded_at: recorded_at.clone(),
-                            wake_id: params.wake_id.clone(),
+                            trace_id: params.trace_id.clone(),
                             // Stored so the key can be recomputed later:
                             // `grid drift --tests` asks whether this verdict
                             // still applies, and a key is a hash.
@@ -940,13 +940,13 @@ pub fn cache_record(
                     .map_err(|e| e.to_string())?;
                 recorded += 1;
                 if let Some(test) = &outcome_test {
-                    let row = crate::legs::Outcome {
+                    let row = crate::history::Outcome {
                         datum: entry.datum.0.clone(),
                         test: test.clone(),
                         fails: entry.verdict == CacheResultEntryVerdict::Fail,
                         at: Some(recorded_at.clone()),
                     };
-                    let _unwritable = crate::legs::append_outcomes(root, &[row]);
+                    let _unwritable = crate::history::append_outcomes(root, &[row]);
                 }
             }
             Err(reject) => rejected.push(CacheRecordResultRejectedItem {
@@ -987,7 +987,7 @@ fn open_for(
 ///
 /// Two fields answer empty at this wave and that is the honest answer, not a
 /// gap: `anchors` because nothing stores anchors yet, and `churn` because
-/// the leg log that would count edits does not exist until a later wave.
+/// the edit log that would count edits does not exist until a later wave.
 ///
 /// # Errors
 /// [`chart_provider::Error::NoSnapshot`] when the store has never been
@@ -1160,7 +1160,7 @@ fn incident_edges(
                     src: grid_wire::Datum(src.clone()),
                     relation: n.relation,
                     dst: grid_wire::Datum(dst.clone()),
-                    zoc: n.zoc,
+                    grade: n.grade,
                     via: None,
                 };
                 if in_scope.contains(&src) {
@@ -1180,8 +1180,8 @@ fn incident_edges(
     (in_edges, out_edges)
 }
 
-/// `grid.todo` — the gate verdict rendered as a worklist: what the track
-/// promised, split into made-good and pending. This is a *view* over the
+/// `grid.todo` — the gate verdict rendered as a worklist: what the plan
+/// promised, split into made good and pending. This is a *view* over the
 /// same judgment `grid.gate.check` computes (CLI plan §5) — the delta, the
 /// verdict, and this list can never disagree, because they are one engine.
 ///
@@ -1189,20 +1189,20 @@ fn incident_edges(
 /// left *now*", and now is what was last surveyed.
 ///
 /// # Errors
-/// [`chart_provider::Error::Track`] when the track id names nothing,
+/// [`chart_provider::Error::Plan`] when the plan id names nothing,
 /// [`chart_provider::Error::NoSnapshot`] when nothing has been surveyed, and
 /// the usual provider errors for a delta that cannot be computed.
 pub fn todo(
     params: &TodoParams,
     root: &std::path::Path,
 ) -> Result<TodoResult, chart_provider::Error> {
-    let track = crate::plan::load(&params.track.0).map_err(chart_provider::Error::Track)?;
-    let track = standing::fold(
-        &track,
+    let plan = crate::plan::load(&params.plan.0).map_err(chart_provider::Error::Plan)?;
+    let plan = standing::fold(
+        &plan,
         standing::load(root).map_err(chart_provider::Error::Config)?,
     );
     let mut chart = Chart::new(root);
-    chart.ensure(&track.base)?;
+    chart.ensure(&plan.base)?;
     let head = match &params.head {
         Some(head) => head.clone(),
         None => SnapshotOrRev::Snapshot {
@@ -1215,9 +1215,9 @@ pub fn todo(
         chart.ensure(&head)?;
     }
     let provider = ChartDelta::open(root)?;
-    let made_good = provider.made_good(&track.base, &head)?;
-    let verdict = grid_xte::verdict(&track, &made_good, &provider);
-    let (defs_done, defs_pending) = grid_xte::def_progress(&track, &made_good);
+    let diff = provider.diff(&plan.base, &head)?;
+    let verdict = grid_xte::verdict(&plan, &diff, &provider);
+    let (defs_done, defs_pending) = grid_xte::def_progress(&plan, &diff);
     // A test is done when its comparison came back ok; anything else —
     // failed, skipped, never run — is still work.
     let mut tests_done = Vec::new();
@@ -1232,9 +1232,9 @@ pub fn todo(
 
     let done = defs_done.len() + verdict.matched.len() + tests_done.len();
     let total =
-        track.delta.defs.len() + track.delta.edges.len() + track.tests.as_ref().map_or(0, Vec::len);
+        plan.delta.defs.len() + plan.delta.edges.len() + plan.tests.as_ref().map_or(0, Vec::len);
     Ok(TodoResult {
-        track_id: grid_wire::TrackId(track.track_id.clone()),
+        plan_id: grid_wire::PlanId(plan.plan_id.clone()),
         defs_done,
         defs_pending,
         edges_done: verdict.matched,
@@ -1272,7 +1272,7 @@ pub fn uses(
                 continue;
             };
             for n in segment.in_edges(ord) {
-                if n.zoc != grid_wire::Zoc::Proven {
+                if n.grade != grid_wire::Grade::Proven {
                     continue;
                 }
                 let Some(src) = segment.datum(n.other) else {
@@ -1282,7 +1282,7 @@ pub fn uses(
                     src: grid_wire::Datum(src.to_string()),
                     relation: n.relation,
                     dst: def.datum.clone(),
-                    zoc: n.zoc,
+                    grade: n.grade,
                     via: None,
                 });
             }
@@ -1292,73 +1292,73 @@ pub fn uses(
     Ok((defs, edges))
 }
 
-/// `grid.wake.ingest` — resolve a test-run wake against the live chart,
+/// `grid.trace.ingest` — resolve a test-run trace against the live chart,
 /// retain it, and report what it meant.
 ///
 /// Resolution is the `grid.resolve` rule (unique dotted-suffix), so the name
-/// a user can resolve is the name a wake can. What cannot resolve is
+/// a user can resolve is the name a trace can. What cannot resolve is
 /// returned, never dropped (C15): an observed edge always names two datums
 /// that could be pointed at.
 ///
 /// # Errors
-/// Returns a message when the chart store or the wake log cannot be read or
+/// Returns a message when the chart store or the trace log cannot be read or
 /// written. Ingesting into an unsurveyed repo is an error even for an
-/// all-datum wake: symbol resolution must never silently see an empty chart.
-pub fn wake_ingest(
-    params: &WakeIngestParams,
+/// all-datum trace: symbol resolution must never silently see an empty chart.
+pub fn trace_ingest(
+    params: &TraceIngestParams,
     root: &std::path::Path,
-) -> Result<WakeIngestResult, String> {
+) -> Result<TraceIngestResult, String> {
     let epoch = epoch(root)?;
-    let ingested = grid_wake::ingest(epoch.segments(), &params.wake);
-    let store = grid_wake::Store::open(wake_dir(root)).map_err(|e| e.to_string())?;
+    let ingested = grid_wake::ingest(epoch.segments(), &params.trace);
+    let store = grid_wake::Store::open(trace_dir(root)).map_err(|e| e.to_string())?;
     store
-        .put(&params.wake, &ingested)
+        .put(&params.trace, &ingested)
         .map_err(|e| e.to_string())?;
     #[allow(clippy::cast_possible_truncation)]
     let observed_edges = ingested.edges.len() as u64;
-    Ok(WakeIngestResult {
+    Ok(TraceIngestResult {
         observed_edges,
         resolved: ingested.resolved,
         unresolved_symbols: ingested.unresolved_symbols,
     })
 }
-/// Why `grid.wake.diff` could not answer.
+/// Why `grid.trace.diff` could not answer.
 #[derive(Debug)]
-pub enum WakeDiffError {
-    /// A named wake was never ingested under that id.
-    UnknownWake(String),
+pub enum TraceDiffError {
+    /// A named trace was never ingested under that id.
+    UnknownTrace(String),
     /// The retention log could not be read or is corrupt — suspect, the way a
     /// corrupt segment is, not silently empty.
     Store(String),
 }
-impl std::fmt::Display for WakeDiffError {
+impl std::fmt::Display for TraceDiffError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnknownWake(id) => write!(f, "unknown wake id {id}: ingest it first"),
+            Self::UnknownTrace(id) => write!(f, "unknown trace id {id}: ingest it first"),
             Self::Store(msg) => f.write_str(msg),
         }
     }
 }
-/// `grid.wake.diff` — two retained traces compared at call granularity.
+/// `grid.trace.diff` — two retained traces compared at call granularity.
 ///
 /// # Errors
-/// [`WakeDiffError::UnknownWake`] when either id names nothing retained;
-/// [`WakeDiffError::Store`] when the log itself fails.
-pub fn wake_diff(
-    params: &WakeDiffParams,
+/// [`TraceDiffError::UnknownTrace`] when either id names nothing retained;
+/// [`TraceDiffError::Store`] when the log itself fails.
+pub fn trace_diff(
+    params: &TraceDiffParams,
     root: &std::path::Path,
-) -> Result<grid_wire::WakeDiff, WakeDiffError> {
-    let store =
-        grid_wake::Store::open(wake_dir(root)).map_err(|e| WakeDiffError::Store(e.to_string()))?;
-    let load = |id: &grid_wire::WakeId| {
+) -> Result<grid_wire::TraceDiff, TraceDiffError> {
+    let store = grid_wake::Store::open(trace_dir(root))
+        .map_err(|e| TraceDiffError::Store(e.to_string()))?;
+    let load = |id: &grid_wire::TraceId| {
         store
             .get(&id.0)
-            .map_err(|e| WakeDiffError::Store(e.to_string()))?
-            .ok_or_else(|| WakeDiffError::UnknownWake(id.0.clone()))
+            .map_err(|e| TraceDiffError::Store(e.to_string()))?
+            .ok_or_else(|| TraceDiffError::UnknownTrace(id.0.clone()))
     };
     let (green, red) = (load(&params.green)?, load(&params.red)?);
     Ok(grid_wake::diff(&green, &red))
 }
-pub(crate) fn wake_dir(root: &std::path::Path) -> std::path::PathBuf {
+pub(crate) fn trace_dir(root: &std::path::Path) -> std::path::PathBuf {
     root.join(".grid/wakes")
 }

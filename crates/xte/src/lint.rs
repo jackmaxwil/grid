@@ -1,12 +1,12 @@
-//! `track.lint` — pure validation of a promise before code exists.
+//! `plan.lint` — pure validation of a promise before code exists.
 //!
-//! No survey, no snapshot, no chart: everything checkable about a track from
-//! the track alone plus the standing invariants it carries. Impossible plans
+//! No survey, no snapshot, no chart: everything checkable about a plan from
+//! the plan alone plus the standing invariants it carries. Impossible plans
 //! die at plan time (CLI plan §5, Planning).
 
 use grid_wire::{
-    EdgeRule, Invariant, InvariantRule, LintFinding, LintResult, Track, TrackDefPromise,
-    TrackEdgePromise, TrackEdgePromiseAction,
+    EdgeRule, Invariant, InvariantRule, LintFinding, LintResult, Plan, PlanDefPromise,
+    PlanEdgePromise, PlanEdgePromiseAction,
 };
 
 use crate::pattern;
@@ -14,11 +14,11 @@ use crate::pattern;
 /// The canonical rendering of an edge promise — the same shape the porcelain
 /// `edge` record uses, so a lint finding is greppable next to a gate verdict.
 #[must_use]
-pub fn render_edge(p: &TrackEdgePromise) -> String {
+pub fn render_edge(p: &PlanEdgePromise) -> String {
     let action = match p.action {
-        TrackEdgePromiseAction::Add => "add",
-        TrackEdgePromiseAction::Remove => "remove",
-        TrackEdgePromiseAction::Move => "move",
+        PlanEdgePromiseAction::Add => "add",
+        PlanEdgePromiseAction::Remove => "remove",
+        PlanEdgePromiseAction::Move => "move",
     };
     let relation = relation_name(p.relation);
     format!("{action} {} -{relation}-> {}", p.src.0, p.dst.0)
@@ -44,8 +44,8 @@ pub fn relation_name(r: grid_wire::Relation) -> &'static str {
     }
 }
 
-fn render_def(p: &TrackDefPromise) -> String {
-    use grid_wire::TrackDefPromiseAction as A;
+fn render_def(p: &PlanDefPromise) -> String {
+    use grid_wire::PlanDefPromiseAction as A;
     let action = match p.action {
         A::Add => "add",
         A::Remove => "remove",
@@ -55,21 +55,21 @@ fn render_def(p: &TrackDefPromise) -> String {
     format!("{action} {}", p.callsign.0)
 }
 
-/// Validate a track. Errors make the track unusable; warnings are smells the
+/// Validate a plan. Errors make the plan unusable; warnings are smells the
 /// planner should see but which do not block.
 #[must_use]
-pub fn lint(track: &Track) -> LintResult {
+pub fn lint(plan: &Plan) -> LintResult {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
-    if !valid_track_id(&track.track_id) {
+    if !valid_track_id(&plan.plan_id) {
         errors.push(LintFinding {
-            promise: track.track_id.clone(),
-            reason: "track_id must match ^track:[A-Za-z0-9._-]{1,64}$".into(),
+            promise: plan.plan_id.clone(),
+            reason: "plan_id must match ^plan:[A-Za-z0-9._-]{1,64}$".into(),
         });
     }
 
-    for p in &track.delta.defs {
+    for p in &plan.delta.defs {
         if let Some(reason) = bad_pattern(&p.callsign.0) {
             errors.push(LintFinding {
                 promise: render_def(p),
@@ -78,8 +78,8 @@ pub fn lint(track: &Track) -> LintResult {
         }
     }
 
-    let invariants = track.invariants.as_deref().unwrap_or_default();
-    for p in &track.delta.edges {
+    let invariants = plan.invariants.as_deref().unwrap_or_default();
+    for p in &plan.delta.edges {
         let rendered = render_edge(p);
         for side in [&p.src.0, &p.dst.0] {
             if let Some(reason) = bad_pattern(side) {
@@ -91,7 +91,7 @@ pub fn lint(track: &Track) -> LintResult {
         }
         // A promise that would build an edge a standing invariant forbids is
         // an impossible plan: the gate it must pass forbids what it promises.
-        if p.action == TrackEdgePromiseAction::Add {
+        if p.action == PlanEdgePromiseAction::Add {
             for inv in invariants {
                 if let InvariantRule::ForbidEdge { forbid_edge } = &inv.rule {
                     if subsumes(forbid_edge, p) {
@@ -106,10 +106,10 @@ pub fn lint(track: &Track) -> LintResult {
     }
 
     warnings.extend(duplicate_ids(invariants));
-    if track.delta.defs.is_empty() && track.delta.edges.is_empty() {
+    if plan.delta.defs.is_empty() && plan.delta.edges.is_empty() {
         warnings.push(LintFinding {
-            promise: track.track_id.clone(),
-            reason: "track promises nothing: every gate against it passes vacuously".into(),
+            promise: plan.plan_id.clone(),
+            reason: "plan promises nothing: every gate against it passes vacuously".into(),
         });
     }
 
@@ -134,14 +134,14 @@ fn duplicate_ids(invariants: &[Invariant]) -> Vec<LintFinding> {
 /// Does a forbidding rule cover everything this promise could produce? The
 /// promise is impossible only if *every* callsign it could name is forbidden,
 /// which is decided by pattern subsumption, not by matching a sample.
-fn subsumes(rule: &EdgeRule, promise: &TrackEdgePromise) -> bool {
+fn subsumes(rule: &EdgeRule, promise: &PlanEdgePromise) -> bool {
     rule.relation.is_none_or(|r| r == promise.relation)
         && pattern::subsumes(&rule.src.0, &promise.src.0)
         && pattern::subsumes(&rule.dst.0, &promise.dst.0)
 }
 
 fn valid_track_id(id: &str) -> bool {
-    let Some(rest) = id.strip_prefix("track:") else {
+    let Some(rest) = id.strip_prefix("plan:") else {
         return false;
     };
     (1..=64).contains(&rest.len())

@@ -1,14 +1,14 @@
 //! Observed-edge decay: an edge is an observation only while the code it
 //! observed still exists.
 //!
-//! A wake taken at snapshot S asserts coupling *as the code was at S*. Ask
+//! A trace taken at snapshot S asserts coupling *as the code was at S*. Ask
 //! about a chart where either endpoint has since been edited and the edge is
 //! a claim about code that is not there. Left graded `observed` it would rot
 //! into false positives within weeks — which is why the grade is recomputed
 //! per question and the retained log is never rewritten.
 use grid_chart::{build, DatumId, Def, DefFacts, Segment};
 use grid_wake::{grade, ObservedEdge, Store, STALE_TRACE};
-use grid_wire::{Wake, WakeEndpoint, WakeObservation, Zoc};
+use grid_wire::{Grade, Trace, TraceEndpoint, TraceObservation};
 
 fn def(callsign: &str, fill: u8) -> Def {
     Def {
@@ -43,7 +43,7 @@ fn edge(from: u8, to: u8) -> ObservedEdge {
 fn an_edge_whose_endpoints_both_still_exist_stays_observed() {
     let segments = [chart(&[def("m.caller", 1), def("m.callee", 2)])];
     let graded = grade(&segments, edge(1, 2));
-    assert_eq!(graded.zoc, Zoc::Observed);
+    assert_eq!(graded.grade, Grade::Observed);
     assert_eq!(graded.reason, None);
     assert_eq!(graded.edge, edge(1, 2), "grading never rewrites the edge");
 }
@@ -54,55 +54,55 @@ fn an_edited_endpoint_demotes_the_edge_with_a_named_reason() {
     // definition this chart does not hold.
     let segments = [chart(&[def("m.caller", 1), def("m.callee", 9)])];
     let graded = grade(&segments, edge(1, 2));
-    assert_eq!(graded.zoc, Zoc::Heuristic);
+    assert_eq!(graded.grade, Grade::Heuristic);
     assert_eq!(graded.reason, Some(STALE_TRACE));
 
     // Symmetrically for the caller: either endpoint is enough.
     let segments = [chart(&[def("m.caller", 9), def("m.callee", 2)])];
-    assert_eq!(grade(&segments, edge(1, 2)).zoc, Zoc::Heuristic);
+    assert_eq!(grade(&segments, edge(1, 2)).grade, Grade::Heuristic);
 }
 
-/// Conservatism: an endpoint no chart ever held — the "old wake with unknown
-/// datums" case, and equally a wake that named a raw datum handle out of
+/// Conservatism: an endpoint no chart ever held — the "old trace with unknown
+/// datums" case, and equally a trace that named a raw datum handle out of
 /// nowhere — is demoted, never trusted. An endpoint that cannot be verified
 /// is not verified.
 #[test]
 fn an_unverifiable_endpoint_is_demoted_not_trusted() {
     let segments = [chart(&[def("m.caller", 1)])];
     let graded = grade(&segments, edge(1, 200));
-    assert_eq!(graded.zoc, Zoc::Heuristic);
+    assert_eq!(graded.grade, Grade::Heuristic);
     assert_eq!(graded.reason, Some(STALE_TRACE));
 
     // And with nothing in the chart at all, which is what an empty store
     // looks like: still demoted, never silently observed.
     let empty: [Segment<Vec<u8>>; 0] = [];
-    assert_eq!(grade(&empty, edge(1, 2)).zoc, Zoc::Heuristic);
+    assert_eq!(grade(&empty, edge(1, 2)).grade, Grade::Heuristic);
 }
 
 /// Decay is a property of the question, not of the log: the same edge is
 /// `observed` against one chart and `heuristic` against another, and the
-/// retained wake is untouched either way.
+/// retained trace is untouched either way.
 #[test]
 fn the_same_edge_grades_differently_against_two_charts() {
     let before = [chart(&[def("m.caller", 1), def("m.callee", 2)])];
     let after = [chart(&[def("m.caller", 1), def("m.callee", 3)])];
-    assert_eq!(grade(&before, edge(1, 2)).zoc, Zoc::Observed);
-    assert_eq!(grade(&after, edge(1, 2)).zoc, Zoc::Heuristic);
+    assert_eq!(grade(&before, edge(1, 2)).grade, Grade::Observed);
+    assert_eq!(grade(&after, edge(1, 2)).grade, Grade::Heuristic);
 }
 
-fn wake(id: &str, hops: &[(&str, &str)]) -> Wake {
-    Wake {
-        wake_id: id.to_owned(),
+fn trace(id: &str, hops: &[(&str, &str)]) -> Trace {
+    Trace {
+        trace_id: id.to_owned(),
         git_rev: grid_wire::GitRev("rev".into()),
         command: None,
         started_at: None,
         observations: hops
             .iter()
-            .map(|(from, to)| WakeObservation {
-                caller: WakeEndpoint::Symbol {
+            .map(|(from, to)| TraceObservation {
+                caller: TraceEndpoint::Symbol {
                     symbol: (*from).to_string(),
                 },
-                callee: WakeEndpoint::Symbol {
+                callee: TraceEndpoint::Symbol {
                     symbol: (*to).to_string(),
                 },
                 count: None,
@@ -117,20 +117,24 @@ fn retained_wakes_come_back_in_a_deterministic_order() {
     let store = Store::open(dir.path()).expect("store");
     let segments = [chart(&[def("m.caller", 1), def("m.callee", 2)])];
 
-    for id in ["wake:b", "wake:a"] {
-        let w = wake(id, &[("m.caller", "m.callee")]);
+    for id in ["trace:b", "trace:a"] {
+        let w = trace(id, &[("m.caller", "m.callee")]);
         let ingested = grid_wake::ingest(&segments, &w);
         assert_eq!(ingested.resolved, 1, "the fixture's hop must resolve");
         store.put(&w, &ingested).expect("retain");
     }
 
     let retained = store.retained().expect("read back");
-    let ids: Vec<&str> = retained.iter().map(|s| s.wake.wake_id.as_str()).collect();
-    assert_eq!(ids, ["wake:a", "wake:b"], "sorted by id, not by directory");
+    let ids: Vec<&str> = retained.iter().map(|s| s.trace.trace_id.as_str()).collect();
+    assert_eq!(
+        ids,
+        ["trace:a", "trace:b"],
+        "sorted by id, not by directory"
+    );
     assert_eq!(retained[0].edges(), vec![edge(1, 2)]);
 }
 
-/// A store nobody has written to holds no wakes; a store whose log does not
+/// A store nobody has written to holds no traces; a store whose log does not
 /// parse is *suspect*, not empty. Answering "no observations" for a broken
 /// store would be a fabricated all-clear.
 #[test]

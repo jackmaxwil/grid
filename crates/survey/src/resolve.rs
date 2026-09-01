@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 
 use grid_datum::{Import, RefKind, Reference};
-use grid_wire::{Relation, Zoc};
+use grid_wire::{Grade, Relation};
 
 use crate::index::{DefIndex, Symbol};
 
@@ -28,9 +28,9 @@ pub struct ResolvedEdge {
     pub dst: [u8; 32],
     /// What kind of relationship the reference position implies.
     pub relation: Relation,
-    /// Always [`Zoc::Proven`] at this wave: an unproven resolution is not
+    /// Always [`Grade::Proven`] at this wave: an unproven resolution is not
     /// recorded at all, so there is no weaker grade to report.
-    pub zoc: Zoc,
+    pub grade: Grade,
 }
 
 /// Import bindings in force for one module, layered by scope.
@@ -117,7 +117,7 @@ pub fn resolve(index: &DefIndex, module: &str, imports: &[Import], refs: &[Refer
             src,
             dst: target.datum,
             relation: relation_of(r.kind, target.is_class),
-            zoc: Zoc::Proven,
+            grade: Grade::Proven,
         });
     }
     out

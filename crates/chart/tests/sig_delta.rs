@@ -8,7 +8,7 @@
 //! every definition in that snapshot.
 use std::error::Error;
 
-use grid_chart::{build, made_good, DatumId, Def, DefFacts, Ordinal, Segment};
+use grid_chart::{build, diff, DatumId, Def, DefFacts, Ordinal, Segment};
 use grid_wire::{DefChangeAction, SnapshotId};
 
 fn def(callsign: &str, datum: u8, sig: u8) -> Def {
@@ -43,7 +43,7 @@ fn changes<B: AsRef<[u8]>>(
     base: &[Segment<B>],
     head: &[Segment<B>],
 ) -> Vec<(DefChangeAction, String, Option<bool>)> {
-    made_good(
+    diff(
         SnapshotId("snap:b3:base".into()),
         base,
         SnapshotId("snap:b3:head".into()),
@@ -122,7 +122,7 @@ fn a_pre_epoch3_side_answers_unknown_not_unchanged() -> Result<(), Box<dyn Error
     assert_eq!(old.sig(ord), None, "epoch 2 carries no sig column");
 
     let head = segment(&[def(&callsign, 0xAB, 0xCD)])?;
-    let rows: Vec<_> = made_good(
+    let rows: Vec<_> = diff(
         SnapshotId("snap:b3:base".into()),
         &[old],
         SnapshotId("snap:b3:head".into()),

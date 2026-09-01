@@ -9,7 +9,7 @@ use grid_chart::{build, DatumId, Def, Edge, Segment};
 use grid_leadline::fuel::Budget;
 use grid_leadline::graph::{Direction, Ordinal};
 use grid_leadline::walk::{walk, Filter, Status, Walk};
-use grid_wire::{Lang, Relation, Zoc};
+use grid_wire::{Grade, Lang, Relation};
 use proptest::prelude::*;
 
 fn datum(seed: u8) -> DatumId {
@@ -25,12 +25,12 @@ fn def(seed: u8) -> Def {
     }
 }
 
-fn edge(from: u8, to: u8, zoc: Zoc) -> Edge {
+fn edge(from: u8, to: u8, grade: Grade) -> Edge {
     Edge {
         src: datum(from),
         dst: datum(to),
         relation: Relation::Calls,
-        zoc,
+        grade,
     }
 }
 
@@ -47,7 +47,7 @@ fn fuel(hops: u64, nodes: u64) -> Budget {
 fn chain(n: u8) -> Segment<Vec<u8>> {
     let defs: Vec<Def> = (0..n).map(def).collect();
     let edges: Vec<Edge> = (0..n.saturating_sub(1))
-        .map(|i| edge(i, i + 1, Zoc::Proven))
+        .map(|i| edge(i, i + 1, Grade::Proven))
         .collect();
     Segment::parse(build(&defs, &edges).expect("image")).expect("parse")
 }
@@ -57,10 +57,10 @@ fn chain(n: u8) -> Segment<Vec<u8>> {
 fn wide_at_three() -> Segment<Vec<u8>> {
     // 0 -> 1 -> 2 -> {3,4,5,6} -> each to a leaf of its own.
     let defs: Vec<Def> = (0..=10).map(def).collect();
-    let mut edges = vec![edge(0, 1, Zoc::Proven), edge(1, 2, Zoc::Proven)];
+    let mut edges = vec![edge(0, 1, Grade::Proven), edge(1, 2, Grade::Proven)];
     for i in 3..=6u8 {
-        edges.push(edge(2, i, Zoc::Proven));
-        edges.push(edge(i, i + 4, Zoc::Proven));
+        edges.push(edge(2, i, Grade::Proven));
+        edges.push(edge(i, i + 4, Grade::Proven));
     }
     Segment::parse(build(&defs, &edges).expect("image")).expect("parse")
 }
@@ -137,15 +137,15 @@ fn a_walk_that_never_expanded_a_layer_certifies_nothing() {
 fn the_certificate_is_scoped_to_the_query_filter() {
     let defs: Vec<Def> = (0..4).map(def).collect();
     let edges = vec![
-        edge(0, 1, Zoc::Proven),
+        edge(0, 1, Grade::Proven),
         // A weaker hop the filter below will refuse.
-        edge(1, 2, Zoc::Heuristic),
-        edge(2, 3, Zoc::Proven),
+        edge(1, 2, Grade::Heuristic),
+        edge(2, 3, Grade::Proven),
     ];
     let seg = Segment::parse(build(&defs, &edges).expect("image")).expect("parse");
     let proven_only = Filter {
         relations: Vec::new(),
-        at_or_above: Some(Zoc::Proven),
+        at_or_above: Some(Grade::Proven),
     };
     let w = sweep(&seg, fuel(100, 100), &proven_only);
     assert_eq!(w.status, Status::Complete);
@@ -166,17 +166,17 @@ proptest! {
         hops in 0u64..6,
         nodes in 0u64..12,
         extra in proptest::collection::vec((0u8..12, 0u8..12), 0..12),
-        floor in prop::option::of(prop::sample::select(vec![Zoc::Proven, Zoc::Observed])),
+        floor in prop::option::of(prop::sample::select(vec![Grade::Proven, Grade::Observed])),
     ) {
         let defs: Vec<Def> = (0..n).map(def).collect();
         let mut edges: Vec<Edge> = (0..n.saturating_sub(1))
-            .map(|i| edge(i, i + 1, Zoc::Proven))
+            .map(|i| edge(i, i + 1, Grade::Proven))
             .collect();
         for (a, b) in extra {
             if a < n && b < n {
                 // A mix of grades, so the filter has something to refuse.
-                let zoc = if (a + b) % 2 == 0 { Zoc::Proven } else { Zoc::Observed };
-                edges.push(edge(a, b, zoc));
+                let grade = if (a + b) % 2 == 0 { Grade::Proven } else { Grade::Observed };
+                edges.push(edge(a, b, grade));
             }
         }
         let seg = Segment::parse(build(&defs, &edges).expect("image")).expect("parse");

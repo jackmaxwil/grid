@@ -29,7 +29,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use grid_chart::Segment;
-use grid_wire::{DriftDelta, DriftSuspect, SnapshotId, SnapshotOrRev, Track, Zoc};
+use grid_wire::{DriftDelta, DriftSuspect, Grade, Plan, SnapshotId, SnapshotOrRev};
 
 use crate::chart_provider::{self, ChartDelta};
 use crate::drift;
@@ -54,8 +54,8 @@ type Key = (String, String, u8);
 pub struct Session {
     root: std::path::PathBuf,
     base: SnapshotOrRev,
-    floor: Zoc,
-    track: Option<Track>,
+    floor: Grade,
+    plan: Option<Plan>,
     /// The per-file survey cache. This is what makes a file event cost one
     /// file's parse: everything else comes back from content hashes.
     cache: grid_survey::Cache,
@@ -98,8 +98,8 @@ impl Session {
     pub fn open(
         root: &std::path::Path,
         base: SnapshotOrRev,
-        floor: Zoc,
-        track: Option<Track>,
+        floor: Grade,
+        plan: Option<Plan>,
     ) -> Result<Self, chart_provider::Error> {
         // Resolve now, so a session cannot be opened against a base that is
         // not there and discover it one keystroke later.
@@ -108,7 +108,7 @@ impl Session {
             root: root.to_path_buf(),
             base,
             floor,
-            track,
+            plan,
             cache: grid_survey::Cache::new(),
             sources: None,
             changed: BTreeMap::new(),
@@ -174,7 +174,7 @@ impl Session {
         })?;
         let head = [head];
 
-        let made_good = grid_chart::made_good(
+        let diff = grid_chart::diff(
             SnapshotId(base_epoch.snapshot_id().as_str().to_owned()),
             base_epoch.segments(),
             // The worktree is not a published snapshot and must not claim to
@@ -182,12 +182,12 @@ impl Session {
             SnapshotId("snap:worktree".to_owned()),
             &head,
         );
-        let touched_now: BTreeSet<String> = drift::touched(&made_good)
+        let touched_now: BTreeSet<String> = drift::touched(&diff)
             .into_iter()
             .map(str::to_owned)
             .collect();
         let changed_now: BTreeMap<String, drift::Changed> =
-            drift::changed_set_of(&made_good, base_epoch.segments(), &head)
+            drift::changed_set_of(&diff, base_epoch.segments(), &head)
                 .into_iter()
                 .map(|c| (c.callsign.clone(), c))
                 .collect();
@@ -208,7 +208,7 @@ impl Session {
         let untouched_again = self.touched.difference(&touched_now).next().is_some();
 
         let recomputed = untouched_again || moved.len().saturating_add(newly_touched.len()) > BURST;
-        let observed = if drift::rank(self.floor) >= drift::rank(Zoc::Observed) {
+        let observed = if drift::rank(self.floor) >= drift::rank(Grade::Observed) {
             drift::observed_inbound(&self.root, base_epoch.segments())?
         } else {
             HashMap::new()
@@ -239,7 +239,7 @@ impl Session {
                 change,
                 found,
                 &touched_refs,
-                self.track.as_ref(),
+                self.plan.as_ref(),
                 &mut rebuilt,
             );
         }
@@ -416,7 +416,7 @@ mod tests {
     //! properties pin the two things a signed stream promises and a list
     //! never can.
     use super::{Emitted, Session};
-    use grid_wire::{DriftDelta, DriftSuspect, GitRev, SnapshotOrRev, Zoc};
+    use grid_wire::{DriftDelta, DriftSuspect, GitRev, Grade, SnapshotOrRev};
     use std::path::Path;
     use std::process::Command;
 
@@ -477,7 +477,7 @@ mod tests {
     }
 
     fn session(dir: &Path, base: &SnapshotOrRev) -> Session {
-        Session::open(dir, base.clone(), Zoc::Observed, None).expect("open a session")
+        Session::open(dir, base.clone(), Grade::Observed, None).expect("open a session")
     }
 
     /// The suspect set a fresh `grid drift` reports for the same question —
@@ -492,8 +492,8 @@ mod tests {
             &grid_wire::methods::DriftParams {
                 base: base.clone(),
                 head,
-                floor: Some(Zoc::Observed),
-                track: None,
+                floor: Some(Grade::Observed),
+                plan: None,
                 tests: None,
             },
             dir,

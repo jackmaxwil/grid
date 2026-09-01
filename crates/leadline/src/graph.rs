@@ -1,13 +1,13 @@
 //! The seam between the walk and the chart.
 //!
-//! Leadline does no I/O and knows nothing about segment files: it walks
+//! Walk does no I/O and knows nothing about segment files: it walks
 //! whatever answers [`Graph`]. The blanket impl over [`grid_chart::Segment`]
 //! is the only one that ships, but tests build tiny graphs by hand and the
 //! Kani harnesses drive a symbolic one, which is what keeps the termination
 //! proof about the walk rather than about the store.
 
 pub use grid_chart::{DatumId, Neighbour, Ordinal};
-use grid_wire::{Lang, Relation, Zoc};
+use grid_wire::{Grade, Lang, Relation};
 
 /// Which way a hop is allowed to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,9 +20,9 @@ pub enum Direction {
     Both,
 }
 
-impl From<grid_wire::LeadlineQueryDirection> for Direction {
-    fn from(d: grid_wire::LeadlineQueryDirection) -> Self {
-        use grid_wire::LeadlineQueryDirection as D;
+impl From<grid_wire::WalkQueryDirection> for Direction {
+    fn from(d: grid_wire::WalkQueryDirection) -> Self {
+        use grid_wire::WalkQueryDirection as D;
         match d {
             D::Out => Self::Out,
             D::In => Self::In,
@@ -43,7 +43,7 @@ pub struct Step {
     /// Typed edge kind.
     pub relation: Relation,
     /// Evidence grade.
-    pub zoc: Zoc,
+    pub grade: Grade,
     /// `true` when the stored edge runs from the current node to `other`.
     pub forward: bool,
     /// Index of the modeled bridge this hop came from, if it is not a hop the
@@ -81,7 +81,7 @@ pub trait Graph {
             self.out_edges(ord).into_iter().map(|n| Step {
                 other: n.other,
                 relation: n.relation,
-                zoc: n.zoc,
+                grade: n.grade,
                 forward: true,
                 bridge: None,
             })
@@ -90,7 +90,7 @@ pub trait Graph {
             self.in_edges(ord).into_iter().map(|n| Step {
                 other: n.other,
                 relation: n.relation,
-                zoc: n.zoc,
+                grade: n.grade,
                 forward: false,
                 bridge: None,
             })

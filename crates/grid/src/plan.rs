@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use grid_wire::Track;
+use grid_wire::Plan;
 
 use crate::{exit, hint, porcelain};
 
@@ -21,7 +21,7 @@ const STORE: &str = ".grid/plans";
 ///
 /// # Errors
 /// Returns a human-readable message when the plan cannot be read or parsed.
-pub fn load(spec: &str) -> Result<Track, String> {
+pub fn load(spec: &str) -> Result<Plan, String> {
     let direct = PathBuf::from(spec);
     let path = if direct.is_file() {
         direct
@@ -37,14 +37,14 @@ pub fn load(spec: &str) -> Result<Track, String> {
     parse(&path)
 }
 
-fn parse(path: &Path) -> Result<Track, String> {
+fn parse(path: &Path) -> Result<Plan, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     serde_json::from_str(&text).map_err(|e| format!("{} is not a valid plan: {e}", path.display()))
 }
 
 fn store_path(spec: &str) -> PathBuf {
-    let id = spec.strip_prefix("track:").unwrap_or(spec);
+    let id = spec.strip_prefix("plan:").unwrap_or(spec);
     Path::new(STORE).join(format!("{id}.json"))
 }
 
@@ -68,27 +68,27 @@ fn new(args: &[&str]) -> u8 {
         hint("usage: grid plan new <id>");
         return exit::BAD_INPUT;
     };
-    let track_id = if id.starts_with("track:") {
+    let plan_id = if id.starts_with("plan:") {
         (*id).to_string()
     } else {
-        format!("track:{id}")
+        format!("plan:{id}")
     };
-    let path = store_path(&track_id);
+    let path = store_path(&plan_id);
     if path.exists() {
         hint(&format!(
-            "grid: {} already exists\nhint: `grid plan show {track_id}` reads it",
+            "grid: {} already exists\nhint: `grid plan show {plan_id}` reads it",
             path.display()
         ));
         return exit::BAD_INPUT;
     }
-    let track = Track {
-        track_id: track_id.clone(),
+    let plan = Plan {
+        plan_id: plan_id.clone(),
         pr: None,
         plan_rev: None,
         base: grid_wire::SnapshotOrRev::GitRev {
             git_rev: grid_wire::GitRev("HEAD".into()),
         },
-        delta: grid_wire::TrackDelta {
+        delta: grid_wire::PlanDelta {
             defs: Vec::new(),
             edges: Vec::new(),
         },
@@ -102,7 +102,7 @@ fn new(args: &[&str]) -> u8 {
             return exit::INTERNAL;
         }
     }
-    let Ok(body) = serde_json::to_string_pretty(&track) else {
+    let Ok(body) = serde_json::to_string_pretty(&plan) else {
         hint("grid: cannot serialize plan");
         return exit::INTERNAL;
     };
@@ -110,7 +110,7 @@ fn new(args: &[&str]) -> u8 {
         hint(&format!("grid: cannot write {}: {e}", path.display()));
         return exit::INTERNAL;
     }
-    println!("todo     {track_id}  {}", path.display());
+    println!("todo     {plan_id}  {}", path.display());
     hint("hint: add promises to delta.edges, then `grid plan lint` before you write code");
     exit::OK
 }
@@ -120,7 +120,7 @@ fn show(args: &[&str], json: bool) -> u8 {
         hint("usage: grid plan show <id>");
         return exit::BAD_INPUT;
     };
-    let track = match load(spec) {
+    let plan = match load(spec) {
         Ok(t) => t,
         Err(e) => {
             hint(&format!("grid: {e}"));
@@ -128,9 +128,9 @@ fn show(args: &[&str], json: bool) -> u8 {
         }
     };
     if json {
-        return crate::emit_json(&track);
+        return crate::emit_json(&plan);
     }
-    print!("{}", porcelain::plan(&track));
+    print!("{}", porcelain::plan(&plan));
     exit::OK
 }
 
@@ -141,23 +141,21 @@ fn lint(args: &[&str], json: bool) -> u8 {
         hint("usage: grid plan lint <id>");
         return exit::BAD_INPUT;
     };
-    let track = match load(spec) {
+    let plan = match load(spec) {
         Ok(t) => t,
         Err(e) => {
             hint(&format!("grid: {e}"));
             return exit::BAD_INPUT;
         }
     };
-    let result = match crate::rpc::track_lint(
-        &grid_wire::methods::TrackLintParams { track },
-        Path::new("."),
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            hint(&format!("grid: {e}"));
-            return exit::BAD_INPUT;
-        }
-    };
+    let result =
+        match crate::rpc::plan_lint(&grid_wire::methods::PlanLintParams { plan }, Path::new(".")) {
+            Ok(r) => r,
+            Err(e) => {
+                hint(&format!("grid: {e}"));
+                return exit::BAD_INPUT;
+            }
+        };
     let bad = !result.errors.is_empty();
     if json {
         let code = crate::emit_json(&result);
