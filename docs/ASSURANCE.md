@@ -38,6 +38,7 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 | C24 | a definition's `sig` moves when and only when a caller could see the change; a snapshot that predates the sig column answers *unknown*, never *unchanged* | sig.rs sig_delta.rs epochs.rs | 10+ |
 | C25 | a drift suspect is a dependent whose own datum did not move, reached by an edge at or above the query's floor; an inbound walk over budget refuses the whole answer, and every reference the survey declined is counted in the report, never silently absent | drift.rs conformance.rs | 10+ |
 | C26 | an observed edge is graded `observed` only while both its endpoints are interned in the chart asked about; any endpoint that cannot be verified demotes it to `heuristic` with reason `stale-trace`, and the retained wake is never rewritten | decay.rs drift.rs | 10+ |
+| C27 | a covenant fires only where one declared side changed and the other held, is symmetric in the two patterns, gates at `modeled` because a human declared it, and warns rather than silently passing when a pattern matches nothing at drift time | drift.rs covenant.rs | 10+ |
 
 
 ## Dependency justification

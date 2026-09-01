@@ -74,9 +74,20 @@ cargo install --path crates/grid
 ```
 
 Or copy `target/release/grid` onto PATH. Single static binary. Per-repo
-state lives in `.grid/` (gitignore it): a content-addressed segment store,
-the patch log, retained wakes, the verdict cache. All caches — safe to
-delete, rebuilt by the next survey.
+state lives in `.grid/`: a content-addressed segment store, the patch log,
+retained wakes, the verdict cache. All caches — safe to delete, rebuilt by
+the next survey — so gitignore the directory, with two exceptions:
+
+```gitignore
+.grid/
+!.grid/invariants.json
+!.grid/covenants.json
+```
+
+Those two are *declarations*, not caches. A standing invariant and a
+covenant are things a human decided about this repo; deleting them loses
+information no survey can rebuild, and they should travel with the code that
+they are about.
 
 ## Use
 

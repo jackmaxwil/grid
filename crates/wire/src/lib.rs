@@ -766,6 +766,23 @@ pub struct SuspectsRankedItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct Covenant {
+    pub a: CallsignPattern,
+    pub b: CallsignPattern,
+    pub via: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DriftWarning {
+    pub subject: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriftSuspect {
     pub dependent: DefRef,
     pub changed: DefRef,
@@ -794,6 +811,8 @@ pub struct DriftReport {
     pub head: SnapshotId,
     pub suspects: Vec<DriftSuspect>,
     pub unchecked: DriftUnchecked,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<DriftWarning>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
