@@ -866,10 +866,23 @@ fn scope(args: &[&str], json: bool) -> u8 {
                 return emit_json(&pack);
             }
             print!("{}", porcelain::scope(&pack, &namer()));
+            // The pack's horizon, said out loud. `scope` walks a fixed number
+            // of layers and spends no fuel, so it is complete to exactly that
+            // depth and to nothing beyond — a reader who cannot tell those
+            // apart cannot use a bounded answer.
+            let hops = depth.unwrap_or(DEFAULT_SCOPE_DEPTH);
+            hint(&format!(
+                "grid: scope complete through {hops} hop{} — nothing further was walked",
+                if hops == 1 { "" } else { "s" }
+            ));
             exit::OK
         }
     }
 }
+
+/// The depth `grid scope` walks when none is named. Stated here rather than
+/// only in the daemon, because the horizon banner has to name the real one.
+const DEFAULT_SCOPE_DEPTH: u64 = 0;
 
 /// `grid todo <track> [<head-rev|snap:id>]` — the gate verdict as a
 /// worklist. Always exit 0 when it answers: remaining work is a report, not

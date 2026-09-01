@@ -410,6 +410,25 @@ fn delta_answers_with_a_made_good_the_contract_accepts() {
     );
 }
 
+/// The certified radius crosses the socket: a walk's answer says how far it
+/// is *complete*, not only where it stopped.
+#[test]
+fn query_walk_reports_the_radius_it_finished() {
+    let dir = repo();
+    let daemon = Daemon::start(dir.path());
+    daemon.call("grid.survey.run", &json!({}));
+    let response = daemon.call(
+        "grid.query.walk",
+        &json!({"query": {"from": [{"callsign": "b"}], "fuel": {"max_hops": 2}}}),
+    );
+    assert!(response.get("error").is_none(), "walk errored: {response}");
+    let stats = &response["result"]["stats"];
+    assert!(
+        stats.get("complete_within").is_some(),
+        "a walk that drained certifies its bound: {stats}"
+    );
+}
+
 /// C10 for `grid.drift`: the daemon answers it over the real socket with the
 /// same computation the CLI runs, refusals included.
 #[test]

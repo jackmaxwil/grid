@@ -24,7 +24,8 @@ rows are `| \`token\` | one answer, at most three lines when printed |`.
 | `survey` | an indexing pass producing chart segments. Idempotent by construction: an unchanged tree is the same snapshot, so it cannot be run too often. |
 | `snapshot` | one published survey, identified by the hash of its own manifest (`snap:b3:...`); displayed as `@rev`. Content, not a counter. |
 | `wake` | a runtime trace from a test run: the path actually traveled. Ingested observations become `observed` edges. |
-| `leadline` | a budgeted multi-hop query walk over the chart. Running out of fuel is not an error: the walk returns `aground` with its frontier and can be resumed. |
+| `leadline` | a budgeted multi-hop query walk over the chart. Running out of fuel is not an error: the walk returns `aground` with its frontier, the radius it *finished* (`complete_within`), and can be resumed. |
+| `aground` | a walk that ran out of fuel with work left. It reports where it stopped (the frontier) *and* how far it is complete: every definition within `complete_within` hops, under that query's filter, is in the answer. A walk whose first layer did not finish certifies nothing and says so. |
 | `track` | the promised delta: what the spec said would change, before it changed. Checked against the MadeGood by the gate. |
 | `made-good` | the actual delta (`MadeGood`): what the diff between two snapshots really did, datum-space with callsign annotations. |
 | `xte` | cross-track error: the gate verdict, Track vs MadeGood. Holds when promised work is missing or unpromised work appeared. |

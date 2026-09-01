@@ -880,12 +880,13 @@
           "frontier": { "type": "array", "items": { "$ref": "#/components/schemas/Datum" }, "description": "Present iff status is 'aground': where the walk ran out of fuel. Resume by issuing a new walk from the frontier." },
           "stats": {
             "type": "object",
-            "description": "Diagnostics only; excluded from the determinism comparison surface.",
+            "description": "Diagnostics, plus one claim. visited/hops/ms are diagnostics and are excluded from the determinism comparison surface; complete_within is not a diagnostic — it is a statement about the answer, is a pure function of the graph and the query, and belongs to the comparison surface.",
             "required": ["visited", "hops", "ms"],
             "properties": {
               "visited": { "type": "integer", "minimum": 0 },
               "hops": { "type": "integer", "minimum": 0 },
-              "ms": { "type": "integer", "minimum": 0 }
+              "ms": { "type": "integer", "minimum": 0 },
+              "complete_within": { "type": "integer", "minimum": 0, "description": "Depth through which the answer is complete: every definition reachable within this many hops, under this query's relations and evidence floor, is in the result. On 'complete' it is the effective hop bound. On 'aground' it is the last layer the walk fully expanded before the budget refused; absent when even the roots' own layer did not finish, which certifies nothing and says so." }
             },
             "additionalProperties": false
           }
