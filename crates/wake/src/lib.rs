@@ -18,6 +18,16 @@
 //! no id is also a path) because `grid.wake.diff` compares two traces after
 //! the fact: same-hop-order comparison for the first divergent hop, and edge
 //! sets for what each trace has that the other lacks (C17).
+//!
+//! Retention is also why [`grade`] exists. An observed edge asserts coupling
+//! *as the code was when the trace was taken*: its endpoints are datums, and
+//! a datum is content. Ask about a chart in which either endpoint is no
+//! longer interned and the edge is a claim about code that does not exist
+//! there — still a signal, no longer an observation. [`grade`] is the one
+//! place that decides, so drift, leadline and every later consumer demote
+//! the same edges for the same reason. The stored wake is never rewritten:
+//! decay is a property of the question, not of the log, and the log stays
+//! append-only.
 use grid_chart::{DatumId, Segment};
 use grid_wire::{Datum, Edge, Wake, WakeDiff, WakeDiffFirstDivergence, WakeEndpoint, Zoc};
 use std::collections::{BTreeMap, BTreeSet};
@@ -96,6 +106,82 @@ fn suffix_matches(callsign: &str, want: &str) -> bool {
             .strip_suffix(want)
             .is_some_and(|head| head.ends_with('.'))
 }
+/// The reason a demoted observed edge carries: the trace described code that
+/// is not in the chart being asked about.
+pub const STALE_TRACE: &str = "stale-trace";
+
+/// An observed edge with the evidence it still deserves, and why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Graded {
+    /// The edge itself, unchanged — grading never rewrites what was observed.
+    pub edge: ObservedEdge,
+    /// [`Zoc::Observed`] while both endpoints are interned in the chart
+    /// asked about, [`Zoc::Heuristic`] once either is not.
+    pub zoc: Zoc,
+    /// [`STALE_TRACE`] on a demoted edge, `None` on a fresh one.
+    pub reason: Option<&'static str>,
+}
+
+/// Grade an observed edge against a chart.
+///
+/// The rule is one line and deliberately one-directional: an edge whose two
+/// endpoints are both interned in `segments` still describes code that
+/// exists there, so it stays `observed`; anything else — an endpoint edited
+/// since the trace was taken, an endpoint from a wake that named a datum no
+/// chart ever held — is demoted to `heuristic` with [`STALE_TRACE`]. There
+/// is no third answer: an endpoint that cannot be verified is not verified,
+/// and a trace grid cannot check must never gate.
+#[must_use]
+pub fn grade<B: AsRef<[u8]>>(segments: &[Segment<B>], edge: ObservedEdge) -> Graded {
+    let interned = |datum: DatumId| segments.iter().any(|s| s.ordinal(&datum).is_some());
+    if interned(edge.caller) && interned(edge.callee) {
+        Graded {
+            edge,
+            zoc: Zoc::Observed,
+            reason: None,
+        }
+    } else {
+        Graded {
+            edge,
+            zoc: Zoc::Heuristic,
+            reason: Some(STALE_TRACE),
+        }
+    }
+}
+
+/// Distinct `(caller, callee)` pairs of a retained trace, with how many hops
+/// each accounts for.
+///
+/// The count is the *trace's* multiplicity — how many retained hops were this
+/// call — which is not always the `count` [`ingest`] reports: a wake may
+/// declare `count: 5` for a hop it lists once, and retention keeps the hop
+/// order, not the declaration. Nothing that consumes a retained edge reads
+/// the count, and the pairs are identical either way.
+#[must_use]
+fn fold_edges(trace: &[(DatumId, DatumId)]) -> Vec<ObservedEdge> {
+    let mut counts: BTreeMap<(DatumId, DatumId), u64> = BTreeMap::new();
+    for hop in trace {
+        *counts.entry(*hop).or_insert(0) += 1;
+    }
+    counts
+        .into_iter()
+        .map(|((caller, callee), count)| ObservedEdge {
+            caller,
+            callee,
+            count,
+        })
+        .collect()
+}
+
+impl Stored {
+    /// The observed edges this retained wake asserts, sorted and
+    /// deduplicated. Grade them with [`grade`] before believing them.
+    #[must_use]
+    pub fn edges(&self) -> Vec<ObservedEdge> {
+        fold_edges(&self.trace)
+    }
+}
+
 impl Ingested {
     /// The resolved hops in wake order — what [`Store::put`] retains and
     /// what [`diff`] walks.
@@ -242,6 +328,51 @@ impl Store {
         std::fs::rename(&tmp, &path)?;
         Ok(())
     }
+    /// Every retained wake, in a deterministic order (by wake id).
+    ///
+    /// A file that does not parse is a corrupt log, not an absence: it is
+    /// returned as an error, the same posture [`Store::get`] takes, because
+    /// a consumer that silently skipped it would answer "no observations"
+    /// for a store that has them.
+    ///
+    /// # Errors
+    /// [`StoreError::Io`] if the directory cannot be read;
+    /// [`StoreError::Corrupt`] if a retained record does not parse.
+    pub fn retained(&self) -> Result<Vec<Stored>, StoreError> {
+        let mut out = Vec::new();
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            // A store nobody has written to holds no wakes. That is a state,
+            // not a failure.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(e) => return Err(StoreError::Io(e)),
+        };
+        for entry in entries {
+            let path = entry?.path();
+            if path.extension().is_none_or(|e| e != "json") {
+                continue;
+            }
+            let bytes = std::fs::read(&path)?;
+            let record: Record = serde_json::from_slice(&bytes)
+                .map_err(|e| StoreError::Corrupt(format!("{}: {e}", path.display())))?;
+            let mut trace = Vec::with_capacity(record.trace.len());
+            for (caller, callee) in &record.trace {
+                let parse = |text: &str| {
+                    DatumId::parse(text).ok_or_else(|| {
+                        StoreError::Corrupt(format!("{text} is not a b3 datum handle"))
+                    })
+                };
+                trace.push((parse(caller)?, parse(callee)?));
+            }
+            out.push(Stored {
+                wake: record.wake,
+                trace,
+            });
+        }
+        out.sort_by(|a, b| a.wake.wake_id.cmp(&b.wake.wake_id));
+        Ok(out)
+    }
+
     /// Load a retained wake, if the id is known.
     ///
     /// # Errors

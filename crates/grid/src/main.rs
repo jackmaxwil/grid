@@ -548,8 +548,8 @@ fn drift_verb(args: &[&str], json: bool) -> u8 {
         track,
     };
     match rpc::drift(&params, root()) {
-        Err(drift::Error::BudgetRejected(n)) => {
-            hint(&format!("grid: {}", drift::Error::BudgetRejected(n)));
+        Err(e @ (drift::Error::BudgetRejected(_) | drift::Error::Wake(_))) => {
+            hint(&format!("grid: {e}"));
             exit::INTERNAL
         }
         Err(drift::Error::Chart(e)) => {

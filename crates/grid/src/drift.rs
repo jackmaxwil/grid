@@ -22,6 +22,17 @@
 //!   base and head. A dependent that changed at all is assumed handled;
 //!   whether it changed *correctly* is the gate's question, not drift's.
 //!
+//! Observed coupling joins the walk once the floor admits it. A wake's edges
+//! are not in the chart — the chart holds what the language proves — so they
+//! are read from the wake store and graded by [`grid_wake::grade`] against
+//! the *base* chart, the one the dependents were depending on. An edge whose
+//! endpoints are both still interned there is `observed`; one whose trace
+//! describes code that base no longer holds is `heuristic` with reason
+//! `stale-trace`, which puts it below every floor but the weakest. A decayed
+//! observation left at `observed` would rot drift into false positives
+//! within weeks, which is the whole reason the grade is recomputed per query
+//! rather than stored.
+//!
 //! Refusals ride with the answer. A drift report that says "no suspects"
 //! where it could not see callers is dishonest silence, so
 //! [`grid_wire::DriftUnchecked`] carries what was not checked and the
@@ -62,12 +73,17 @@ pub enum Error {
     /// One or more inbound walks ran past [`FUEL`]. The answer is refused
     /// whole rather than served short.
     BudgetRejected(u32),
+    /// The retained wakes could not be read. Not an empty observation set:
+    /// a store that fails to open has unknown contents, and answering
+    /// "nothing was observed" for it would be a fabricated all-clear.
+    Wake(grid_wake::StoreError),
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Chart(e) => write!(f, "{e}"),
+            Self::Wake(e) => write!(f, "{e}"),
             Self::BudgetRejected(n) => write!(
                 f,
                 "{n} inbound walk(s) exceeded fuel ({FUEL}) — refused whole, \
@@ -251,6 +267,15 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
         })
         .collect();
 
+    // Observed coupling, graded against base. Loaded once: the store is a
+    // directory read, and doing it per changed definition would make the
+    // cost quadratic in the size of the delta.
+    let observed = if rank(floor) >= rank(Zoc::Observed) {
+        observed_inbound(root, base_epoch.segments())?
+    } else {
+        HashMap::new()
+    };
+
     // Keyed so one dependent implicated by two changed definitions is two
     // rows, and so the output is a function of content rather than of walk
     // order (the determinism property).
@@ -258,55 +283,49 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
     let mut budget_rejected = 0u32;
 
     for change in &changed {
-        let mut fuel = budget;
-        let mut rejected = false;
-        let mut found = Vec::new();
-        'walk: for segment in base_epoch.segments() {
-            let Some(ord) = segment.ordinal(&change.datum) else {
-                continue;
-            };
-            for edge in segment.in_edges(ord) {
-                let Some(left) = fuel.checked_sub(1) else {
-                    rejected = true;
-                    break 'walk;
-                };
-                fuel = left;
-                if !DEPENDENCY_RELATIONS.contains(&edge.relation) || rank(edge.zoc) > rank(floor) {
-                    continue;
-                }
-                let (Some(dep_datum), Some(dep_callsign)) =
-                    (segment.datum(edge.other), segment.callsign(edge.other))
-                else {
-                    continue;
-                };
-                found.push((dep_datum, dep_callsign.to_owned(), edge.relation, edge.zoc));
-            }
-        }
-        if rejected {
-            // The whole answer for this definition is refused. Nothing it
-            // found is kept: a partial list is the one output that reads as
-            // complete while being short.
+        let Some(found) = inbound_of(base_epoch.segments(), change, floor, &observed, budget)
+        else {
             budget_rejected = budget_rejected.saturating_add(1);
             continue;
-        }
-        for (dep_datum, dep_callsign, relation, zoc) in found {
-            if touched.contains(dep_callsign.as_str()) || promised(track, &dep_callsign) {
+        };
+        for dep in found {
+            // A dependent base cannot name changed nothing between base and
+            // head *under a name*, so neither check can implicate it — and
+            // neither can excuse it.
+            if dep
+                .callsign
+                .as_deref()
+                .is_some_and(|c| touched.contains(c) || promised(track, c))
+            {
                 continue;
             }
             let key = (
-                dep_callsign.clone(),
+                dep.key(),
                 change.callsign.clone(),
-                grid_chart::relation_tag(relation),
+                grid_chart::relation_tag(dep.relation),
             );
-            suspects.entry(key).or_insert_with(|| DriftSuspect {
-                dependent: def_ref(&chart, dep_datum, &dep_callsign),
-                changed: def_ref(&chart, change.datum, &change.callsign),
-                relation,
-                zoc,
-                sig_before: change.sig_before.clone(),
-                sig_after: change.sig_after.clone(),
-                reason: None,
-            });
+            // Strongest evidence wins a duplicate: a pair proven *and*
+            // observed is proven, and reporting it twice at two grades would
+            // read as two findings.
+            match suspects.entry(key) {
+                std::collections::btree_map::Entry::Occupied(mut slot) => {
+                    if rank(dep.zoc) < rank(slot.get().zoc) {
+                        slot.get_mut().zoc = dep.zoc;
+                        slot.get_mut().reason = dep.reason;
+                    }
+                }
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    slot.insert(DriftSuspect {
+                        dependent: def_ref(&chart, dep.datum, dep.callsign.as_deref()),
+                        changed: def_ref(&chart, change.datum, Some(&change.callsign)),
+                        relation: dep.relation,
+                        zoc: dep.zoc,
+                        sig_before: change.sig_before.clone(),
+                        sig_after: change.sig_after.clone(),
+                        reason: dep.reason,
+                    });
+                }
+            }
         }
     }
 
@@ -325,15 +344,133 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
     })
 }
 
+/// The dependents of one changed definition, from every source of evidence
+/// the floor admits: proven edges in the base chart, then traced callers.
+///
+/// `Ok(None)` is the budget refusal — the *whole* answer for this definition
+/// is withheld, because a partial list is the one output that reads as
+/// complete while being short.
+fn inbound_of<B: AsRef<[u8]>>(
+    segments: &[Segment<B>],
+    change: &Changed,
+    floor: Zoc,
+    observed: &HashMap<DatumId, Vec<grid_wake::Graded>>,
+    mut fuel: u32,
+) -> Option<Vec<Inbound>> {
+    let mut found = Vec::new();
+    for segment in segments {
+        let Some(ord) = segment.ordinal(&change.datum) else {
+            continue;
+        };
+        for edge in segment.in_edges(ord) {
+            fuel = fuel.checked_sub(1)?;
+            if !DEPENDENCY_RELATIONS.contains(&edge.relation) || rank(edge.zoc) > rank(floor) {
+                continue;
+            }
+            let (Some(datum), Some(callsign)) =
+                (segment.datum(edge.other), segment.callsign(edge.other))
+            else {
+                continue;
+            };
+            found.push(Inbound {
+                datum,
+                callsign: Some(callsign.to_owned()),
+                relation: edge.relation,
+                zoc: edge.zoc,
+                reason: None,
+            });
+        }
+    }
+    // A traced caller of this definition is a dependent the language never
+    // proved. It is charged no fuel: the store was read once, and the budget
+    // bounds the graph walk, which is the unbounded part.
+    for graded in observed.get(&change.datum).into_iter().flatten() {
+        if rank(graded.zoc) > rank(floor) {
+            continue;
+        }
+        found.push(Inbound {
+            datum: graded.edge.caller,
+            callsign: name_at(segments, graded.edge.caller),
+            relation: Relation::Calls,
+            zoc: graded.zoc,
+            reason: graded.reason.map(str::to_owned),
+        });
+    }
+    Some(found)
+}
+
+/// One inbound dependency found for a changed definition, whatever proved it.
+struct Inbound {
+    datum: DatumId,
+    /// The name base knows this dependent by, or `None` when base does not
+    /// intern it at all — which happens exactly on a decayed trace, where
+    /// the caller was edited between the trace and base. Reported by datum
+    /// handle rather than dropped: "something that was observed calling this
+    /// has since been rewritten" is a real, weak answer, and dropping it
+    /// would be the silence the report shape exists to prevent.
+    callsign: Option<String>,
+    relation: Relation,
+    zoc: Zoc,
+    reason: Option<String>,
+}
+
+impl Inbound {
+    /// The key this dependent is deduplicated and suppressed under: its name
+    /// where base has one, its identity where base does not.
+    fn key(&self) -> String {
+        self.callsign
+            .clone()
+            .unwrap_or_else(|| self.datum.to_string())
+    }
+}
+
+/// Observed edges from the retained wakes, graded against `segments` and
+/// indexed by the definition they point *at* — the shape the inbound walk
+/// asks in.
+///
+/// A store that cannot be read is an error, never an empty map: answering
+/// "nothing was observed" for a store that has observations is the silence
+/// this whole report shape exists to prevent.
+fn observed_inbound<B: AsRef<[u8]>>(
+    root: &std::path::Path,
+    segments: &[Segment<B>],
+) -> Result<HashMap<DatumId, Vec<grid_wake::Graded>>, Error> {
+    let store = grid_wake::Store::open(crate::rpc::wake_dir(root)).map_err(Error::Wake)?;
+    let mut out: HashMap<DatumId, Vec<grid_wake::Graded>> = HashMap::new();
+    for stored in store.retained().map_err(Error::Wake)? {
+        for edge in stored.edges() {
+            let graded = grid_wake::grade(segments, edge);
+            out.entry(graded.edge.callee).or_default().push(graded);
+        }
+    }
+    // Deterministic: a store's directory order is not a contract.
+    for edges in out.values_mut() {
+        edges.sort_by_key(|g| (g.edge.caller, rank(g.zoc)));
+        edges.dedup_by_key(|g| g.edge.caller);
+    }
+    Ok(out)
+}
+
+/// The callsign a datum answers to in this live set, if it is interned here.
+/// A demoted edge often names a datum base no longer holds; such a dependent
+/// cannot be named, and an unnameable suspect is not reported at all.
+fn name_at<B: AsRef<[u8]>>(segments: &[Segment<B>], datum: DatumId) -> Option<String> {
+    segments.iter().find_map(|s| {
+        s.ordinal(&datum)
+            .and_then(|ord| s.callsign(ord))
+            .map(str::to_owned)
+    })
+}
+
 /// A `DefRef` with the location the live chart knows, when it knows one. The
 /// row is meant to be pasteable into an editor, so `file:line` matters more
 /// here than anywhere else in the report.
-fn def_ref(chart: &ChartDelta, datum: DatumId, callsign: &str) -> DefRef {
+fn def_ref(chart: &ChartDelta, datum: DatumId, callsign: Option<&str>) -> DefRef {
     let wire = wire_datum(datum);
     let materialization = chart.locate(&wire);
     DefRef {
         datum: wire,
-        callsign: Some(Callsign(callsign.to_owned())),
+        callsign: callsign.map(|c| Callsign(c.to_owned())),
         lang: None,
         signature: None,
         materialization,

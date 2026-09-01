@@ -26,7 +26,7 @@ document.
 | `hop` | relation, target, evidence |
 | `hit` | callsign, verdict, recorded time |
 | `fork` | caller, green callee (`-` if the trace had no hop there), red callee |
-| `drift` | evidence grade, dependent callsign, `<-relation-`, changed callsign, sig transition (`old4→new4`, or `sig?` when either side carries no sig), the reason when one applies, dependent `file:line` (`grid drift`) |
+| `drift` | evidence grade, dependent callsign, `<-relation-`, changed callsign, sig transition (`old4→new4`, or `sig?` when either side carries no sig), reason (`-` when the edge speaks for itself), dependent `file:line` (`-` when unknown) — `grid drift` |
 | `miss` | callsign, reason |
 | `pass` / `hold` | track id, snapshot id (first record of gate output) |
 | `warn` | callsign, message |

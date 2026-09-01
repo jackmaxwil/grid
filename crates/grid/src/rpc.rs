@@ -1258,6 +1258,6 @@ pub fn wake_diff(
     let (green, red) = (load(&params.green)?, load(&params.red)?);
     Ok(grid_wake::diff(&green, &red))
 }
-fn wake_dir(root: &std::path::Path) -> std::path::PathBuf {
+pub(crate) fn wake_dir(root: &std::path::Path) -> std::path::PathBuf {
     root.join(".grid/wakes")
 }
