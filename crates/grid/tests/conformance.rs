@@ -648,11 +648,11 @@ fn the_contract_example_shape_is_served() {
     assert!(result["misses"].is_array());
 }
 
-/// Write a track file into the repo's store and return its id.
-fn write_track(dir: &Path, id: &str, track: &Value) -> String {
-    let tracks = dir.join(".grid/tracks");
-    std::fs::create_dir_all(&tracks).expect("mkdir tracks");
-    std::fs::write(tracks.join(format!("{id}.json")), track.to_string()).expect("write track");
+/// Write a plan file into the repo's store and return its id.
+fn write_plan(dir: &Path, id: &str, plan: &Value) -> String {
+    let plans = dir.join(".grid/plans");
+    std::fs::create_dir_all(&plans).expect("mkdir plans");
+    std::fs::write(plans.join(format!("{id}.json")), plan.to_string()).expect("write plan");
     format!("track:{id}")
 }
 
@@ -727,7 +727,7 @@ fn todo_is_the_gate_verdict_as_a_worklist_over_the_socket() {
     let daemon = Daemon::start(dir.path());
     let surveyed = daemon.call("grid.survey.run", &json!({}));
     let base = surveyed["result"]["snapshot_id"].clone();
-    write_track(
+    write_plan(
         dir.path(),
         "todo",
         &json!({
@@ -868,7 +868,7 @@ fn the_agent_loop_runs_over_the_socket_with_no_human_file_edits() {
         passed["result"]["gate"], "pass",
         "the promised edge is now made good: {passed}"
     );
-    write_track(dir.path(), "loop", &track);
+    write_plan(dir.path(), "loop", &track);
     let todo = daemon.call("grid.todo", &json!({"track": "track:loop"}));
     assert_eq!(todo["result"]["fraction"], json!({"num": 2, "den": 2}));
 }
@@ -1030,7 +1030,7 @@ fn review_pack_answers_with_a_review_pack_the_contract_accepts() {
                        "relation": "calls", "dst": "pkg.util.extra"}]
         }
     });
-    let track = write_track(dir.path(), "review", &track_value);
+    let track = write_plan(dir.path(), "review", &track_value);
 
     let response = daemon.call(
         "grid.review.pack",
@@ -1060,7 +1060,7 @@ fn review_pack_with_an_unknown_wake_is_the_contracts_error() {
     let dir = repo_with_an_unused_import();
     let daemon = Daemon::start(dir.path());
     let base = daemon.call("grid.survey.run", &json!({}))["result"]["snapshot_id"].clone();
-    let track = write_track(
+    let track = write_plan(
         dir.path(),
         "review-wake",
         &json!({
@@ -1076,4 +1076,140 @@ fn review_pack_with_an_unknown_wake_is_the_contracts_error() {
     );
     assert_eq!(response["error"]["code"], -32008, "got {response}");
     assert!(response.get("result").is_none());
+}
+
+/// Conservatism: a retired word is never emitted again.
+///
+/// The naming plan (`docs/plans/2026-09-01-naming.md`) renames a set of
+/// nouns and verbs and keeps every old word *answerable* by `grid explain`
+/// — but never *spoken*. This test walks every verb's usage and one
+/// representative invocation and asserts that neither stdout nor stderr
+/// contains a retired token as a word. `explain` appears only as its usage
+/// line: an explain answer is the one place a former name is allowed, and
+/// the alias test covers that side.
+mod conservatism {
+    use super::{repo_with_an_unused_import, Command, Path, Stdio};
+
+    /// The retired tokens, as words. `made-good` is checked separately
+    /// because its spellings straddle the word split.
+    const RETIRED: &[&str] = &[
+        "zoc",
+        "zocs",
+        "xte",
+        "leadline",
+        "leadlines",
+        "wake",
+        "wakes",
+        "track",
+        "tracks",
+        "leg",
+        "legs",
+        "bind",
+        "binds",
+    ];
+    const RETIRED_COMPOUNDS: &[&str] = &["made-good", "made_good", "madegood"];
+
+    /// Every retired word in `text`, as it was spelled there.
+    fn retired_words(text: &str) -> Vec<String> {
+        let lower = text.to_lowercase();
+        let mut found: Vec<String> = lower
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| RETIRED.contains(w))
+            .map(str::to_owned)
+            .collect();
+        found.extend(
+            RETIRED_COMPOUNDS
+                .iter()
+                .filter(|c| lower.contains(**c))
+                .map(|c| (*c).to_owned()),
+        );
+        found.sort();
+        found.dedup();
+        found
+    }
+
+    /// One invocation in the fixture repo, stdout and stderr concatenated —
+    /// hints are output too, and a hint is where an old word hides best.
+    fn run(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new(env!("CARGO_BIN_EXE_grid"))
+            .args(args)
+            .current_dir(dir)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run grid");
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    }
+
+    #[test]
+    fn no_verb_speaks_a_retired_word() {
+        let dir = repo_with_an_unused_import();
+        run(dir.path(), &["survey"]);
+
+        // Usage lines: every verb, invoked wrongly enough to print its own
+        // usage, plus the banner and the verb listing.
+        let usages: &[&[&str]] = &[
+            &[],
+            &["help"],
+            &["diff", "--nope"],
+            &["drift", "--nope"],
+            &["watch", "--nope"],
+            &["resolve"],
+            &["uses"],
+            &["scope"],
+            &["orphans", "--nope"],
+            &["hotspots", "--nope"],
+            &["log"],
+            &["suspects"],
+            &["gate"],
+            &["todo"],
+            &["cache"],
+            &["cache", "lookup"],
+            &["edit"],
+            &["explain"],
+            &["covenant"],
+            &["plan"],
+            &["plan", "lint"],
+            &["check"],
+            &["trace"],
+            &["trace", "ingest"],
+            &["trace", "diff"],
+            &["nosuchverb"],
+        ];
+        // Representative invocations: the answering path, not the refusal.
+        let calls: &[&[&str]] = &[
+            &["version"],
+            &["survey"],
+            &["diff"],
+            &["drift"],
+            &["resolve", "sweep"],
+            &["uses", "helper"],
+            &["scope", "pkg.util.**"],
+            &["orphans"],
+            &["hotspots"],
+            &["roots"],
+            &["log", "sweep"],
+            &["covenant", "--list"],
+        ];
+
+        let mut offenders: Vec<(String, Vec<String>)> = Vec::new();
+        for args in usages.iter().chain(calls.iter()) {
+            let words = retired_words(&run(dir.path(), args));
+            if !words.is_empty() {
+                offenders.push((args.join(" "), words));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "retired words are still spoken:\n{}",
+            offenders
+                .iter()
+                .map(|(argv, words)| format!("  grid {argv} -> {}", words.join(", ")))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
 }

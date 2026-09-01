@@ -1,9 +1,9 @@
-//! `grid track` — the track store and its verbs.
+//! `grid plan` — the plan store and its verbs.
 //!
-//! A track is a JSON file under `.grid/tracks`, named by its id. It is the
+//! A plan is a JSON file under `.grid/plans`, named by its id. It is the
 //! promise half of the gate: authored by the planner, read by `gate.check`,
 //! and never written by the engine (D6 — survey and `edit.apply` are the only
-//! writers; a track file is planner input, not engine state).
+//! writers; a plan file is planner input, not engine state).
 
 use std::path::{Path, PathBuf};
 
@@ -11,16 +11,16 @@ use grid_wire::Track;
 
 use crate::{exit, hint, porcelain};
 
-/// Where tracks live, relative to the repo root.
-const STORE: &str = ".grid/tracks";
+/// Where plans live, relative to the repo root.
+const STORE: &str = ".grid/plans";
 
-/// Load a track from a path, or from the store by id.
+/// Load a plan from a path, or from the store by id.
 ///
 /// A spec that looks like a path is read as one; anything else is resolved
-/// against the store, with or without the `track:` prefix.
+/// against the store, with or without the id prefix.
 ///
 /// # Errors
-/// Returns a human-readable message when the track cannot be read or parsed.
+/// Returns a human-readable message when the plan cannot be read or parsed.
 pub fn load(spec: &str) -> Result<Track, String> {
     let direct = PathBuf::from(spec);
     let path = if direct.is_file() {
@@ -29,7 +29,7 @@ pub fn load(spec: &str) -> Result<Track, String> {
         let file = store_path(spec);
         if !file.is_file() {
             return Err(format!(
-                "no track `{spec}`: not a file, and not in {STORE}\nhint: `grid track new {spec}` writes a starter track"
+                "no plan `{spec}`: not a file, and not in {STORE}\nhint: `grid plan new {spec}` writes a starter plan"
             ));
         }
         file
@@ -40,7 +40,7 @@ pub fn load(spec: &str) -> Result<Track, String> {
 fn parse(path: &Path) -> Result<Track, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    serde_json::from_str(&text).map_err(|e| format!("{} is not a valid track: {e}", path.display()))
+    serde_json::from_str(&text).map_err(|e| format!("{} is not a valid plan: {e}", path.display()))
 }
 
 fn store_path(spec: &str) -> PathBuf {
@@ -48,24 +48,24 @@ fn store_path(spec: &str) -> PathBuf {
     Path::new(STORE).join(format!("{id}.json"))
 }
 
-/// `grid track new|show|lint`.
+/// `grid plan new|show|lint`.
 pub fn main(args: &[&str], json: bool) -> u8 {
     match args.split_first() {
         Some((&"new", rest)) => new(rest),
         Some((&"show", rest)) => show(rest, json),
         Some((&"lint", rest)) => lint(rest, json),
         _ => {
-            hint("usage: grid track new <id> | grid track show <id> | grid track lint <id>");
+            hint("usage: grid plan new <id> | grid plan show <id> | grid plan lint <id>");
             exit::BAD_INPUT
         }
     }
 }
 
-/// Write a starter track: valid, empty, and lint-clean but for the warning
-/// that it promises nothing — which is exactly the next thing to fix.
+/// Write a starter plan: valid, empty, and lint-clean but for the warning
+/// that it promises nothing — which is exactly the next thing to correct.
 fn new(args: &[&str]) -> u8 {
     let Some(id) = args.first() else {
-        hint("usage: grid track new <id>");
+        hint("usage: grid plan new <id>");
         return exit::BAD_INPUT;
     };
     let track_id = if id.starts_with("track:") {
@@ -76,7 +76,7 @@ fn new(args: &[&str]) -> u8 {
     let path = store_path(&track_id);
     if path.exists() {
         hint(&format!(
-            "grid: {} already exists\nhint: `grid track show {track_id}` reads it",
+            "grid: {} already exists\nhint: `grid plan show {track_id}` reads it",
             path.display()
         ));
         return exit::BAD_INPUT;
@@ -103,7 +103,7 @@ fn new(args: &[&str]) -> u8 {
         }
     }
     let Ok(body) = serde_json::to_string_pretty(&track) else {
-        hint("grid: cannot serialize track");
+        hint("grid: cannot serialize plan");
         return exit::INTERNAL;
     };
     if let Err(e) = std::fs::write(&path, body + "\n") {
@@ -111,13 +111,13 @@ fn new(args: &[&str]) -> u8 {
         return exit::INTERNAL;
     }
     println!("todo     {track_id}  {}", path.display());
-    hint("hint: add promises to delta.edges, then `grid track lint` before you write code");
+    hint("hint: add promises to delta.edges, then `grid plan lint` before you write code");
     exit::OK
 }
 
 fn show(args: &[&str], json: bool) -> u8 {
     let Some(spec) = args.first() else {
-        hint("usage: grid track show <id>");
+        hint("usage: grid plan show <id>");
         return exit::BAD_INPUT;
     };
     let track = match load(spec) {
@@ -130,15 +130,15 @@ fn show(args: &[&str], json: bool) -> u8 {
     if json {
         return crate::emit_json(&track);
     }
-    print!("{}", porcelain::track(&track));
+    print!("{}", porcelain::plan(&track));
     exit::OK
 }
 
-/// Lint exits 2 on errors — an unusable track is bad input, not a divergence
+/// Lint exits 2 on errors — an unusable plan is bad input, not a divergence
 /// verdict: no code has been written yet for reality to diverge from.
 fn lint(args: &[&str], json: bool) -> u8 {
     let Some(spec) = args.first() else {
-        hint("usage: grid track lint <id>");
+        hint("usage: grid plan lint <id>");
         return exit::BAD_INPUT;
     };
     let track = match load(spec) {
@@ -169,7 +169,7 @@ fn lint(args: &[&str], json: bool) -> u8 {
     }
     print!("{}", porcelain::lint(&result));
     if bad {
-        hint("grid: track is not gateable until these are fixed");
+        hint("grid: plan is not gateable until these are corrected");
         return exit::BAD_INPUT;
     }
     exit::OK

@@ -12,9 +12,9 @@
 //! and `grid explain` (help generated from the wire contract and
 //! `docs/ONTOLOGY.md` at build time).
 //!
-//! Wave 9 adds `grid review`: the gate verdict plus the paths that made each
-//! promise good, the surplus it never promised, and what changed without
-//! being run. It holds — exit 3 — exactly when the gate holds.
+//! Wave 9 adds `grid check`: the gate verdict plus, under `--why`, the paths
+//! that made each promise good, the surplus it never promised, and what
+//! changed without being run. It holds — exit 3 — exactly when the gate holds.
 //!
 //! Two output modes, one vocabulary: porcelain records (`docs/PORCELAIN.md`)
 //! by default, the wire result verbatim under `--json`. stdout carries
@@ -24,20 +24,20 @@
 
 mod bisect;
 mod chart_provider;
+mod check;
 mod covenant;
 mod drift;
 mod edit;
 mod explain;
 mod lcov;
 mod legs;
+mod plan;
 mod porcelain;
-mod review;
 mod rpc;
 mod serve;
 mod stale;
 mod standing;
 mod suspects;
-mod track;
 mod watch;
 mod weak;
 
@@ -82,7 +82,7 @@ fn help() {
          diff [base] [head]           what changed, in defs and edges\n  \
          drift [base] [head]          dependents of changed interfaces; exit 3 on suspects\n  \
          drift --tests                known tests whose recorded verdict no longer applies\n  \
-         bind <A> <B> --via <word>    declare a coupling no language establishes\n  \
+         covenant <A> <B> --via <w>   declare a coupling no language establishes\n  \
          watch [base]                 signed drift deltas, one file event per stdin line\n  \
          resolve <name|file|f:line>   where it is; a bare file lists its defs\n  \
          uses <name> [--relation r]   proven inbound edges\n  \
@@ -91,15 +91,14 @@ fn help() {
          hotspots [--under p]         complexity x churn, descending\n  \
          roots                        import name -> directory map\n  \
          log <name>                   a definition's history in identity space\n  \
-         bisect <test>                first failing patch in the chain\n  \
          suspects <test>              likely culprits, ranked\n  \
-         gate <track> [head]          promise vs delta; exit 3 on hold\n  \
-         track lint <file>            validate a promise file\n  \
-         todo <track>                 the promise as a worklist\n  \
-         review <track> [head]        gate verdict with its why\n  \
-         cache check|record ...       test verdicts keyed by identity closure\n  \
+         gate <plan> [head]           promise vs delta; exit 3 on hold\n  \
+         plan lint <file>             validate a promise file\n  \
+         todo <plan>                  the promise as a worklist\n  \
+         check --plan <p> [--why]     gate verdict, and why it says so\n  \
+         cache lookup|record ...      test verdicts keyed by identity closure\n  \
          edit apply <file>            compare-and-swap edits by datum\n  \
-         wake ingest|diff ...         runtime traces -> observed edges\n  \
+         trace ingest|diff ...        runtime traces -> observed edges\n  \
          explain <anything>           define any word or id in grid output\n  \
          serve                        the same contract on a socket\n\n\
          every verb takes --json; hints live on stderr (GRID_HINTS=0)",
@@ -158,11 +157,11 @@ fn main() -> ExitCode {
         Some((&"survey", args)) => survey(args, json),
         Some((&"diff", args)) => diff(args, json),
         Some((&"drift", args)) => drift_verb(args, json),
-        Some((&"bind", args)) => bind(args, json),
+        Some((&"covenant", args)) => covenant_verb(args, json),
         Some((&"watch", args)) => watch_verb(args, json),
         Some((&"resolve", args)) => resolve(args, json),
         Some((&"gate", args)) => gate(args, json),
-        Some((&"track", args)) => track::main(args, json),
+        Some((&"plan", args)) => plan::main(args, json),
         Some((&"cache", args)) => cache(args, json),
         Some((&"scope", args)) => scope(args, json),
         Some((&"todo", args)) => todo(args, json),
@@ -173,10 +172,10 @@ fn main() -> ExitCode {
         Some((&"log", args)) => log(args, json),
         Some((&"bisect", args)) => bisect_verb(args, json),
         Some((&"hotspots", args)) => hotspots(args, json),
-        Some((&"review", args)) => review(args, json),
+        Some((&"check", args)) => check_verb(args, json),
         Some((&"explain", args)) => explain::main(args),
         Some((&"suspects", args)) => suspects(args, json),
-        Some((&"wake", args)) => wake(args, json),
+        Some((&"trace", args)) => trace(args, json),
         Some((&"serve", args)) => serve::main(args),
         Some((other, _)) => {
             hint(&format!(
@@ -216,15 +215,15 @@ fn snapshot_or_rev(typed: &str) -> grid_wire::SnapshotOrRev {
     }
 }
 
-/// `grid gate <track-file|track-id> [<head-rev>]` — check a track against the
+/// `grid gate <plan-file|plan-id> [<head-rev>]` — check a plan against the
 /// delta at head. Exit 3 on hold: the gate verdict *is* the exit code, so CI
 /// needs no output parsing.
 fn gate(args: &[&str], json: bool) -> u8 {
     let Some((spec, tail)) = args.split_first() else {
-        hint("usage: grid gate <track-file> [<head-rev>]");
+        hint("usage: grid gate <plan-file> [<head-rev>]");
         return exit::BAD_INPUT;
     };
-    let track = match track::load(spec) {
+    let track = match plan::load(spec) {
         Ok(t) => t,
         Err(e) => {
             hint(&format!("grid: {e}"));
@@ -265,16 +264,16 @@ fn gate(args: &[&str], json: bool) -> u8 {
 /// `grid cache check <kind> <env-hash> <datum>...` and
 /// `grid cache record <kind> <env-hash> <datum>=<pass|fail>...`.
 ///
-/// The CI shape: `check` prints `miss` records for what must run, `record`
+/// The CI shape: `lookup` prints `miss` records for what must run, `record`
 /// stores the verdicts afterwards. Both call the same rpc functions the daemon
 /// serves, so a CI wired through the CLI and one wired through the socket
 /// cannot disagree.
 fn cache(args: &[&str], json: bool) -> u8 {
     let root = std::path::Path::new(".");
     match args.split_first() {
-        Some((&"check", rest)) => {
+        Some((&"lookup", rest)) => {
             let Some((kind, env, datums)) = cache_args(rest) else {
-                hint("usage: grid cache check <lint|typecheck|test> <env-hash> <datum>...");
+                hint("usage: grid cache lookup <lint|typecheck|test> <env-hash> <datum>...");
                 return exit::BAD_INPUT;
             };
             let request = grid_wire::CacheCheckRequest {
@@ -310,11 +309,11 @@ fn cache(args: &[&str], json: bool) -> u8 {
             }
         }
         Some((&"record", rest)) => {
-            let Some((wake_id, positional)) = wake_flag(rest) else {
+            let Some((wake_id, positional)) = trace_flag(rest) else {
                 return exit::BAD_INPUT;
             };
             let Some((kind, env, entries)) = cache_args(&positional) else {
-                hint("usage: grid cache record <lint|typecheck|test> <env-hash> <datum>=<pass|fail>... [--wake <id>]");
+                hint("usage: grid cache record <lint|typecheck|test> <env-hash> <datum>=<pass|fail>... [--trace <id>]");
                 return exit::BAD_INPUT;
             };
             let kind = match kind {
@@ -372,17 +371,17 @@ fn cache(args: &[&str], json: bool) -> u8 {
 }
 
 /// `<kind> <env-hash> <rest>...`, or nothing if the shape is wrong.
-/// Split a trailing `--wake <id>` off an argument list. `--wake` ties a
-/// verdict to a retained wake, which is what lets `grid suspects` use it as
+/// Split a trailing `--trace <id>` off an argument list. `--trace` ties a
+/// verdict to a retained trace, which is what lets `grid suspects` use it as
 /// a spectrum. `None` prints its own hint.
-fn wake_flag<'a>(args: &'a [&'a str]) -> Option<(Option<String>, Vec<&'a str>)> {
+fn trace_flag<'a>(args: &'a [&'a str]) -> Option<(Option<String>, Vec<&'a str>)> {
     let mut wake_id = None;
     let mut positional = Vec::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
-        if *arg == "--wake" {
+        if *arg == "--trace" {
             let Some(id) = it.next() else {
-                hint("usage: grid cache record <kind> <env-hash> <datum>=<pass|fail>... [--wake <id>]");
+                hint("usage: grid cache record <kind> <env-hash> <datum>=<pass|fail>... [--trace <id>]");
                 return None;
             };
             wake_id = Some((*id).to_owned());
@@ -498,7 +497,7 @@ fn diff(args: &[&str], json: bool) -> u8 {
     }
 }
 
-/// `grid drift [<base>] [<head>] [--floor <zoc>] [--track <file>]` — the
+/// `grid drift [<base>] [<head>] [--floor <grade>] [--plan <file>]` — the
 /// dependents of every changed interface that did not themselves change.
 ///
 /// Exit 3 when suspects exist: an unaddressed dependent of a changed
@@ -526,12 +525,12 @@ fn drift_verb(args: &[&str], json: bool) -> u8 {
                 floor = Some(want);
                 rest = tail;
             }
-            "--track" => {
+            "--plan" => {
                 let (Some(spec), Some(tail)) = (rest.first(), rest.get(1..)) else {
                     hint(DRIFT_USAGE);
                     return exit::BAD_INPUT;
                 };
-                match track::load(spec) {
+                match plan::load(spec) {
                     Ok(t) => track = Some(t),
                     Err(e) => {
                         hint(&format!("grid: {e}"));
@@ -592,7 +591,7 @@ fn drift_verb(args: &[&str], json: bool) -> u8 {
             if code == exit::DIVERGENCE {
                 hint(
                     "grid: these depend on an interface that moved and were not touched — \
-                     update them, or promise them in a track and re-run with --track",
+                     update them, or promise them in a plan and re-run with --plan",
                 );
             }
             code
@@ -601,7 +600,7 @@ fn drift_verb(args: &[&str], json: bool) -> u8 {
 }
 
 const DRIFT_USAGE: &str = "usage: grid drift [<base>] [<head>] \
-     [--floor <proven|observed|modeled|heuristic>] [--track <file>] [--tests]";
+     [--floor <proven|observed|modeled|heuristic>] [--plan <file>] [--tests]";
 
 /// The wire spelling of an evidence grade, for `--floor` arguments. The serde
 /// names are the vocabulary, so the flag cannot drift from the contract.
@@ -609,17 +608,18 @@ fn zoc_named(name: &str) -> Option<grid_wire::Zoc> {
     serde_json::from_value(serde_json::Value::String(name.to_owned())).ok()
 }
 
-const BIND_USAGE: &str = "usage: grid bind <A> <B> --via <word> [--note <text>] | grid bind --list";
+const COVENANT_USAGE: &str =
+    "usage: grid covenant <A> <B> --via <word> [--note <text>] | grid covenant --list";
 
-/// `grid bind <A> <B> --via <word> [--note <text>]` — declare a coupling no
+/// `grid covenant <A> <B> --via <word> [--note <text>]` — declare a coupling no
 /// language's binding rules establish, so drift can see it.
 ///
 /// Both patterns are resolved against the current snapshot and a pattern
 /// matching nothing is refused: a declaration about code that does not exist
 /// is a rule that will never fire, and writing it down silently is worse than
 /// not writing it. Removing a covenant is editing the file — it is a
-/// declaration, like a track.
-fn bind(args: &[&str], json: bool) -> u8 {
+/// declaration, like a plan.
+fn covenant_verb(args: &[&str], json: bool) -> u8 {
     if args.first() == Some(&"--list") {
         return match covenant::load(root()) {
             Err(e) => {
@@ -652,29 +652,29 @@ fn bind(args: &[&str], json: bool) -> u8 {
         match *arg {
             "--via" => {
                 if !flag(&mut via) {
-                    hint(BIND_USAGE);
+                    hint(COVENANT_USAGE);
                     return exit::BAD_INPUT;
                 }
             }
             "--note" => {
                 if !flag(&mut note) {
-                    hint(BIND_USAGE);
+                    hint(COVENANT_USAGE);
                     return exit::BAD_INPUT;
                 }
             }
             other if other.starts_with("--") => {
-                hint(&format!("grid: unknown flag `{other}`\n{BIND_USAGE}"));
+                hint(&format!("grid: unknown flag `{other}`\n{COVENANT_USAGE}"));
                 return exit::BAD_INPUT;
             }
             other => positional.push(other),
         }
     }
     let ([a, b], Some(via)) = (positional.as_slice(), via) else {
-        hint(BIND_USAGE);
+        hint(COVENANT_USAGE);
         return exit::BAD_INPUT;
     };
     if via.is_empty() {
-        hint(BIND_USAGE);
+        hint(COVENANT_USAGE);
         return exit::BAD_INPUT;
     }
     for pattern in [*a, *b] {
@@ -725,7 +725,7 @@ fn bind(args: &[&str], json: bool) -> u8 {
     exit::OK
 }
 
-const WATCH_USAGE: &str = "usage: grid watch [<base>] [--floor <zoc>] [--track <file>]\n\
+const WATCH_USAGE: &str = "usage: grid watch [<base>] [--floor <grade>] [--plan <file>]\n\
      reads changed paths on stdin, one per line; a blank line ends an event";
 
 /// `grid watch [<base>]` — drift maintained as signed deltas.
@@ -759,12 +759,12 @@ fn watch_verb(args: &[&str], json: bool) -> u8 {
                 floor = Some(want);
                 rest = tail;
             }
-            "--track" => {
+            "--plan" => {
                 let (Some(spec), Some(tail)) = (rest.first(), rest.get(1..)) else {
                     hint(WATCH_USAGE);
                     return exit::BAD_INPUT;
                 };
-                match track::load(spec) {
+                match plan::load(spec) {
                     Ok(t) => track = Some(t),
                     Err(e) => {
                         hint(&format!("grid: {e}"));
@@ -1034,12 +1034,12 @@ fn scope(args: &[&str], json: bool) -> u8 {
 /// only in the daemon, because the horizon banner has to name the real one.
 const DEFAULT_SCOPE_DEPTH: u64 = 0;
 
-/// `grid todo <track> [<head-rev|snap:id>]` — the gate verdict as a
+/// `grid todo <plan> [<head-rev|snap:id>]` — the gate verdict as a
 /// worklist. Always exit 0 when it answers: remaining work is a report, not
 /// a failure — the gate is the verb that holds.
 fn todo(args: &[&str], json: bool) -> u8 {
     let Some((id, tail)) = args.split_first() else {
-        hint("usage: grid todo <track> [<head-rev>]");
+        hint("usage: grid todo <plan> [<head-rev>]");
         return exit::BAD_INPUT;
     };
     let head = tail.first().map(|h| snapshot_or_rev(h));
@@ -1208,12 +1208,12 @@ fn uses(args: &[&str], json: bool) -> u8 {
     }
 }
 
-/// `grid wake ingest --lcov <report> --test <name>` — coverage as a reach
+/// `grid trace ingest --lcov <report> --test <name>` — coverage as a reach
 /// set: every executed line inside a charted definition becomes one
 /// observation from the named test.
-fn wake_lcov(rest: &[&str], json: bool, root: &std::path::Path) -> u8 {
+fn trace_lcov(rest: &[&str], json: bool, root: &std::path::Path) -> u8 {
     let (Some(path), Some(&"--test"), Some(test)) = (rest.get(1), rest.get(2), rest.get(3)) else {
-        hint("usage: grid wake ingest --lcov <report|-> --test <name>");
+        hint("usage: grid trace ingest --lcov <report|-> --test <name>");
         return exit::BAD_INPUT;
     };
     let Some(report) = read_arg(path) else {
@@ -1326,10 +1326,10 @@ fn log(args: &[&str], json: bool) -> u8 {
     }
     if rows.is_empty() {
         hint(&format!(
-            "grid: no recorded history for `{name}` — legs accrue from `grid edit apply` and surveys"
+            "grid: no recorded history for `{name}` — edits accrue from `grid edit apply` and surveys"
         ));
     }
-    print!("{}", porcelain::legs(&rows));
+    print!("{}", porcelain::edits(&rows));
     exit::OK
 }
 
@@ -1368,7 +1368,7 @@ fn hotspots(args: &[&str], json: bool) -> u8 {
             }
             match source {
                 rpc::ChurnSource::GitFiles => hint(
-                    "grid: churn seeded from git file history (file-level) — grid legs accrue from edits and surveys",
+                    "grid: churn seeded from git file history (file-level) — grid edits accrue from edit apply and surveys",
                 ),
                 rpc::ChurnSource::None => hint(
                     "grid: no history yet — ranking by complexity alone",
@@ -1462,38 +1462,51 @@ fn orphans(args: &[&str], json: bool) -> u8 {
     }
 }
 
-/// `grid review <track> [<head-rev|snap:id>] [--wake <id>]` — the reviewer's
-/// pack: the gate verdict, then *why* — a path per fulfilling promise, the
-/// surplus it did not promise, and what changed without being run.
+const CHECK_USAGE: &str = "usage: grid check --plan <plan> [<head-rev>] [--why] [--trace <id>]";
+
+/// `grid check --plan <plan> [<head-rev|snap:id>] [--why] [--trace <id>]` —
+/// is this change ok: the gate verdict, and under `--why` the reasoning —
+/// a path per fulfilling promise, the surplus it did not promise, and what
+/// changed without being run.
 ///
 /// The verdict is the gate's, so the exit code is the gate's too: hold is 3,
-/// divergence. A reviewer and CI reading the same pack cannot disagree about
-/// whether the promise was kept.
-fn review(args: &[&str], json: bool) -> u8 {
+/// divergence. A reviewer and CI reading the same answer cannot disagree
+/// about whether the promise was kept.
+fn check_verb(args: &[&str], json: bool) -> u8 {
     let mut track = None;
     let mut head = None;
     let mut wake = None;
+    let mut why = false;
     let mut rest = args;
     while let Some((arg, tail)) = rest.split_first() {
         rest = tail;
-        if *arg == "--wake" {
-            let Some((id, tail)) = rest.split_first() else {
-                hint("usage: grid review <track> [<head-rev>] [--wake <id>]");
+        match *arg {
+            "--why" => why = true,
+            "--trace" | "--plan" => {
+                let Some((value, tail)) = rest.split_first() else {
+                    hint(CHECK_USAGE);
+                    return exit::BAD_INPUT;
+                };
+                if *arg == "--plan" {
+                    track = Some(grid_wire::TrackId((*value).to_string()));
+                } else {
+                    wake = Some(grid_wire::WakeId((*value).to_string()));
+                }
+                rest = tail;
+            }
+            other if other.starts_with("--") => {
+                hint(&format!("grid: unknown flag `{other}`\n{CHECK_USAGE}"));
                 return exit::BAD_INPUT;
-            };
-            wake = Some(grid_wire::WakeId((*id).to_string()));
-            rest = tail;
-        } else if track.is_none() {
-            track = Some(grid_wire::TrackId((*arg).to_string()));
-        } else if head.is_none() {
-            head = Some(snapshot_or_rev(arg));
-        } else {
-            hint(&format!("grid: unexpected argument `{arg}`"));
-            return exit::BAD_INPUT;
+            }
+            other if head.is_none() => head = Some(snapshot_or_rev(other)),
+            other => {
+                hint(&format!("grid: unexpected argument `{other}`"));
+                return exit::BAD_INPUT;
+            }
         }
     }
     let Some(track) = track else {
-        hint("usage: grid review <track> [<head-rev>] [--wake <id>]");
+        hint(CHECK_USAGE);
         return exit::BAD_INPUT;
     };
     let params = grid_wire::methods::ReviewPackParams {
@@ -1501,7 +1514,7 @@ fn review(args: &[&str], json: bool) -> u8 {
         head: head.unwrap_or_else(|| snapshot_or_rev("HEAD")),
         wake,
     };
-    match review::pack(&params, root()) {
+    match check::pack(&params, root()) {
         Err(e) => {
             hint(&format!("grid: {e}"));
             exit::BAD_INPUT
@@ -1520,21 +1533,27 @@ fn review(args: &[&str], json: bool) -> u8 {
                     failure => failure,
                 };
             }
-            print!("{}", review::porcelain(&pack, &namer()));
+            // Without `--why` the answer is the verdict alone — the same
+            // records `grid gate` prints, from the same computation.
+            if why {
+                print!("{}", check::porcelain(&pack, &namer()));
+            } else {
+                print!("{}", porcelain::verdict(&pack.verdict, &namer()));
+            }
             code
         }
     }
 }
 
-/// `grid suspects <test> [<wake>] [<base>]` — rank changed definitions seen
+/// `grid suspects <test> [<trace>] [<base>]` — rank changed definitions seen
 /// in retained spectra for the named test.
 fn suspects(args: &[&str], json: bool) -> u8 {
     let Some(test) = args.first() else {
-        hint("usage: grid suspects <test> [<wake>] [<base>]");
+        hint("usage: grid suspects <test> [<trace>] [<base>]");
         return exit::BAD_INPUT;
     };
     if args.len() > 3 {
-        hint("usage: grid suspects <test> [<wake>] [<base>]");
+        hint("usage: grid suspects <test> [<trace>] [<base>]");
         return exit::BAD_INPUT;
     }
     let params = grid_wire::methods::SuspectsParams {
@@ -1565,19 +1584,19 @@ fn suspects(args: &[&str], json: bool) -> u8 {
     }
 }
 
-/// `grid wake ingest <wake.json|->` and `grid wake diff <green> <red>`.
+/// `grid trace ingest <trace.json|->` and `grid trace diff <green> <red>`.
 ///
-/// The CI shape: a test runner emits a wake JSON, `ingest` resolves and
+/// The CI shape: a test runner emits a trace JSON, `ingest` resolves and
 /// retains it, and `diff` compares two retained runs — exit 3 when behavior
 /// forked, because a forked trace is a divergence. Both call the same rpc
 /// functions the daemon serves, so CLI and socket cannot disagree.
-fn wake(args: &[&str], json: bool) -> u8 {
+fn trace(args: &[&str], json: bool) -> u8 {
     let root = std::path::Path::new(".");
     match args.split_first() {
-        Some((&"ingest", rest)) if rest.first() == Some(&"--lcov") => wake_lcov(rest, json, root),
+        Some((&"ingest", rest)) if rest.first() == Some(&"--lcov") => trace_lcov(rest, json, root),
         Some((&"ingest", rest)) => {
             let Some(path) = rest.first() else {
-                hint("usage: grid wake ingest <wake.json|->");
+                hint("usage: grid trace ingest <trace.json|->");
                 return exit::BAD_INPUT;
             };
             let text = if *path == "-" {
@@ -1602,7 +1621,7 @@ fn wake(args: &[&str], json: bool) -> u8 {
             let w: grid_wire::Wake = match serde_json::from_str(&text) {
                 Ok(w) => w,
                 Err(e) => {
-                    hint(&format!("grid: wake JSON: {e}"));
+                    hint(&format!("grid: trace JSON: {e}"));
                     return exit::BAD_INPUT;
                 }
             };
@@ -1624,7 +1643,7 @@ fn wake(args: &[&str], json: bool) -> u8 {
         }
         Some((&"diff", rest)) => {
             let (Some(green), Some(red)) = (rest.first(), rest.get(1)) else {
-                hint("usage: grid wake diff <green-wake-id> <red-wake-id>");
+                hint("usage: grid trace diff <green-trace-id> <red-trace-id>");
                 return exit::BAD_INPUT;
             };
             let params = grid_wire::methods::WakeDiffParams {
@@ -1657,7 +1676,7 @@ fn wake(args: &[&str], json: bool) -> u8 {
             }
         }
         _ => {
-            hint("usage: grid wake ingest|diff ...");
+            hint("usage: grid trace ingest|diff ...");
             exit::BAD_INPUT
         }
     }

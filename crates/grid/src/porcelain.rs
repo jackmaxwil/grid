@@ -13,7 +13,7 @@ use grid_wire::{
 use grid_xte::lint::{relation_name, render_edge};
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "1.6.0";
+pub const VERSION: &str = "2.0.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -112,7 +112,7 @@ const fn actual_name(a: TestComparisonActual) -> &'static str {
     }
 }
 
-/// Render a gate verdict. The first record is `pass` or `hold` with the track
+/// Render a gate verdict. The first record is `pass` or `hold` with the plan
 /// and snapshot; every divergence follows as its own record.
 #[must_use]
 pub fn verdict(v: &XteVerdict, name: &NameOf) -> String {
@@ -164,10 +164,10 @@ pub fn verdict(v: &XteVerdict, name: &NameOf) -> String {
     out
 }
 
-/// Render a track: its promises as `todo` records, since a promise is work
+/// Render a plan: its promises as `todo` records, since a promise is work
 /// not yet made good, plus its standing invariants.
 #[must_use]
-pub fn track(t: &grid_wire::Track) -> String {
+pub fn plan(t: &grid_wire::Track) -> String {
     let mut out = String::new();
     let base = match &t.base {
         grid_wire::SnapshotOrRev::GitRev { git_rev } => git_rev.0.clone(),
@@ -396,13 +396,13 @@ pub fn declined(paths: &[String]) -> String {
     out
 }
 
-/// One `bind` record per declared covenant: the two patterns and the
+/// One `covenant` record per declared covenant: the two patterns and the
 /// boundary they meet across. A declaration, printed the way it was made.
 #[must_use]
 pub fn covenants(rows: &[grid_wire::Covenant]) -> String {
     let mut out = String::new();
     for c in rows {
-        record(&mut out, "bind", &[&c.a.0, &c.b.0, &c.via]);
+        record(&mut out, "covenant", &[&c.a.0, &c.b.0, &c.via]);
     }
     out
 }
@@ -550,7 +550,7 @@ pub fn refs_as(defs: &[grid_wire::DefRef], tag: &str) -> String {
     out
 }
 
-/// One row per hotspot: `hot  callsign  cx N  legs M  file:line`.
+/// One row per hotspot: `hot  callsign  cx N  edits M  file:line`.
 #[must_use]
 pub fn hotspots(rows: &[crate::rpc::Hotspot]) -> String {
     let mut out = String::new();
@@ -566,7 +566,7 @@ pub fn hotspots(rows: &[crate::rpc::Hotspot]) -> String {
             &[
                 &r.callsign,
                 &format!("cx {}", r.complexity),
-                &format!("legs {}", r.legs),
+                &format!("edits {}", r.edits),
                 &at,
             ],
         );
@@ -574,20 +574,23 @@ pub fn hotspots(rows: &[crate::rpc::Hotspot]) -> String {
     out
 }
 
-/// One row per leg, newest first: `leg  @from -> @to  rev`.
+/// One row per edit, newest first: `edit  @from -> @to  rev`.
 #[must_use]
-pub fn legs(rows: &[grid_wire::Leg]) -> String {
+pub fn edits(rows: &[grid_wire::Leg]) -> String {
     let mut out = String::new();
-    for leg in rows {
-        let rev = leg
+    for edit in rows {
+        let rev = edit
             .git_rev
             .as_ref()
             .map(|r| r.0.clone())
             .unwrap_or_default();
         record(
             &mut out,
-            "leg",
-            &[&format!("{} -> {}", short(&leg.from), short(&leg.to)), &rev],
+            "edit",
+            &[
+                &format!("{} -> {}", short(&edit.from), short(&edit.to)),
+                &rev,
+            ],
         );
     }
     out

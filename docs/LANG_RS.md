@@ -10,7 +10,7 @@ paper was wrong or silent.
 A `grid-lang-rs` crate that surveys Rust source into the `grid-datum`
 vocabulary — definitions, references, imports — plus a Rust arm in
 `grid-survey`'s resolver, holding the same discipline the Python frontend
-holds: an edge is recorded only when the language's own binding rules fix
+holds: an edge is recorded only when the language's own binding rules pin
 its target, and everything else resolves to nothing. First corpus: grid
 itself. A Rust frontend that cannot chart its own repository is not done.
 
@@ -107,7 +107,7 @@ differs from its directory (hyphens become underscores in the real crate
 name), a `#[path]` module, and cargo's extra target roots (`src/bin/*.rs`,
 `tests/`, `examples/`, `benches/` are each their own crate root, not
 submodules) all file under approximate names. Documented, not defended; the
-fix (reading the nearest `Cargo.toml` and its target table) is additive
+remedy (reading the nearest `Cargo.toml` and its target table) is additive
 later, and a wrong module name costs an unresolved edge, never a false one.
 
 ## References and imports
@@ -140,7 +140,7 @@ machinery is shared, the lookup order is not (Rust paths resolve through
 `use` and absolute paths; there is no LEGB).
 
 Grades stay a property of the evidence, and v1 emits only `Proven` — by
-declining everything Rust's static binding rules do not fix:
+declining everything Rust's static binding rules do not establish:
 
 - A name reached through a glob import (`use x::*` in scope) is never
   resolved: the glob makes shadowing undecidable without full name

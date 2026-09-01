@@ -222,10 +222,10 @@ fn drift_is_deterministic_for_a_snapshot_pair() {
 }
 
 /// Track suppression is monotone: naming a promise can only remove suspects.
-/// A track that *added* one would make the gate and drift disagree about who
+/// A plan that *added* one would make the gate and drift disagree about who
 /// is responsible for a definition.
 #[test]
-fn a_track_never_adds_a_suspect() {
+fn a_plan_never_adds_a_suspect() {
     let dir = repo(
         &[(
             "crates/app/src/lib.rs",
@@ -244,7 +244,7 @@ fn a_track_never_adds_a_suspect() {
     let before: Vec<_> = suspects(&bare);
     assert!(before.len() >= 2, "two callers to start with: {before:?}");
 
-    let track = serde_json::json!({
+    let plan = serde_json::json!({
         "track_id": "track:drift",
         "base": { "git_rev": "HEAD~1" },
         "delta": {
@@ -252,17 +252,17 @@ fn a_track_never_adds_a_suspect() {
             "edges": []
         }
     });
-    let path = dir.path().join("track.json");
-    std::fs::write(&path, track.to_string()).expect("write track");
+    let path = dir.path().join("plan.json");
+    std::fs::write(&path, plan.to_string()).expect("write plan");
 
-    let tracked = grid(
+    let planned = grid(
         dir.path(),
-        &["drift", "HEAD~1", "HEAD", "--track", "track.json"],
+        &["drift", "HEAD~1", "HEAD", "--plan", "plan.json"],
     );
-    let after = suspects(&tracked);
+    let after = suspects(&planned);
     assert!(
         after.iter().all(|s| before.contains(s)),
-        "a track can only remove: {before:?} -> {after:?}"
+        "a plan can only remove: {before:?} -> {after:?}"
     );
     assert!(
         !after.iter().any(|(dep, _)| dep == "app.promised"),
@@ -491,7 +491,7 @@ fn ingest_wake(dir: &Path, id: &str, from: &str, to: &str) {
     });
     let path = dir.join("wake.json");
     std::fs::write(&path, wake.to_string()).expect("write wake");
-    let out = grid(dir, &["wake", "ingest", "wake.json"]);
+    let out = grid(dir, &["trace", "ingest", "wake.json"]);
     assert_eq!(
         code(&out),
         0,
@@ -652,7 +652,7 @@ fn a_decayed_trace_falls_to_heuristic_with_a_named_reason_and_recovers() {
 
 /// Declare a covenant through the verb, asserting it took.
 fn bind(dir: &Path, a: &str, b: &str, via: &str) -> Output {
-    grid(dir, &["bind", a, b, "--via", via])
+    grid(dir, &["covenant", a, b, "--via", via])
 }
 
 /// Ground truth for step 4: a declared coupling fires on *datum* change, and
@@ -864,9 +864,9 @@ fn a_covenant_that_matches_nothing_at_drift_time_warns() {
     );
 }
 
-/// `grid bind --list` prints what was declared, one `bind` record each.
+/// `grid covenant --list` prints what was declared, one `covenant` record each.
 #[test]
-fn bind_list_prints_the_declarations() {
+fn covenant_list_prints_the_declarations() {
     let dir = repo(
         &[
             ("pkg/__init__.py", ""),
@@ -885,7 +885,7 @@ fn bind_list_prints_the_declarations() {
         )),
         0
     );
-    let out = grid(dir.path(), &["bind", "--list"]);
+    let out = grid(dir.path(), &["covenant", "--list"]);
     assert_eq!(code(&out), 0);
     let text = stdout(&out);
     let rows: Vec<Vec<&str>> = text
@@ -895,7 +895,7 @@ fn bind_list_prints_the_declarations() {
     assert_eq!(
         rows,
         vec![vec![
-            "bind",
+            "covenant",
             "pkg.writer.encode",
             "pkg.reader.decode",
             "schema"
@@ -924,7 +924,7 @@ fn record_pass(dir: &Path, env: &str, datum: &str, wake: &str) {
             "test",
             env,
             &format!("{datum}=pass"),
-            "--wake",
+            "--trace",
             wake,
         ],
     );

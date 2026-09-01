@@ -9,8 +9,8 @@ grid survey [rev]        survey the tree and publish a snapshot
 grid diff [base] [head]  what actually changed, in the chart
 grid resolve <name>      the definitions a name refers to
 grid version             engine, wire and porcelain versions
-grid gate <track> [rev]  check a track against the delta at head
-grid track new|show|lint the planning loop
+grid gate <plan> [rev]   check a plan against the delta at head
+grid plan new|show|lint  the planning loop
 grid serve [socket]      unix socket, newline-framed JSON-RPC
 ```
 
@@ -19,7 +19,7 @@ Agent verbs (stage 1–2, socket-first — the daemon serves `grid.scope`,
 
 ```
 grid scope <pattern>... [--depth N]  context pack around an intended edit
-grid todo <track> [head]             the gate verdict as a worklist
+grid todo <plan> [head]              the gate verdict as a worklist
 grid edit apply <edits.json|->       CAS writes; conflicts are exit 4
 grid uses <name>                     who reaches X, proven edges only
 grid explain <word|@prefix>          what any token in this output means
@@ -39,7 +39,7 @@ across verbs: `0` pass · `1` internal · `2` bad input · `3` divergence ·
 The CLI and the daemon are not two implementations: both call `rpc`, so
 `grid gate --json` and a `grid.gate.check` request cannot drift.
 
-Repo state lives under `.grid`: `tracks/` (planner-authored promises),
+Repo state lives under `.grid`: `plans/` (planner-authored promises),
 `invariants.json` (standing rules, checked at every gate and lint), and
 `chart/` (the segment store — content-addressed, append-only).
 

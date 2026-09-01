@@ -228,23 +228,23 @@ fn a_missing_track_is_bad_input_not_a_divergence() {
     );
     // The error ends in a pasteable command (CLI plan §4).
     let hint = String::from_utf8(out.stderr).expect("utf-8");
-    assert!(hint.contains("grid track new"), "hint was: {hint}");
+    assert!(hint.contains("grid plan new"), "hint was: {hint}");
 }
 
 #[test]
 fn track_new_then_lint_then_show_is_the_planning_loop() {
     let dir = repo();
-    let out = grid(dir.path(), &["track", "new", "pr-3-v1"]);
+    let out = grid(dir.path(), &["plan", "new", "pr-3-v1"]);
     assert_eq!(code(&out), 0);
-    assert!(dir.path().join(".grid/tracks/pr-3-v1.json").is_file());
+    assert!(dir.path().join(".grid/plans/pr-3-v1.json").is_file());
 
     // A track that promises nothing is a warning, not an error: it is
     // authorable, just vacuous.
-    let out = grid(dir.path(), &["track", "lint", "pr-3-v1"]);
+    let out = grid(dir.path(), &["plan", "lint", "pr-3-v1"]);
     assert_eq!(code(&out), 0);
     assert!(stdout(&out).contains("promises nothing"));
 
-    let out = grid(dir.path(), &["track", "show", "track:pr-3-v1"]);
+    let out = grid(dir.path(), &["plan", "show", "track:pr-3-v1"]);
     assert_eq!(code(&out), 0);
     assert_eq!(
         columns(stdout(&out).lines().next().expect("record"))[0],
@@ -252,7 +252,7 @@ fn track_new_then_lint_then_show_is_the_planning_loop() {
     );
 
     // Creating it twice is bad input, not a silent overwrite of a promise.
-    assert_eq!(code(&grid(dir.path(), &["track", "new", "pr-3-v1"])), 2);
+    assert_eq!(code(&grid(dir.path(), &["plan", "new", "pr-3-v1"])), 2);
 }
 
 #[test]
@@ -280,10 +280,7 @@ fn lint_rejects_an_impossible_plan_with_exit_2() {
         }),
     );
 
-    let out = grid(
-        dir.path(),
-        &["track", "lint", track.to_str().expect("path")],
-    );
+    let out = grid(dir.path(), &["plan", "lint", track.to_str().expect("path")]);
     assert_eq!(code(&out), 2, "an impossible plan dies at plan time");
     assert!(stdout(&out).contains("violates invariant no-cross-layer"));
 }
@@ -485,7 +482,7 @@ fn cache_miss_then_record_then_hit() {
     let (caller, _) = seed_chart(dir.path(), 0x22);
     let env = "env:b3:aa";
 
-    let cold = grid(dir.path(), &["cache", "check", "test", env, &caller]);
+    let cold = grid(dir.path(), &["cache", "lookup", "test", env, &caller]);
     assert_eq!(code(&cold), 0, "a miss is not a failure");
     let line = stdout(&cold);
     let fields = columns(line.lines().next().expect("a record"));
@@ -502,7 +499,10 @@ fn cache_miss_then_record_then_hit() {
         ["done", "1/1"]
     );
 
-    let warm = stdout(&grid(dir.path(), &["cache", "check", "test", env, &caller]));
+    let warm = stdout(&grid(
+        dir.path(),
+        &["cache", "lookup", "test", env, &caller],
+    ));
     let fields = columns(warm.lines().next().expect("a record"));
     assert_eq!(fields[0], "hit");
     assert_eq!(fields[1], caller);
@@ -529,12 +529,18 @@ fn a_callee_change_invalidates_the_caller_but_not_its_lint() {
     // Same caller, different callee: republish the chart with the callee moved.
     seed_chart(dir.path(), 0x33);
 
-    let test_check = stdout(&grid(dir.path(), &["cache", "check", "test", env, &caller]));
+    let test_check = stdout(&grid(
+        dir.path(),
+        &["cache", "lookup", "test", env, &caller],
+    ));
     assert!(
         test_check.starts_with("miss"),
         "a test verdict must not survive its callee changing: {test_check}"
     );
-    let lint_check = stdout(&grid(dir.path(), &["cache", "check", "lint", env, &caller]));
+    let lint_check = stdout(&grid(
+        dir.path(),
+        &["cache", "lookup", "lint", env, &caller],
+    ));
     assert!(
         lint_check.starts_with("hit"),
         "lint reads one span, so a callee change cannot invalidate it: {lint_check}"
@@ -684,7 +690,7 @@ fn cache_json_is_the_wire_result_verbatim() {
     let (caller, _) = seed_chart(dir.path(), 0x22);
     let out = grid(
         dir.path(),
-        &["cache", "check", "--json", "test", "env:b3:aa", &caller],
+        &["cache", "lookup", "--json", "test", "env:b3:aa", &caller],
     );
     assert_eq!(code(&out), 0);
     let value: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
@@ -699,7 +705,7 @@ fn a_bad_cache_kind_is_bad_input() {
     let dir = repo();
     let out = grid(
         dir.path(),
-        &["cache", "check", "typo", "env:b3:aa", "b3:00"],
+        &["cache", "lookup", "typo", "env:b3:aa", "b3:00"],
     );
     assert_eq!(code(&out), 2);
     assert!(stdout(&out).is_empty(), "errors go to stderr, not stdout");
@@ -896,7 +902,7 @@ fn wake_ingest_then_diff_is_the_ci_loop() {
     for (file, want) in [(&green, "1/1"), (&red, "2/2")] {
         let out = grid(
             dir.path(),
-            &["wake", "ingest", file.to_str().expect("utf-8 path")],
+            &["trace", "ingest", file.to_str().expect("utf-8 path")],
         );
         assert_eq!(code(&out), 0, "{}", stdout(&out));
         let text = stdout(&out);
@@ -905,11 +911,11 @@ fn wake_ingest_then_diff_is_the_ci_loop() {
         assert_eq!(cols[1], want);
     }
     // Same trace twice: no fork, exit 0.
-    let same = grid(dir.path(), &["wake", "diff", "wake:g", "wake:g"]);
+    let same = grid(dir.path(), &["trace", "diff", "wake:g", "wake:g"]);
     assert_eq!(code(&same), 0);
     assert!(stdout(&same).is_empty(), "no records without a difference");
     // Green against red: red kept calling, exit 3, fork then edge records.
-    let forked = grid(dir.path(), &["wake", "diff", "wake:g", "wake:r"]);
+    let forked = grid(dir.path(), &["trace", "diff", "wake:g", "wake:r"]);
     assert_eq!(code(&forked), 3, "a forked trace is a divergence");
     let text = stdout(&forked);
     let lines: Vec<&str> = text.lines().collect();
@@ -938,7 +944,7 @@ fn wake_ingest_reports_unresolved_symbols_never_drops_them() {
     .expect("write wake");
     let out = grid(
         dir.path(),
-        &["wake", "ingest", path.to_str().expect("utf-8")],
+        &["trace", "ingest", path.to_str().expect("utf-8")],
     );
     assert_eq!(code(&out), 0);
     let text = stdout(&out);
@@ -952,7 +958,7 @@ fn wake_ingest_reports_unresolved_symbols_never_drops_them() {
 fn a_diff_against_an_unknown_wake_is_bad_input() {
     let dir = repo();
     seed_chart(dir.path(), 0x22);
-    let out = grid(dir.path(), &["wake", "diff", "wake:nope", "wake:alsono"]);
+    let out = grid(dir.path(), &["trace", "diff", "wake:nope", "wake:alsono"]);
     assert_eq!(code(&out), 2);
 }
 
@@ -1011,7 +1017,7 @@ fn lcov_ingests_as_a_reach_set_and_omits_what_it_cannot_map() {
     std::fs::write(dir.path().join("cov.lcov"), lcov).expect("write");
     let out = grid(
         dir.path(),
-        &["wake", "ingest", "--lcov", "cov.lcov", "--test", "a"],
+        &["trace", "ingest", "--lcov", "cov.lcov", "--test", "a"],
     );
     assert_eq!(
         code(&out),
@@ -1076,7 +1082,7 @@ fn hotspots_rank_the_branchy_and_edited_above_the_large_and_flat() {
         "branchy-and-edited outranks large-and-flat:\n{text}"
     );
     assert!(
-        text.lines().next().is_some_and(|l| l.contains("legs 2")),
+        text.lines().next().is_some_and(|l| l.contains("edits 2")),
         "churn is the multiplier and is reported:\n{text}"
     );
 }
@@ -1179,11 +1185,19 @@ fn help_lists_every_verb() {
     assert_eq!(code(&out), 0);
     let err = String::from_utf8_lossy(&out.stderr);
     for verb in [
-        "survey", "resolve", "uses", "scope", "orphans", "hotspots", "log", "bisect", "gate",
-        "cache", "edit", "wake", "roots",
+        "survey", "resolve", "uses", "scope", "orphans", "hotspots", "log", "gate", "plan",
+        "check", "covenant", "cache", "edit", "trace", "roots",
     ] {
         assert!(err.contains(verb), "`{verb}` missing from help:\n{err}");
     }
+    // `bisect` always refuses until retained history exists, and a verb that
+    // can only refuse is worse than an absent one: it answers, unlisted.
+    assert!(!err.contains("bisect"), "bisect is listed:\n{err}");
+    assert_eq!(
+        code(&grid(dir.path(), &["bisect"])),
+        2,
+        "bisect still answers"
+    );
 }
 
 #[test]
@@ -1239,8 +1253,8 @@ fn resolving_a_bare_file_lists_its_definitions() {
 
 #[test]
 fn a_fresh_checkout_seeds_churn_from_git_history() {
-    // repo(): two commits, one file each. No grid-recorded legs exist, so
-    // the ranking would otherwise be complexity-only with every row legs 0.
+    // repo(): two commits, one file each. No grid-recorded edits exist, so
+    // the ranking would otherwise be complexity-only with every row edits 0.
     let dir = repo();
     assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
     let out = grid(dir.path(), &["hotspots", "--limit", "10"]);
@@ -1248,7 +1262,7 @@ fn a_fresh_checkout_seeds_churn_from_git_history() {
     let text = stdout(&out);
     assert!(
         text.lines()
-            .any(|l| columns(l).windows(2).any(|w| w == ["legs", "1"])),
+            .any(|l| columns(l).windows(2).any(|w| w == ["edits", "1"])),
         "file-level git churn seeds the ranking:\n{text}"
     );
     let err = String::from_utf8_lossy(&out.stderr);
