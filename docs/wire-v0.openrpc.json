@@ -14,7 +14,7 @@
   },
   "x-porcelain": {
     "doc": "packages/grid/docs/PORCELAIN.md",
-    "version": "1.5.0",
+    "version": "1.6.0",
     "description": "Normative grammar for human-facing stdout records. --json emits wire results verbatim; the porcelain version is reported by grid.version."
   },
   "methods": [
@@ -27,7 +27,7 @@
         {
           "name": "current versions",
           "params": [],
-          "result": { "name": "version", "value": { "wire": "0.1.0", "engine": "grid 0.1.0", "porcelain": "1.5.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
+          "result": { "name": "version", "value": { "wire": "0.1.0", "engine": "grid 0.1.0", "porcelain": "1.6.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
         }
       ],
       "result": {
@@ -1204,6 +1204,16 @@
         },
         "additionalProperties": false,
         "description": "A test whose recorded verdict no longer applies. Staleness is identity math over the closure, not a guess, so it gates."
+      },
+      "DriftDelta": {
+        "type": "object",
+        "required": ["suspect", "weight"],
+        "properties": {
+          "suspect": { "$ref": "#/components/schemas/DriftSuspect" },
+          "weight": { "type": "integer", "minimum": -1, "maximum": 1, "description": "+1 the suspect appeared, -1 it was retracted. A retraction is emitted when an edit resolves a suspect — the dependent was updated, a covenant was satisfied, the interface was reverted. Consumers hold a running sum, and the sum after any prefix of events equals a fresh grid drift." }
+        },
+        "additionalProperties": false,
+        "description": "One signed change to the suspect set. Watch mode emits these rather than a current list, so a consumer never has to diff lists to see what changed, and the algebra of the stream is checkable by summation."
       },
       "DriftWarning": {
         "type": "object",

@@ -13,7 +13,7 @@ use grid_wire::{
 use grid_xte::lint::{relation_name, render_edge};
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "1.5.0";
+pub const VERSION: &str = "1.6.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -327,36 +327,7 @@ pub fn diff(made_good: &grid_wire::MadeGood, name: &NameOf) -> String {
 pub fn drift(report: &grid_wire::DriftReport) -> String {
     let mut out = String::new();
     for s in &report.suspects {
-        let name = |d: &grid_wire::DefRef| {
-            d.callsign
-                .as_ref()
-                .map_or_else(|| format!("@{}", short(&d.datum)), |c| c.0.clone())
-        };
-        let arrow = format!("<-{}-", relation_name(s.relation));
-        let transition = match (&s.sig_before, &s.sig_after) {
-            (Some(before), Some(after)) => format!("{}→{}", short(before), short(after)),
-            // No sig on one side is the honest unknown that put this suspect
-            // in the list at all; the row says so rather than showing half a
-            // transition as if it were whole.
-            _ => "sig?".to_owned(),
-        };
-        // Both trailing columns are always present, `-` when there is
-        // nothing to say. A column that sometimes vanishes shifts every
-        // later one for anything parsing by position, which is the contract.
-        let at = s
-            .dependent
-            .materialization
-            .as_ref()
-            .map_or_else(|| "-".to_owned(), |m| format!("{}:{}", m.file, m.line));
-        let columns = [
-            role(zoc_name(s.zoc)),
-            name(&s.dependent),
-            arrow,
-            name(&s.changed),
-            transition,
-            s.reason.clone().unwrap_or_else(|| "-".to_owned()),
-            at,
-        ];
+        let columns = drift_columns(s);
         let refs: Vec<&str> = columns.iter().map(String::as_str).collect();
         record(&mut out, "drift", &refs);
     }
@@ -393,6 +364,38 @@ pub fn drift(report: &grid_wire::DriftReport) -> String {
     out
 }
 
+/// One `delta` record per signed suspect change: the sign, then the same
+/// columns a `drift` record carries.
+///
+/// Signed rather than a current list, so a consumer never diffs lists to see
+/// what changed and the stream's algebra is checkable by summation: the sum
+/// after any prefix of events is what a fresh `grid drift` would say.
+#[must_use]
+pub fn deltas(rows: &[grid_wire::DriftDelta]) -> String {
+    let mut out = String::new();
+    for row in rows {
+        let glyph = if row.weight < 0 { "-" } else { "+" };
+        let mut columns = vec![glyph.to_owned()];
+        columns.extend(drift_columns(&row.suspect));
+        let refs: Vec<&str> = columns.iter().map(String::as_str).collect();
+        record(&mut out, "delta", &refs);
+    }
+    out
+}
+
+/// The `miss` records a watch event closes with: one per path the frontend
+/// refused. The refusal is part of the stream, not a note beside it — a
+/// consumer summing deltas has to know that this event carried none because
+/// grid could not read a file, and not because nothing changed.
+#[must_use]
+pub fn declined(paths: &[String]) -> String {
+    let mut out = String::new();
+    for path in paths {
+        record(&mut out, "miss", &[path, "unparseable"]);
+    }
+    out
+}
+
 /// One `bind` record per declared covenant: the two patterns and the
 /// boundary they meet across. A declaration, printed the way it was made.
 #[must_use]
@@ -402,6 +405,39 @@ pub fn covenants(rows: &[grid_wire::Covenant]) -> String {
         record(&mut out, "bind", &[&c.a.0, &c.b.0, &c.via]);
     }
     out
+}
+
+/// The columns a suspect renders as, shared by the `drift` record and the
+/// signed `delta` record so the two cannot drift apart.
+///
+/// Both trailing columns are always present, `-` when there is nothing to
+/// say: a column that sometimes vanishes shifts every later one for anything
+/// parsing by position, which is the contract.
+fn drift_columns(s: &grid_wire::DriftSuspect) -> Vec<String> {
+    let name = |d: &grid_wire::DefRef| {
+        d.callsign
+            .as_ref()
+            .map_or_else(|| format!("@{}", short(&d.datum)), |c| c.0.clone())
+    };
+    let transition = match (&s.sig_before, &s.sig_after) {
+        (Some(before), Some(after)) => format!("{}→{}", short(before), short(after)),
+        // No sig on one side is the honest unknown that put this suspect in
+        // the list at all; the row says so rather than showing half a
+        // transition as if it were whole.
+        _ => "sig?".to_owned(),
+    };
+    vec![
+        role(zoc_name(s.zoc)),
+        name(&s.dependent),
+        format!("<-{}-", relation_name(s.relation)),
+        name(&s.changed),
+        transition,
+        s.reason.clone().unwrap_or_else(|| "-".to_owned()),
+        s.dependent
+            .materialization
+            .as_ref()
+            .map_or_else(|| "-".to_owned(), |m| format!("{}:{}", m.file, m.line)),
+    ]
 }
 
 /// The `miss` records that close a drift report. Both are refusals, and a

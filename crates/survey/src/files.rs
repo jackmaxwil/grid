@@ -246,6 +246,27 @@ fn ignored(
     }
 }
 
+/// Re-read one already-discovered file, in place.
+///
+/// The discovery half of [`sources`] — `git ls-files` and the crate-root scan
+/// — does not change when a file's *contents* do, so a caller holding a file
+/// list can refresh one entry and keep the rest. Returns `false` when the
+/// path is not in the list, which is the caller's cue that discovery has to
+/// run again: a new file is a new tracked path, not a changed one.
+#[must_use]
+pub fn reread(root: &Path, sources: &mut [SourceFile], path: &str) -> bool {
+    let Some(slot) = sources.iter_mut().find(|s| s.path == path) else {
+        return false;
+    };
+    let Ok(source) = std::fs::read_to_string(root.join(path)) else {
+        // A file that vanished is a discovery change, not a content one.
+        return false;
+    };
+    slot.content_hash = *blake3::hash(source.as_bytes()).as_bytes();
+    slot.source = source;
+    true
+}
+
 /// Read every tracked file an adapter claims.
 ///
 /// Unreadable and non-UTF-8 files are skipped: they are not Python the parser

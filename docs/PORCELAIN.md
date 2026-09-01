@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 1.5.0
+version: 1.6.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -28,6 +28,7 @@ document.
 | `fork` | caller, green callee (`-` if the trace had no hop there), red callee |
 | `drift` | evidence grade, dependent callsign, `<-relation-`, changed callsign, sig transition (`old4→new4`, or `sig?` when either side carries no sig), reason (`-` when the edge speaks for itself), dependent `file:line` (`-` when unknown) — `grid drift` |
 | `bind` | pattern A, pattern B, `via` word — one declared covenant (`grid bind`) |
+| `delta` | `+` or `-`, then a `drift` record's columns — one signed change to the suspect set (`grid watch`) |
 | `miss` | callsign, reason |
 | `pass` / `hold` | track id, snapshot id (first record of gate output) |
 | `warn` | callsign, message |
@@ -76,6 +77,14 @@ and never a gate: the exit code does not move for it. Coverage carried by a
 decayed trace produces no such record at all and is counted as
 `miss <n>  weak-checks skipped (stale coverage)`, because a heuristic built
 on a demoted heuristic is noise.
+
+`grid watch` emits `delta` records rather than a current list: `+` a suspect
+appeared, `-` it was retracted. A consumer holds a running sum, and the sum
+after any prefix of events is what a fresh `grid drift` would say — so
+nobody has to diff lists to see what changed. Watch mode has no verdict and
+always exits `0`; `grid drift` is the verb that holds. A file event the
+frontend cannot parse emits no deltas at all and says so on stderr, because
+a file grid cannot read is not a file with nothing in it.
 
 ## Glyphs
 

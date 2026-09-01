@@ -43,7 +43,20 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 | C29 | a membership diff of two snapshots names exactly the definitions the delta path does; an image extended one snapshot at a time is byte-identical to one rebuilt from the whole chain; a snapshot the chain never held is a typed refusal, never an empty diff | membership.rs | 10+ |
 | C30 | a weak-test finding requires all four facts — the definition's datum moved, a live trace covers it, the test's own datum held, and a pass is on record at both endpoints — is graded heuristic, and never moves the exit code; coverage from a decayed trace yields no finding and is counted | weak.rs | 10+ |
 | C31 | an aground walk's `complete_within` is a layer it fully expanded, so the answer truncated to that depth equals the unbudgeted walk's under the same filter; a walk whose first layer did not finish certifies nothing | certificate.rs walk.rs | 10+ |
+| C32 | a watch session's summed deltas equal a fresh `grid drift` after every prefix of an event sequence; an edit and its revert net to zero; an unparseable file event emits no deltas and is counted | watch.rs | 10+ |
 
+
+## Maintained views
+
+Every view a watch session maintains declares its class before it lands. The
+classification is DBSP's and it is a cost model, not a taxonomy: it says what
+state maintenance needs, and therefore what a session must hold.
+
+| view | class | state it must hold | why |
+|---|---|---|---|
+| sig re-hash (a file's interface identities) | linear | none | a linear operator *is* its own incremental form: delta in, delta out. |
+| drift suspects | bilinear | the edge table (the base snapshot's resident segments — already the integral of every edge delta) and the changed-sig set since base | a join needs the integrals of both inputs: `Δ(a⋈b) = Δa⋈Δb + a⋈Δb + Δa⋈b`. Nothing else is needed, and nothing else is held. |
+| verdict closures | recursive | **declared not maintained** | the nested-stream case: correct to incrementalise and expensive to. The budgeted invalidate-and-rewalk in `grid cache` stays the call. |
 
 ## Dependency justification
 

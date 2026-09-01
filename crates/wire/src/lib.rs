@@ -800,6 +800,13 @@ pub enum StaleTestReason {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct DriftDelta {
+    pub suspect: DriftSuspect,
+    pub weight: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriftWarning {
     pub subject: String,
     pub message: String,
