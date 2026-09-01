@@ -443,3 +443,204 @@ fn an_unsurveyed_head_reports_its_count_as_unknown_not_zero() {
         "unknown is absent on the wire, never zero: {json}"
     );
 }
+
+/// The `(dependent, changed, grade, reason?)` of every `drift` record — the
+/// evidence column matters once observations join the walk.
+fn graded(out: &Output) -> Vec<(String, String, String, Option<String>)> {
+    stdout(out)
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>())
+        .filter(|c| c.first() == Some(&"drift"))
+        .filter_map(|c| {
+            Some((
+                c.get(2)?.to_string(),
+                c.get(4)?.to_string(),
+                c.get(1)?.to_string(),
+                c.get(6).filter(|r| **r != "-").map(|r| (*r).to_string()),
+            ))
+        })
+        .collect()
+}
+
+/// Commit whatever is on disk under `message`.
+fn commit(dir: &Path, message: &str) {
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-qm", message]);
+}
+
+/// A wake asserting one call, by symbol, so it resolves against whatever the
+/// live chart currently is.
+fn ingest_wake(dir: &Path, id: &str, from: &str, to: &str) {
+    let wake = serde_json::json!({
+        "wake_id": id,
+        "git_rev": "HEAD",
+        "observations": [{
+            "caller": { "symbol": from },
+            "callee": { "symbol": to }
+        }]
+    });
+    let path = dir.join("wake.json");
+    std::fs::write(&path, wake.to_string()).expect("write wake");
+    let out = grid(dir, &["wake", "ingest", "wake.json"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "ingest failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout(&out).contains("1/1"),
+        "the hop must resolve, or the fixture proves nothing: {}",
+        stdout(&out)
+    );
+}
+
+/// Ground truth for step 3: coupling only a trace knows about is a suspect
+/// once the floor admits observations — and never at the proven default,
+/// because a wake is not a proof.
+#[test]
+fn observed_coupling_implicates_a_dependent_only_at_or_below_the_observed_floor() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(
+        dir.path(),
+        &[
+            ("pkg/__init__.py", ""),
+            ("pkg/api.py", "def window(retries=3):\n    return retries\n"),
+            // Reaches `window` through a name the resolver cannot bind, so
+            // the only evidence of the coupling is the trace.
+            (
+                "pkg/caller.py",
+                "import importlib\n\n\ndef go():\n    return importlib.import_module(\"pkg.api\").window()\n",
+            ),
+        ],
+    );
+    commit(dir.path(), "before");
+    // Survey, then trace: the wake resolves against the base chart.
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    ingest_wake(dir.path(), "wake:one", "caller.go", "api.window");
+
+    write(
+        dir.path(),
+        &[("pkg/api.py", "def window(retries=5):\n    return retries\n")],
+    );
+    commit(dir.path(), "after");
+
+    let proven = grid(dir.path(), &["drift", "HEAD~1", "HEAD"]);
+    assert_eq!(
+        code(&proven),
+        0,
+        "a wake is not a proof: {}",
+        stdout(&proven)
+    );
+    assert!(suspects(&proven).is_empty(), "{}", stdout(&proven));
+
+    let observed = grid(
+        dir.path(),
+        &["drift", "HEAD~1", "HEAD", "--floor", "observed"],
+    );
+    assert_eq!(
+        code(&observed),
+        3,
+        "stderr:\n{}",
+        String::from_utf8_lossy(&observed.stderr)
+    );
+    let rows = graded(&observed);
+    assert_eq!(
+        rows,
+        vec![(
+            "pkg.caller.go".to_owned(),
+            "pkg.api.window".to_owned(),
+            "observed".to_owned(),
+            None,
+        )],
+        "the traced caller is a suspect at its honest grade"
+    );
+}
+
+/// Ground truth for the decay half: once the traced *caller* has itself been
+/// rewritten, the trace describes code the base chart does not hold. The edge
+/// drops below the observed floor and appears only at `heuristic`, carrying
+/// `stale-trace` — and re-tracing restores it.
+#[test]
+fn a_decayed_trace_falls_to_heuristic_with_a_named_reason_and_recovers() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(
+        dir.path(),
+        &[
+            ("pkg/__init__.py", ""),
+            ("pkg/api.py", "def window(retries=3):\n    return retries\n"),
+            (
+                "pkg/caller.py",
+                "import importlib\n\n\ndef go():\n    return importlib.import_module(\"pkg.api\").window()\n",
+            ),
+        ],
+    );
+    commit(dir.path(), "one");
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    ingest_wake(dir.path(), "wake:one", "caller.go", "api.window");
+
+    // The traced caller is rewritten: its datum moves, so the retained hop
+    // now names a definition the next base does not intern.
+    write(
+        dir.path(),
+        &[(
+            "pkg/caller.py",
+            "import importlib\n\n\ndef go():\n    return importlib.import_module(\"pkg.api\").window() + 1\n",
+        )],
+    );
+    commit(dir.path(), "two");
+    write(
+        dir.path(),
+        &[("pkg/api.py", "def window(retries=5):\n    return retries\n")],
+    );
+    commit(dir.path(), "three");
+
+    let observed = grid(
+        dir.path(),
+        &["drift", "HEAD~1", "HEAD", "--floor", "observed"],
+    );
+    assert_eq!(
+        code(&observed),
+        0,
+        "a decayed trace does not gate: {}",
+        stdout(&observed)
+    );
+    assert!(
+        suspects(&observed).is_empty(),
+        "a stale trace is below the observed floor:\n{}",
+        stdout(&observed)
+    );
+
+    let weak = grid(
+        dir.path(),
+        &["drift", "HEAD~1", "HEAD", "--floor", "heuristic"],
+    );
+    let rows = graded(&weak);
+    assert_eq!(rows.len(), 1, "{}", stdout(&weak));
+    assert_eq!(rows[0].1, "pkg.api.window");
+    assert_eq!(rows[0].2, "heuristic", "demoted, not silently observed");
+    assert_eq!(
+        rows[0].3.as_deref(),
+        Some("stale-trace"),
+        "the demotion says why: {}",
+        stdout(&weak)
+    );
+
+    // Re-tracing against the current code restores the observation: the
+    // retained log is append-only, and the fresh wake is simply believed.
+    assert_eq!(code(&grid(dir.path(), &["survey", "HEAD~1"])), 0);
+    ingest_wake(dir.path(), "wake:two", "caller.go", "api.window");
+    let again = grid(
+        dir.path(),
+        &["drift", "HEAD~1", "HEAD", "--floor", "observed"],
+    );
+    let rows = graded(&again);
+    assert_eq!(
+        rows.iter().map(|r| r.2.as_str()).collect::<Vec<_>>(),
+        ["observed"],
+        "a fresh trace is an observation again:\n{}",
+        stdout(&again)
+    );
+}

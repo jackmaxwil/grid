@@ -39,6 +39,7 @@ rows are `| \`token\` | one answer, at most three lines when printed |`.
 | `observed` | happened in a wake at least once. |
 | `modeled` | established by a bridge (registry, schema, route unification), not by the language. |
 | `heuristic` | name or shape match. Never blocks a gate by itself. |
+| `stale-trace` | why an observed edge was demoted to `heuristic`: an endpoint of the trace is not in the chart being asked about, so the observation describes code that no longer exists there. The retained wake is never rewritten — decay is a property of the question. |
 
 ## Verdicts and records
 

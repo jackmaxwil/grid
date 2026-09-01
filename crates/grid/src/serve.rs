@@ -208,9 +208,12 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
                 .map(|d| encode(&d))
                 .map_err(|e| match &e {
                     crate::drift::Error::Chart(chart) => chart_error(chart),
-                    // A refused walk is the engine declining to serve a short
-                    // answer, which is an internal condition, not bad input.
-                    crate::drift::Error::BudgetRejected(_) => (-32603, e.to_string()),
+                    // A refused walk and an unreadable wake store are both
+                    // the engine declining to serve an answer it cannot
+                    // stand behind — internal conditions, not bad input.
+                    crate::drift::Error::BudgetRejected(_) | crate::drift::Error::Wake(_) => {
+                        (-32603, e.to_string())
+                    }
                 })
         }
         "grid.resolve" => {

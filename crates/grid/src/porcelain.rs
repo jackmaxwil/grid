@@ -340,23 +340,23 @@ pub fn drift(report: &grid_wire::DriftReport) -> String {
             // transition as if it were whole.
             _ => "sig?".to_owned(),
         };
+        // Both trailing columns are always present, `-` when there is
+        // nothing to say. A column that sometimes vanishes shifts every
+        // later one for anything parsing by position, which is the contract.
         let at = s
             .dependent
             .materialization
             .as_ref()
-            .map(|m| format!("{}:{}", m.file, m.line))
-            .unwrap_or_default();
-        let mut columns = vec![
+            .map_or_else(|| "-".to_owned(), |m| format!("{}:{}", m.file, m.line));
+        let columns = [
             role(zoc_name(s.zoc)),
             name(&s.dependent),
             arrow,
             name(&s.changed),
             transition,
+            s.reason.clone().unwrap_or_else(|| "-".to_owned()),
+            at,
         ];
-        if let Some(reason) = &s.reason {
-            columns.push(reason.clone());
-        }
-        columns.push(at);
         let refs: Vec<&str> = columns.iter().map(String::as_str).collect();
         record(&mut out, "drift", &refs);
     }
