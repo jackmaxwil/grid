@@ -33,6 +33,13 @@
 //! within weeks, which is the whole reason the grade is recomputed per query
 //! rather than stored.
 //!
+//! Declared coupling joins it too. A covenant ([`crate::covenant`]) is a
+//! human writing down a pair the language cannot establish — a serde
+//! boundary, a JSON contract — and it fires on *datum* change, because the
+//! coupling is semantic and a normalizer's body is the contract. Covenant
+//! suspects are `modeled` and they gate, which is the one exception to
+//! "modeled never gates": a human declared the pair, so the human meant it.
+//!
 //! Refusals ride with the answer. A drift report that says "no suspects"
 //! where it could not see callers is dishonest silence, so
 //! [`grid_wire::DriftUnchecked`] carries what was not checked and the
@@ -41,8 +48,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use grid_chart::{DatumId, Ordinal, Segment};
 use grid_wire::{
-    Callsign, Datum, DefChange, DefChangeAction, DefRef, DriftReport, DriftSuspect, DriftUnchecked,
-    MadeGood, Relation, SnapshotId, SnapshotOrRev, Track, TrackDefPromiseAction, Zoc,
+    Callsign, Covenant, Datum, DefChange, DefChangeAction, DefRef, DriftReport, DriftSuspect,
+    DriftUnchecked, MadeGood, Relation, SnapshotId, SnapshotOrRev, Track, TrackDefPromiseAction,
+    Zoc,
 };
 
 use crate::chart_provider::{self, ChartDelta};
@@ -65,6 +73,12 @@ const DEPENDENCY_RELATIONS: [Relation; 4] = [
 /// for it.
 const FUEL: u32 = grid_cache::FUEL;
 
+/// The relation a covenant suspect carries. A covenant is a declared
+/// coupling across a serialization boundary — the serde struct and the dict
+/// that feeds it — so `serializes_to` is the honest name for it. The `via`
+/// word in the reason says which boundary.
+const COVENANT_RELATION: Relation = Relation::SerializesTo;
+
 /// Why drift could not answer.
 #[derive(Debug)]
 pub enum Error {
@@ -73,6 +87,9 @@ pub enum Error {
     /// One or more inbound walks ran past [`FUEL`]. The answer is refused
     /// whole rather than served short.
     BudgetRejected(u32),
+    /// The covenant declaration file exists but does not parse. A broken
+    /// declaration must never read as an absence of declarations.
+    Covenants(String),
     /// The retained wakes could not be read. Not an empty observation set:
     /// a store that fails to open has unknown contents, and answering
     /// "nothing was observed" for it would be a fabricated all-clear.
@@ -84,6 +101,7 @@ impl std::fmt::Display for Error {
         match self {
             Self::Chart(e) => write!(f, "{e}"),
             Self::Wake(e) => write!(f, "{e}"),
+            Self::Covenants(msg) => f.write_str(msg),
             Self::BudgetRejected(n) => write!(
                 f,
                 "{n} inbound walk(s) exceeded fuel ({FUEL}) — refused whole, \
@@ -203,6 +221,10 @@ pub struct Query<'a> {
     /// A promise file, if one was named: a suspect the track promises to
     /// modify or remove is suppressed, because the gate already judges it.
     pub track: Option<&'a Track>,
+    /// The repo's declared couplings. Empty is a repo that has declared
+    /// none, which is not the same as one whose declaration file is
+    /// unreadable — that is the caller's error to raise.
+    pub covenants: &'a [Covenant],
     /// The head survey's count of references it declined to bind, or `None`
     /// when nobody surveyed head in this run — unknown, never zero.
     pub declined_refs: Option<u64>,
@@ -213,14 +235,17 @@ pub struct Query<'a> {
 }
 
 impl<'a> Query<'a> {
-    /// The everyday question: proven edges, no track, the default budget.
+    /// The everyday question: everything grid can stand behind — proven
+    /// edges and live observations — with no track, no covenants, and the
+    /// default budget.
     #[must_use]
     pub fn new(base: &'a SnapshotOrRev, head: &'a SnapshotOrRev) -> Self {
         Self {
             base,
             head,
-            floor: Zoc::Proven,
+            floor: Zoc::Observed,
             track: None,
+            covenants: &[],
             declined_refs: None,
             fuel: FUEL,
         }
@@ -238,6 +263,7 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
         head,
         floor,
         track,
+        covenants,
         declined_refs,
         fuel: budget,
     } = *query;
@@ -333,6 +359,17 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
         return Err(Error::BudgetRejected(budget_rejected));
     }
 
+    // Declared coupling, joined last: a covenant fires on datum change, so
+    // it needs the same `touched` set the walk used and nothing else.
+    let warnings = fire_covenants(
+        covenants,
+        &chart,
+        base_epoch.segments(),
+        head_epoch.segments(),
+        &touched,
+        &mut suspects,
+    );
+
     Ok(DriftReport {
         base: SnapshotId(base_epoch.snapshot_id().as_str().to_owned()),
         head: SnapshotId(head_epoch.snapshot_id().as_str().to_owned()),
@@ -341,6 +378,88 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
             unresolved_refs: declined_refs,
             budget_rejected: u64::from(budget_rejected),
         },
+        warnings: (!warnings.is_empty()).then_some(warnings),
+    })
+}
+
+/// Join the repo's declared couplings into the suspect set.
+///
+/// Returns the warnings: a pattern that matches nothing at drift time is a
+/// declaration that stopped being checked, and a rule that quietly stops
+/// being checked is worse than no rule.
+fn fire_covenants<B: AsRef<[u8]>>(
+    covenants: &[Covenant],
+    chart: &ChartDelta,
+    segments: &[Segment<B>],
+    head: &[Segment<B>],
+    touched: &HashSet<&str>,
+    suspects: &mut BTreeMap<(String, String, u8), DriftSuspect>,
+) -> Vec<grid_wire::DriftWarning> {
+    let names = base_callsigns(segments);
+    let all: Vec<&str> = names.iter().map(String::as_str).collect();
+    let head_names = base_callsigns(head);
+    let live: Vec<&str> = head_names.iter().map(String::as_str).collect();
+    let touched_names: Vec<&str> = touched.iter().copied().collect();
+    let (fired, warnings) = crate::covenant::fire(covenants, &all, &live, &touched_names);
+    for hit in fired {
+        let Some(datum) = datum_of(segments, &hit.held) else {
+            continue;
+        };
+        let key = (
+            hit.held.clone(),
+            hit.moved.clone(),
+            grid_chart::relation_tag(COVENANT_RELATION),
+        );
+        suspects.entry(key).or_insert_with(|| DriftSuspect {
+            dependent: def_ref(chart, datum, Some(&hit.held)),
+            changed: datum_of(segments, &hit.moved).map_or_else(
+                // The partner may have been removed outright, and then base
+                // has no datum for it: name it and say nothing more.
+                || DefRef {
+                    datum: Datum(String::new()),
+                    callsign: Some(Callsign(hit.moved.clone())),
+                    lang: None,
+                    signature: None,
+                    materialization: None,
+                },
+                |d| def_ref(chart, d, Some(&hit.moved)),
+            ),
+            relation: COVENANT_RELATION,
+            zoc: Zoc::Modeled,
+            // A covenant fires on the body, not the interface, so there is
+            // no sig transition to show — and showing one would suggest the
+            // wrong reason for the finding.
+            sig_before: None,
+            sig_after: None,
+            reason: Some(hit.reason),
+        });
+    }
+    warnings
+}
+
+/// Every callsign a live set names, sorted, so covenant matching is a
+/// function of content rather than of segment order. Used for both endpoints
+/// of the covenant join: base decides what fired, head decides what is still
+/// being checked.
+fn base_callsigns<B: AsRef<[u8]>>(segments: &[Segment<B>]) -> Vec<String> {
+    let mut out: Vec<String> = segments
+        .iter()
+        .flat_map(|s| {
+            (0..s.def_count()).filter_map(move |ord| s.callsign(Ordinal(ord)).map(str::to_owned))
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The datum a callsign answers to in a live set.
+fn datum_of<B: AsRef<[u8]>>(segments: &[Segment<B>], callsign: &str) -> Option<DatumId> {
+    segments.iter().find_map(|s| {
+        (0..s.def_count()).find_map(|ord| {
+            let ord = Ordinal(ord);
+            (s.callsign(ord) == Some(callsign)).then(|| s.datum(ord))?
+        })
     })
 }
 

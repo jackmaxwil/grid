@@ -14,7 +14,7 @@
   },
   "x-porcelain": {
     "doc": "packages/grid/docs/PORCELAIN.md",
-    "version": "1.4.0",
+    "version": "1.5.0",
     "description": "Normative grammar for human-facing stdout records. --json emits wire results verbatim; the porcelain version is reported by grid.version."
   },
   "methods": [
@@ -27,7 +27,7 @@
         {
           "name": "current versions",
           "params": [],
-          "result": { "name": "version", "value": { "wire": "0.1.0", "engine": "grid 0.1.0", "porcelain": "1.4.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
+          "result": { "name": "version", "value": { "wire": "0.1.0", "engine": "grid 0.1.0", "porcelain": "1.5.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
         }
       ],
       "result": {
@@ -1171,6 +1171,27 @@
         },
         "additionalProperties": false
       },
+      "Covenant": {
+        "type": "object",
+        "required": ["a", "b", "via"],
+        "properties": {
+          "a": { "$ref": "#/components/schemas/CallsignPattern" },
+          "b": { "$ref": "#/components/schemas/CallsignPattern" },
+          "via": { "type": "string", "minLength": 1, "description": "The boundary the coupling crosses: 'schema', 'wire', 'protocol' — free text, and the word that appears in a drift record's reason." },
+          "note": { "type": "string" }
+        },
+        "additionalProperties": false,
+        "description": "A declared, symmetric coupling between two callsign patterns that no language's binding rules establish — a serde boundary, a JSON contract, a Python dict a Rust struct deserializes. A human knows the pair; this is where it is written down. Declared coupling is the one modeled evidence that gates, because a human declared it."
+      },
+      "DriftWarning": {
+        "type": "object",
+        "required": ["subject", "message"],
+        "properties": {
+          "subject": { "type": "string", "description": "The callsign or pattern the warning is about." },
+          "message": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
       "DriftSuspect": {
         "type": "object",
         "required": ["dependent", "changed", "relation", "zoc"],
@@ -1202,7 +1223,8 @@
           "base": { "$ref": "#/components/schemas/SnapshotId" },
           "head": { "$ref": "#/components/schemas/SnapshotId" },
           "suspects": { "type": "array", "items": { "$ref": "#/components/schemas/DriftSuspect" } },
-          "unchecked": { "$ref": "#/components/schemas/DriftUnchecked" }
+          "unchecked": { "$ref": "#/components/schemas/DriftUnchecked" },
+          "warnings": { "type": "array", "items": { "$ref": "#/components/schemas/DriftWarning" }, "description": "Reported rather than refused: a declared covenant whose pattern matches nothing at drift time, and anything else drift wants a human to see without holding on it." }
         },
         "additionalProperties": false
       },

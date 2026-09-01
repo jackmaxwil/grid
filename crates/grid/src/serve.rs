@@ -214,6 +214,9 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
                     crate::drift::Error::BudgetRejected(_) | crate::drift::Error::Wake(_) => {
                         (-32603, e.to_string())
                     }
+                    // An unreadable declaration file is repo configuration,
+                    // which is the caller's to fix.
+                    crate::drift::Error::Covenants(_) => (-32602, e.to_string()),
                 })
         }
         "grid.resolve" => {

@@ -13,7 +13,7 @@ use grid_wire::{
 use grid_xte::lint::{relation_name, render_edge};
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "1.4.0";
+pub const VERSION: &str = "1.5.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -360,7 +360,21 @@ pub fn drift(report: &grid_wire::DriftReport) -> String {
         let refs: Vec<&str> = columns.iter().map(String::as_str).collect();
         record(&mut out, "drift", &refs);
     }
+    for warning in report.warnings.iter().flatten() {
+        record(&mut out, "warn", &[&warning.subject, &warning.message]);
+    }
     out.push_str(&drift_unchecked(&report.unchecked));
+    out
+}
+
+/// One `bind` record per declared covenant: the two patterns and the
+/// boundary they meet across. A declaration, printed the way it was made.
+#[must_use]
+pub fn covenants(rows: &[grid_wire::Covenant]) -> String {
+    let mut out = String::new();
+    for c in rows {
+        record(&mut out, "bind", &[&c.a.0, &c.b.0, &c.via]);
+    }
     out
 }
 

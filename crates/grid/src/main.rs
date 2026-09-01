@@ -24,6 +24,7 @@
 
 mod bisect;
 mod chart_provider;
+mod covenant;
 mod drift;
 mod edit;
 mod explain;
@@ -77,6 +78,7 @@ fn help() {
          survey                       chart the worktree; idempotent\n  \
          diff [base] [head]           what changed, in defs and edges\n  \
          drift [base] [head]          dependents of changed interfaces; exit 3 on suspects\n  \
+         bind <A> <B> --via <word>    declare a coupling no language establishes\n  \
          resolve <name|file|f:line>   where it is; a bare file lists its defs\n  \
          uses <name> [--relation r]   proven inbound edges\n  \
          scope <pattern> [--depth N]  context pack around an edit\n  \
@@ -151,6 +153,7 @@ fn main() -> ExitCode {
         Some((&"survey", args)) => survey(args, json),
         Some((&"diff", args)) => diff(args, json),
         Some((&"drift", args)) => drift_verb(args, json),
+        Some((&"bind", args)) => bind(args, json),
         Some((&"resolve", args)) => resolve(args, json),
         Some((&"gate", args)) => gate(args, json),
         Some((&"track", args)) => track::main(args, json),
@@ -552,7 +555,7 @@ fn drift_verb(args: &[&str], json: bool) -> u8 {
             hint(&format!("grid: {e}"));
             exit::INTERNAL
         }
-        Err(drift::Error::Chart(e)) => {
+        Err(e @ (drift::Error::Chart(_) | drift::Error::Covenants(_))) => {
             hint(&format!("grid: {e}"));
             exit::BAD_INPUT
         }
@@ -589,6 +592,122 @@ const DRIFT_USAGE: &str =
 /// names are the vocabulary, so the flag cannot drift from the contract.
 fn zoc_named(name: &str) -> Option<grid_wire::Zoc> {
     serde_json::from_value(serde_json::Value::String(name.to_owned())).ok()
+}
+
+const BIND_USAGE: &str = "usage: grid bind <A> <B> --via <word> [--note <text>] | grid bind --list";
+
+/// `grid bind <A> <B> --via <word> [--note <text>]` — declare a coupling no
+/// language's binding rules establish, so drift can see it.
+///
+/// Both patterns are resolved against the current snapshot and a pattern
+/// matching nothing is refused: a declaration about code that does not exist
+/// is a rule that will never fire, and writing it down silently is worse than
+/// not writing it. Removing a covenant is editing the file — it is a
+/// declaration, like a track.
+fn bind(args: &[&str], json: bool) -> u8 {
+    if args.first() == Some(&"--list") {
+        return match covenant::load(root()) {
+            Err(e) => {
+                hint(&format!("grid: {e}"));
+                exit::BAD_INPUT
+            }
+            Ok(rows) => {
+                if json {
+                    return emit_json(&rows);
+                }
+                print!("{}", porcelain::covenants(&rows));
+                exit::OK
+            }
+        };
+    }
+    let mut via = None;
+    let mut note = None;
+    let mut positional = Vec::new();
+    let mut rest = args;
+    while let Some((arg, tail)) = rest.split_first() {
+        rest = tail;
+        let mut flag = |slot: &mut Option<String>| match rest.split_first() {
+            Some((value, tail)) => {
+                *slot = Some((*value).to_owned());
+                rest = tail;
+                true
+            }
+            None => false,
+        };
+        match *arg {
+            "--via" => {
+                if !flag(&mut via) {
+                    hint(BIND_USAGE);
+                    return exit::BAD_INPUT;
+                }
+            }
+            "--note" => {
+                if !flag(&mut note) {
+                    hint(BIND_USAGE);
+                    return exit::BAD_INPUT;
+                }
+            }
+            other if other.starts_with("--") => {
+                hint(&format!("grid: unknown flag `{other}`\n{BIND_USAGE}"));
+                return exit::BAD_INPUT;
+            }
+            other => positional.push(other),
+        }
+    }
+    let ([a, b], Some(via)) = (positional.as_slice(), via) else {
+        hint(BIND_USAGE);
+        return exit::BAD_INPUT;
+    };
+    if via.is_empty() {
+        hint(BIND_USAGE);
+        return exit::BAD_INPUT;
+    }
+    for pattern in [*a, *b] {
+        match rpc::matching(root(), pattern) {
+            Err(e) => {
+                hint(&format!("grid: {e}"));
+                return exit::INTERNAL;
+            }
+            // The `resolve` contract, restated: a name that resolves to
+            // nothing is bad input, and the hint lists the closest charted
+            // callsigns — silence was read as "does not exist", which is the
+            // one conclusion grid never licenses.
+            Ok(0) => {
+                hint(&miss(pattern));
+                return exit::BAD_INPUT;
+            }
+            Ok(_) => {}
+        }
+    }
+    let mut covenants = match covenant::load(root()) {
+        Ok(rows) => rows,
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            return exit::BAD_INPUT;
+        }
+    };
+    let fresh = grid_wire::Covenant {
+        a: grid_wire::CallsignPattern((*a).to_owned()),
+        b: grid_wire::CallsignPattern((*b).to_owned()),
+        via,
+        note,
+    };
+    // Declaring the same pair twice is one declaration, not two.
+    if !covenants
+        .iter()
+        .any(|c| c.a == fresh.a && c.b == fresh.b && c.via == fresh.via)
+    {
+        covenants.push(fresh);
+    }
+    if let Err(e) = covenant::save(root(), &covenants) {
+        hint(&format!("grid: {e}"));
+        return exit::INTERNAL;
+    }
+    if json {
+        return emit_json(&covenants);
+    }
+    print!("{}", porcelain::covenants(&covenants));
+    exit::OK
 }
 
 /// `grid resolve <name>` — the definitions a name refers to.

@@ -258,15 +258,37 @@ pub fn drift(
         // survey declined. Unknown, not zero.
         SnapshotOrRev::Snapshot { .. } => None,
     };
+    // A declaration file that exists but does not parse is a loud error,
+    // never an absence of declarations: a covenant nobody can read is not a
+    // covenant nobody made.
+    let covenants = crate::covenant::load(root).map_err(crate::drift::Error::Covenants)?;
     crate::drift::compute(
         root,
         &crate::drift::Query {
-            floor: params.floor.unwrap_or(grid_wire::Zoc::Proven),
+            floor: params
+                .floor
+                .unwrap_or(crate::drift::Query::new(&params.base, &params.head).floor),
             track: params.track.as_ref(),
+            covenants: &covenants,
             declined_refs: declined,
             ..crate::drift::Query::new(&params.base, &params.head)
         },
     )
+}
+
+/// How many charted callsigns a pattern matches.
+///
+/// Zero is the answer `grid bind` refuses on: a declaration about code that
+/// does not exist is a rule that will never fire.
+///
+/// # Errors
+/// [`chart_provider::Error`] if the store cannot be opened.
+pub fn matching(root: &std::path::Path, pattern: &str) -> Result<usize, chart_provider::Error> {
+    let chart = ChartDelta::open(root)?;
+    Ok(live_defs(&chart)
+        .into_iter()
+        .filter(|(_, callsign, _, _)| grid_xte::pattern::matches(pattern, callsign))
+        .count())
 }
 
 /// The `k` charted callsigns nearest to `name`: ranked by edit distance on

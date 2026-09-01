@@ -44,7 +44,13 @@ fn repo(before: &[(&str, &str)], after: &[(&str, &str)]) -> tempfile::TempDir {
     git(dir.path(), &["commit", "-qm", "before"]);
     write(dir.path(), after);
     git(dir.path(), &["add", "-A"]);
-    git(dir.path(), &["commit", "-qm", "after"]);
+    // `--allow-empty`: a fixture whose second commit changes nothing is a
+    // real case (the covenant tests declare and then edit afterwards), and
+    // git refuses an empty commit by default.
+    git(
+        dir.path(),
+        &["commit", "-q", "--allow-empty", "-m", "after"],
+    );
     dir
 }
 
@@ -526,7 +532,10 @@ fn observed_coupling_implicates_a_dependent_only_at_or_below_the_observed_floor(
     );
     commit(dir.path(), "after");
 
-    let proven = grid(dir.path(), &["drift", "HEAD~1", "HEAD"]);
+    let proven = grid(
+        dir.path(),
+        &["drift", "HEAD~1", "HEAD", "--floor", "proven"],
+    );
     assert_eq!(
         code(&proven),
         0,
@@ -535,10 +544,8 @@ fn observed_coupling_implicates_a_dependent_only_at_or_below_the_observed_floor(
     );
     assert!(suspects(&proven).is_empty(), "{}", stdout(&proven));
 
-    let observed = grid(
-        dir.path(),
-        &["drift", "HEAD~1", "HEAD", "--floor", "observed"],
-    );
+    // `observed` is the default floor, so the everyday verb sees this.
+    let observed = grid(dir.path(), &["drift", "HEAD~1", "HEAD"]);
     assert_eq!(
         code(&observed),
         3,
@@ -597,10 +604,7 @@ fn a_decayed_trace_falls_to_heuristic_with_a_named_reason_and_recovers() {
     );
     commit(dir.path(), "three");
 
-    let observed = grid(
-        dir.path(),
-        &["drift", "HEAD~1", "HEAD", "--floor", "observed"],
-    );
+    let observed = grid(dir.path(), &["drift", "HEAD~1", "HEAD"]);
     assert_eq!(
         code(&observed),
         0,
@@ -632,15 +636,265 @@ fn a_decayed_trace_falls_to_heuristic_with_a_named_reason_and_recovers() {
     // retained log is append-only, and the fresh wake is simply believed.
     assert_eq!(code(&grid(dir.path(), &["survey", "HEAD~1"])), 0);
     ingest_wake(dir.path(), "wake:two", "caller.go", "api.window");
-    let again = grid(
-        dir.path(),
-        &["drift", "HEAD~1", "HEAD", "--floor", "observed"],
-    );
+    let again = grid(dir.path(), &["drift", "HEAD~1", "HEAD"]);
     let rows = graded(&again);
     assert_eq!(
         rows.iter().map(|r| r.2.as_str()).collect::<Vec<_>>(),
         ["observed"],
         "a fresh trace is an observation again:\n{}",
         stdout(&again)
+    );
+}
+
+/// Declare a covenant through the verb, asserting it took.
+fn bind(dir: &Path, a: &str, b: &str, via: &str) -> Output {
+    grid(dir, &["bind", a, b, "--via", via])
+}
+
+/// Ground truth for step 4: a declared coupling fires on *datum* change, and
+/// the partner that held is a suspect at `modeled` — which gates, because a
+/// human declared the pair.
+#[test]
+fn a_covenant_implicates_the_side_that_held() {
+    let dir = repo(
+        &[
+            ("pkg/__init__.py", ""),
+            // No language rule couples these two. A human knows they are one
+            // contract; the covenant is where that is written down.
+            (
+                "pkg/writer.py",
+                "def encode(tag):\n    return {\"name\": tag}\n",
+            ),
+            (
+                "pkg/reader.py",
+                "def decode(blob):\n    return blob[\"name\"]\n",
+            ),
+        ],
+        &[(
+            "pkg/writer.py",
+            "def encode(tag):\n    return {\"label\": tag}\n",
+        )],
+    );
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let bound = bind(
+        dir.path(),
+        "pkg.writer.encode",
+        "pkg.reader.decode",
+        "schema",
+    );
+    assert_eq!(
+        code(&bound),
+        0,
+        "stderr:\n{}",
+        String::from_utf8_lossy(&bound.stderr)
+    );
+
+    let out = grid(dir.path(), &["drift", "HEAD~1", "HEAD"]);
+    assert_eq!(
+        code(&out),
+        3,
+        "a declared coupling gates:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rows = graded(&out);
+    assert_eq!(
+        rows,
+        vec![(
+            "pkg.reader.decode".to_owned(),
+            "pkg.writer.encode".to_owned(),
+            "modeled".to_owned(),
+            Some("covenant:schema".to_owned()),
+        )],
+        "the side that held is the suspect, at modeled, saying why"
+    );
+}
+
+/// Both sides moving is a covenant *kept* — which is the whole reason to
+/// declare one — so it fires nothing.
+#[test]
+fn a_covenant_both_sides_honoured_is_silent() {
+    let dir = repo(
+        &[
+            ("pkg/__init__.py", ""),
+            (
+                "pkg/writer.py",
+                "def encode(tag):\n    return {\"name\": tag}\n",
+            ),
+            (
+                "pkg/reader.py",
+                "def decode(blob):\n    return blob[\"name\"]\n",
+            ),
+        ],
+        &[
+            (
+                "pkg/writer.py",
+                "def encode(tag):\n    return {\"label\": tag}\n",
+            ),
+            (
+                "pkg/reader.py",
+                "def decode(blob):\n    return blob[\"label\"]\n",
+            ),
+        ],
+    );
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    assert_eq!(
+        code(&bind(
+            dir.path(),
+            "pkg.writer.encode",
+            "pkg.reader.decode",
+            "schema"
+        )),
+        0
+    );
+    let out = grid(dir.path(), &["drift", "HEAD~1", "HEAD"]);
+    assert_eq!(code(&out), 0, "{}", stdout(&out));
+    assert!(suspects(&out).is_empty(), "{}", stdout(&out));
+}
+
+/// A covenant is a symmetric declaration: which side is written first must
+/// not change the answer.
+#[test]
+fn a_covenant_is_symmetric() {
+    let files = |writer: &str| {
+        vec![
+            ("pkg/__init__.py".to_owned(), String::new()),
+            ("pkg/writer.py".to_owned(), writer.to_owned()),
+            (
+                "pkg/reader.py".to_owned(),
+                "def decode(blob):\n    return blob[\"name\"]\n".to_owned(),
+            ),
+        ]
+    };
+    let run = |a: &str, b: &str| {
+        let before = files("def encode(tag):\n    return {\"name\": tag}\n");
+        let after = vec![(
+            "pkg/writer.py".to_owned(),
+            "def encode(tag):\n    return {\"label\": tag}\n".to_owned(),
+        )];
+        let as_refs = |v: &Vec<(String, String)>| -> Vec<(String, String)> { v.clone() };
+        let dir = tempfile::tempdir().expect("tempdir");
+        git(dir.path(), &["init", "-q", "-b", "main"]);
+        for (path, text) in as_refs(&before) {
+            write(dir.path(), &[(path.as_str(), text.as_str())]);
+        }
+        commit(dir.path(), "before");
+        for (path, text) in as_refs(&after) {
+            write(dir.path(), &[(path.as_str(), text.as_str())]);
+        }
+        commit(dir.path(), "after");
+        assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+        assert_eq!(code(&bind(dir.path(), a, b, "schema")), 0);
+        let out = grid(dir.path(), &["drift", "HEAD~1", "HEAD"]);
+        (code(&out), suspects(&out))
+    };
+    let forward = run("pkg.writer.encode", "pkg.reader.decode");
+    let backward = run("pkg.reader.decode", "pkg.writer.encode");
+    assert_eq!(forward, backward, "declaration order is not an answer");
+    assert_eq!(forward.0, 3, "and the fixture must actually fire");
+}
+
+/// Conservatism: `bind` refuses a pattern that matches nothing. A
+/// declaration about code that does not exist is a rule that will never
+/// fire, and writing it down silently is worse than not writing it.
+#[test]
+fn bind_refuses_a_pattern_that_matches_nothing() {
+    let dir = repo(&[("pkg/a.py", "def a():\n    pass\n")], &[]);
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let out = bind(dir.path(), "pkg.a.a", "pkg.nothing.here", "schema");
+    assert_eq!(code(&out), 2, "an unresolvable pattern is bad input");
+    let hints = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        hints.contains("nothing is called") && hints.contains("closest"),
+        "the refusal lists the closest charted callsigns:\n{hints}"
+    );
+    assert!(
+        !dir.path().join(".grid/covenants.json").exists(),
+        "a refused declaration is not written"
+    );
+}
+
+/// Conservatism: a covenant whose pattern matches nothing *at drift time* —
+/// the definition was deleted or renamed out from under the declaration — is
+/// a `warn` record. A rule that quietly stops being checked is worse than no
+/// rule at all.
+#[test]
+fn a_covenant_that_matches_nothing_at_drift_time_warns() {
+    let dir = repo(
+        &[
+            ("pkg/__init__.py", ""),
+            (
+                "pkg/writer.py",
+                "def encode(tag):\n    return {\"name\": tag}\n",
+            ),
+            (
+                "pkg/reader.py",
+                "def decode(blob):\n    return blob[\"name\"]\n",
+            ),
+        ],
+        &[],
+    );
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    assert_eq!(
+        code(&bind(
+            dir.path(),
+            "pkg.writer.encode",
+            "pkg.reader.decode",
+            "schema"
+        )),
+        0
+    );
+    // The reader is deleted after the declaration was made.
+    std::fs::remove_file(dir.path().join("pkg/reader.py")).expect("remove");
+    commit(dir.path(), "drop the reader");
+
+    let out = grid(dir.path(), &["drift", "HEAD~1", "HEAD"]);
+    let text = stdout(&out);
+    assert!(
+        text.lines().any(|l| {
+            let c: Vec<&str> = l.split_whitespace().collect();
+            c.first() == Some(&"warn")
+                && c.get(1) == Some(&"pkg.reader.decode")
+                && l.contains("matches nothing")
+        }),
+        "a vacuous covenant is reported, never silently satisfied:\n{text}"
+    );
+}
+
+/// `grid bind --list` prints what was declared, one `bind` record each.
+#[test]
+fn bind_list_prints_the_declarations() {
+    let dir = repo(
+        &[
+            ("pkg/__init__.py", ""),
+            ("pkg/writer.py", "def encode(t):\n    return t\n"),
+            ("pkg/reader.py", "def decode(b):\n    return b\n"),
+        ],
+        &[],
+    );
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    assert_eq!(
+        code(&bind(
+            dir.path(),
+            "pkg.writer.encode",
+            "pkg.reader.decode",
+            "schema"
+        )),
+        0
+    );
+    let out = grid(dir.path(), &["bind", "--list"]);
+    assert_eq!(code(&out), 0);
+    let text = stdout(&out);
+    let rows: Vec<Vec<&str>> = text
+        .lines()
+        .map(|l| l.split_whitespace().collect())
+        .collect();
+    assert_eq!(
+        rows,
+        vec![vec![
+            "bind",
+            "pkg.writer.encode",
+            "pkg.reader.decode",
+            "schema"
+        ]]
     );
 }

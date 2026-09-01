@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 1.4.0
+version: 1.5.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -27,6 +27,7 @@ document.
 | `hit` | callsign, verdict, recorded time |
 | `fork` | caller, green callee (`-` if the trace had no hop there), red callee |
 | `drift` | evidence grade, dependent callsign, `<-relation-`, changed callsign, sig transition (`old4→new4`, or `sig?` when either side carries no sig), reason (`-` when the edge speaks for itself), dependent `file:line` (`-` when unknown) — `grid drift` |
+| `bind` | pattern A, pattern B, `via` word — one declared covenant (`grid bind`) |
 | `miss` | callsign, reason |
 | `pass` / `hold` | track id, snapshot id (first record of gate output) |
 | `warn` | callsign, message |
@@ -55,7 +56,9 @@ surveyed)` when head was a published snapshot nobody re-surveyed, so the
 count is unknown rather than zero. A drift report with no suspects and
 nothing unchecked prints nothing and exits `0`; suspects exit `3`. An inbound
 walk that runs past its fuel is refused whole — exit `1` with the reason on
-stderr — never served as a shorter list.
+stderr — never served as a shorter list. A declared covenant whose pattern
+matches nothing at drift time closes the output as a `warn` record: a rule
+that quietly stopped being checked is worse than no rule.
 
 ## Glyphs
 
