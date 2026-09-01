@@ -233,3 +233,25 @@ fn extraction_never_panics_and_agrees_with_itself() {
 fn invalid_python_is_an_error_not_a_panic() {
     assert!(references("def (:\n").is_err());
 }
+
+#[test]
+fn a_self_attribute_write_is_a_field_write_on_the_enclosing_class() {
+    let r = refs("class Foo:\n    def m(self):\n        self.x = 1\n        self.y += 1\n        self.z: int = 2\n");
+    let writes: Vec<_> = r
+        .iter()
+        .filter(|(_, kind, _)| *kind == RefKind::FieldWrite)
+        .collect();
+    // Three write forms, one target each: the class, lexically known.
+    assert_eq!(writes.len(), 3);
+    assert!(writes
+        .iter()
+        .all(|(from, _, path)| from == "Foo.m" && path == "Foo"));
+}
+
+#[test]
+fn an_attribute_write_on_a_typed_receiver_produces_nothing() {
+    // `foo.x = 1` needs foo's type; types are modeled, and this frontend
+    // emits no guesses. A module-level `self` is not a receiver either.
+    let r = refs("def f(foo):\n    foo.x = 1\nself = object()\nself.x = 1\n");
+    assert!(r.iter().all(|(_, kind, _)| *kind != RefKind::FieldWrite));
+}

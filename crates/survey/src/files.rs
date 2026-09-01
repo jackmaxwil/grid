@@ -33,19 +33,44 @@ pub struct SourceFile {
 /// named `grid-chart` in a directory named `chart` file its modules under
 /// `grid_chart`, which is the spelling a `use` statement reaches for.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CrateRoots(Vec<(String, String)>);
+pub struct CrateRoots {
+    rs: Vec<(String, String)>,
+    /// Directories holding a `pyproject.toml`: Python package roots. A file
+    /// under one charts relative to it (an `src/` layout segment stripped),
+    /// which is the spelling an import reaches for.
+    py: Vec<String>,
+}
 
 impl CrateRoots {
-    fn from_manifests(mut entries: Vec<(String, String)>) -> Self {
+    fn from_manifests(mut entries: Vec<(String, String)>, mut py: Vec<String>) -> Self {
         // Longest prefix first so a nested crate shadows its workspace; the
         // name tiebreak keeps the map a pure function of its inputs.
         entries.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then(a.0.cmp(&b.0)));
-        Self(entries)
+        py.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(b)));
+        Self { rs: entries, py }
+    }
+
+    /// The nearest ancestor Python package root of `path`, if any.
+    fn nearest_py(&self, path: &str) -> Option<&str> {
+        self.py.iter().map(String::as_str).find(|dir| {
+            dir.is_empty()
+                || path
+                    .strip_prefix(*dir)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
+    }
+
+    /// Every `(directory, import name)` binding, longest directory first —
+    /// the map `grid roots` prints.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.rs
+            .iter()
+            .map(|(dir, name)| (dir.as_str(), name.as_str()))
     }
 
     /// The nearest ancestor manifest of `path`: its directory and crate name.
     fn nearest(&self, path: &str) -> Option<(&str, &str)> {
-        self.0
+        self.rs
             .iter()
             .find(|(dir, _)| {
                 dir.is_empty()
@@ -94,6 +119,14 @@ fn package_name(manifest: &str) -> Option<String> {
     lib.or(package)
 }
 
+fn pyproject_dir(path: &str) -> Option<&str> {
+    if path == "pyproject.toml" {
+        Some("")
+    } else {
+        path.strip_suffix("/pyproject.toml")
+    }
+}
+
 fn manifest_dir(path: &str) -> Option<&str> {
     if path == "Cargo.toml" {
         Some("")
@@ -109,8 +142,12 @@ fn manifest_dir(path: &str) -> Option<&str> {
 /// [`SurveyError::Git`] if the file list cannot be obtained.
 pub fn crate_roots(root: &Path) -> Result<CrateRoots, SurveyError> {
     let mut entries = Vec::new();
+    let mut py = Vec::new();
     for rel in tracked(root)? {
         let path = rel.to_string_lossy().replace('\\', "/");
+        if let Some(dir) = pyproject_dir(&path) {
+            py.push(dir.to_owned());
+        }
         let Some(dir) = manifest_dir(&path) else {
             continue;
         };
@@ -124,7 +161,7 @@ pub fn crate_roots(root: &Path) -> Result<CrateRoots, SurveyError> {
             entries.push((dir.to_owned(), name));
         }
     }
-    Ok(CrateRoots::from_manifests(entries))
+    Ok(CrateRoots::from_manifests(entries, py))
 }
 
 /// The language an extension names, or `None` for a file no frontend claims.
@@ -209,6 +246,27 @@ fn ignored(
     }
 }
 
+/// Re-read one already-discovered file, in place.
+///
+/// The discovery half of [`sources`] — `git ls-files` and the crate-root scan
+/// — does not change when a file's *contents* do, so a caller holding a file
+/// list can refresh one entry and keep the rest. Returns `false` when the
+/// path is not in the list, which is the caller's cue that discovery has to
+/// run again: a new file is a new tracked path, not a changed one.
+#[must_use]
+pub fn reread(root: &Path, sources: &mut [SourceFile], path: &str) -> bool {
+    let Some(slot) = sources.iter_mut().find(|s| s.path == path) else {
+        return false;
+    };
+    let Ok(source) = std::fs::read_to_string(root.join(path)) else {
+        // A file that vanished is a discovery change, not a content one.
+        return false;
+    };
+    slot.content_hash = *blake3::hash(source.as_bytes()).as_bytes();
+    slot.source = source;
+    true
+}
+
 /// Read every tracked file an adapter claims.
 ///
 /// Unreadable and non-UTF-8 files are skipped: they are not Python the parser
@@ -219,10 +277,14 @@ fn ignored(
 /// [`SurveyError::Git`] if the file list cannot be obtained.
 pub fn sources(root: &Path) -> Result<(Vec<SourceFile>, CrateRoots), SurveyError> {
     let mut manifests = Vec::new();
+    let mut py_roots = Vec::new();
     let claimed: Vec<(PathBuf, String, grid_wire::Lang)> = tracked(root)?
         .into_iter()
         .filter_map(|rel| {
             let path = rel.to_string_lossy().replace('\\', "/");
+            if let Some(dir) = pyproject_dir(&path) {
+                py_roots.push(dir.to_owned());
+            }
             if let Some(dir) = manifest_dir(&path) {
                 let name = std::fs::read(root.join(&rel))
                     .ok()
@@ -271,7 +333,7 @@ pub fn sources(root: &Path) -> Result<(Vec<SourceFile>, CrateRoots), SurveyError
     // git's order is already stable, but sorting here makes the survey
     // independent of the git version that produced the list.
     out.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok((out, CrateRoots::from_manifests(manifests)))
+    Ok((out, CrateRoots::from_manifests(manifests, py_roots)))
 }
 
 /// The module path a file materializes. Python: `pkg/mod.py` -> `pkg.mod`,
@@ -287,6 +349,13 @@ pub fn module_of(lang: Lang, path: &str, roots: &CrateRoots) -> String {
     if lang == Lang::Rs {
         module_of_rs(path, roots)
     } else {
+        // Inside a Python package root the import spelling starts at the
+        // package, so the root directory (and an `src/` layout segment)
+        // are not module path.
+        let path = roots.nearest_py(path).map_or(path, |dir| {
+            let rest = path.get(dir.len()..).unwrap_or("").trim_start_matches('/');
+            rest.strip_prefix("src/").unwrap_or(rest)
+        });
         let stem = path
             .strip_suffix(".py")
             .or_else(|| path.strip_suffix(".pyi"))
@@ -294,6 +363,23 @@ pub fn module_of(lang: Lang, path: &str, roots: &CrateRoots) -> String {
         let stem = stem.strip_suffix("/__init__").unwrap_or(stem);
         stem.replace('/', ".")
     }
+}
+
+/// The repo-relative path a `#[path = "..."]` declaration names: the
+/// declared path resolved against the declaring file's directory.
+pub(crate) fn relocated(declaring: &str, declared: &str) -> String {
+    let mut segs: Vec<&str> = declaring.split('/').collect();
+    segs.pop();
+    for part in declared.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                segs.pop();
+            }
+            p => segs.push(p),
+        }
+    }
+    segs.join("/")
 }
 
 fn module_of_rs(path: &str, roots: &CrateRoots) -> String {
@@ -344,8 +430,12 @@ pub fn sources_at(root: &Path, rev: &str) -> Result<(Vec<SourceFile>, CrateRoots
     let skip = ignored(root, &all)?;
     let mut out = Vec::new();
     let mut manifests = Vec::new();
+    let mut py_roots = Vec::new();
     for path in all.into_iter().filter(|p| !skip.contains(p)) {
         let path = path.replace('\\', "/");
+        if let Some(dir) = pyproject_dir(&path) {
+            py_roots.push(dir.to_owned());
+        }
         if let Some(dir) = manifest_dir(&path) {
             // Manifests come from the same rev as the sources they name:
             // roots are part of the state being surveyed, not of the worktree.
@@ -374,7 +464,7 @@ pub fn sources_at(root: &Path, rev: &str) -> Result<(Vec<SourceFile>, CrateRoots
         });
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok((out, CrateRoots::from_manifests(manifests)))
+    Ok((out, CrateRoots::from_manifests(manifests, py_roots)))
 }
 
 /// Run git in `root` and return its stdout, or the failure it reported.

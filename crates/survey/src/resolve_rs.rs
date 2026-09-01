@@ -11,7 +11,7 @@ use grid_datum::{Import, RefKind, Reference};
 use grid_wire::Zoc;
 
 use crate::index::{DefIndex, Symbol};
-use crate::resolve::{relation_of, Bindings, ResolvedEdge};
+use crate::resolve::{relation_of, Bindings, Resolved, ResolvedEdge};
 
 /// Resolve one Rust file's references against the whole-tree index.
 #[must_use]
@@ -20,20 +20,23 @@ pub(crate) fn resolve(
     module: &str,
     imports: &[Import],
     refs: &[Reference],
-) -> Vec<ResolvedEdge> {
+) -> Resolved {
     let bindings = Bindings { imports };
-    let mut out = Vec::new();
+    let mut out = Resolved::default();
     for r in refs {
         let Some(src) = index.datum_of(module, &r.from) else {
             continue;
         };
         let Some(target) = target_of(index, &bindings, module, r) else {
+            // A name a glob import would have supplied was never bound by
+            // extraction, so it falls through to here. Counted, not guessed.
+            out.declined = out.declined.saturating_add(1);
             continue;
         };
         if src == target.datum {
             continue;
         }
-        out.push(ResolvedEdge {
+        out.edges.push(ResolvedEdge {
             src,
             dst: target.datum,
             relation: relation_of(r.kind, target.is_class),

@@ -1,6 +1,6 @@
 //! The porcelain renderer: typed records on stdout, one per line.
 //!
-//! Normative grammar in `docs/PORCELAIN.md` (version 1.0.0). Fields are
+//! Normative grammar in `docs/PORCELAIN.md`. Fields are
 //! separated by runs of spaces and column order is stable per record type, so
 //! `grep '^edge  miss'` is the explanation and `awk` is the parser. Nothing
 //! here writes to stderr: hints are the caller's business.
@@ -13,7 +13,7 @@ use grid_wire::{
 use grid_xte::lint::{relation_name, render_edge};
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "1.2.0";
+pub const VERSION: &str = "1.6.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -285,11 +285,15 @@ pub fn diff(made_good: &grid_wire::MadeGood, name: &NameOf) -> String {
                 (None, None) => String::new(),
             }
         };
-        record(
-            &mut out,
-            "def",
-            &[def_glyph(d.action), &d.callsign.0, &transition],
-        );
+        // A trailing `sig` marks a change a caller can see: body-only edits
+        // and interface edits are different events, and a reviewer reads the
+        // difference off the row. Absent when the interface held, and absent
+        // when a pre-epoch-3 snapshot means nobody can say.
+        let mut columns = vec![def_glyph(d.action), d.callsign.0.as_str(), &transition];
+        if d.sig_changed == Some(true) {
+            columns.push("sig");
+        }
+        record(&mut out, "def", &columns);
     }
     for e in &made_good.edges {
         let glyph = match e.action {
@@ -304,6 +308,183 @@ pub fn diff(made_good: &grid_wire::MadeGood, name: &NameOf) -> String {
             |from| format!("from {}", short(&from.src)),
         );
         record(&mut out, "edge", &[glyph, &edge_arrow(e, name), &context]);
+    }
+    out
+}
+
+/// Render a drift report: one `drift` record per suspect, then the `miss`
+/// records that say what was not checked.
+///
+/// The evidence grade leads, as it does on every query-result `edge` record,
+/// because a reader's first question about a suspect is how much to believe
+/// it. The arrow points backwards (`dependent <-calls- changed`) because that
+/// is the direction the implication runs: the changed definition is the
+/// cause, the dependent is what may now be wrong.
+///
+/// A report with no suspects and nothing unchecked prints nothing at all,
+/// which is the grammar's "empty result set" — exit 0, no records.
+#[must_use]
+pub fn drift(report: &grid_wire::DriftReport) -> String {
+    let mut out = String::new();
+    for s in &report.suspects {
+        let columns = drift_columns(s);
+        let refs: Vec<&str> = columns.iter().map(String::as_str).collect();
+        record(&mut out, "drift", &refs);
+    }
+    for stale in report.stale_tests.iter().flatten() {
+        // A stale verdict is a `miss` in the cache's own sense: the datum
+        // must be run, not looked up. The first column is the test name
+        // rather than a datum handle because a test is addressed by name
+        // everywhere else in the engine.
+        let reason = match stale.reason {
+            grid_wire::StaleTestReason::ClosureChanged => "closure-changed",
+            grid_wire::StaleTestReason::ClosureRejected => "closure-rejected",
+        };
+        record(&mut out, "miss", &[&stale.test, reason]);
+    }
+    for weak in report.weak.iter().flatten() {
+        // `warn`, not `drift`: this is reported rather than refused, and it
+        // never moves the exit code. A test that proved nothing is a
+        // ranking, and grid ranks — it does not gate on a heuristic.
+        let named = weak
+            .def
+            .callsign
+            .as_ref()
+            .map_or_else(|| format!("@{}", short(&weak.def.datum)), |c| c.0.clone());
+        record(
+            &mut out,
+            "warn",
+            &[&weak.test, &format!("weak-for {named}")],
+        );
+    }
+    for warning in report.warnings.iter().flatten() {
+        record(&mut out, "warn", &[&warning.subject, &warning.message]);
+    }
+    out.push_str(&drift_unchecked(&report.unchecked));
+    out
+}
+
+/// One `delta` record per signed suspect change: the sign, then the same
+/// columns a `drift` record carries.
+///
+/// Signed rather than a current list, so a consumer never diffs lists to see
+/// what changed and the stream's algebra is checkable by summation: the sum
+/// after any prefix of events is what a fresh `grid drift` would say.
+#[must_use]
+pub fn deltas(rows: &[grid_wire::DriftDelta]) -> String {
+    let mut out = String::new();
+    for row in rows {
+        let glyph = if row.weight < 0 { "-" } else { "+" };
+        let mut columns = vec![glyph.to_owned()];
+        columns.extend(drift_columns(&row.suspect));
+        let refs: Vec<&str> = columns.iter().map(String::as_str).collect();
+        record(&mut out, "delta", &refs);
+    }
+    out
+}
+
+/// The `miss` records a watch event closes with: one per path the frontend
+/// refused. The refusal is part of the stream, not a note beside it — a
+/// consumer summing deltas has to know that this event carried none because
+/// grid could not read a file, and not because nothing changed.
+#[must_use]
+pub fn declined(paths: &[String]) -> String {
+    let mut out = String::new();
+    for path in paths {
+        record(&mut out, "miss", &[path, "unparseable"]);
+    }
+    out
+}
+
+/// One `bind` record per declared covenant: the two patterns and the
+/// boundary they meet across. A declaration, printed the way it was made.
+#[must_use]
+pub fn covenants(rows: &[grid_wire::Covenant]) -> String {
+    let mut out = String::new();
+    for c in rows {
+        record(&mut out, "bind", &[&c.a.0, &c.b.0, &c.via]);
+    }
+    out
+}
+
+/// The columns a suspect renders as, shared by the `drift` record and the
+/// signed `delta` record so the two cannot drift apart.
+///
+/// Both trailing columns are always present, `-` when there is nothing to
+/// say: a column that sometimes vanishes shifts every later one for anything
+/// parsing by position, which is the contract.
+fn drift_columns(s: &grid_wire::DriftSuspect) -> Vec<String> {
+    let name = |d: &grid_wire::DefRef| {
+        d.callsign
+            .as_ref()
+            .map_or_else(|| format!("@{}", short(&d.datum)), |c| c.0.clone())
+    };
+    let transition = match (&s.sig_before, &s.sig_after) {
+        (Some(before), Some(after)) => format!("{}→{}", short(before), short(after)),
+        // No sig on one side is the honest unknown that put this suspect in
+        // the list at all; the row says so rather than showing half a
+        // transition as if it were whole.
+        _ => "sig?".to_owned(),
+    };
+    vec![
+        role(zoc_name(s.zoc)),
+        name(&s.dependent),
+        format!("<-{}-", relation_name(s.relation)),
+        name(&s.changed),
+        transition,
+        s.reason.clone().unwrap_or_else(|| "-".to_owned()),
+        s.dependent
+            .materialization
+            .as_ref()
+            .map_or_else(|| "-".to_owned(), |m| format!("{}:{}", m.file, m.line)),
+    ]
+}
+
+/// The `miss` records that close a drift report. Both are refusals, and a
+/// refusal that does not print is the dishonest silence the verb exists to
+/// avoid — so an unknown count prints too, as unknown.
+fn drift_unchecked(unchecked: &grid_wire::DriftUnchecked) -> String {
+    let mut out = String::new();
+    match unchecked.unresolved_refs {
+        Some(0) => {}
+        Some(n) => record(
+            &mut out,
+            "miss",
+            &[&n.to_string(), "unresolved references unchecked"],
+        ),
+        None => record(
+            &mut out,
+            "miss",
+            &[
+                "?",
+                "unresolved references uncounted (head was not surveyed)",
+            ],
+        ),
+    }
+    if unchecked.unattributed_entries.is_some_and(|n| n > 0) {
+        let count = unchecked
+            .unattributed_entries
+            .unwrap_or_default()
+            .to_string();
+        record(&mut out, "miss", &[&count, "unattributed entries"]);
+    }
+    if unchecked.weak_skipped.is_some_and(|n| n > 0) {
+        let count = unchecked.weak_skipped.unwrap_or_default().to_string();
+        record(
+            &mut out,
+            "miss",
+            &[&count, "weak-checks skipped (stale coverage)"],
+        );
+    }
+    if unchecked.budget_rejected > 0 {
+        record(
+            &mut out,
+            "miss",
+            &[
+                &unchecked.budget_rejected.to_string(),
+                "inbound walks rejected over budget",
+            ],
+        );
     }
     out
 }
@@ -332,6 +513,17 @@ pub fn cache_check(result: &CacheCheckResult) -> String {
 /// Render resolved definitions as `ref` records: callsign, then the datum
 /// prefix that distinguishes them when the callsign does not.
 ///
+/// `root` records: import name, then the directory it roots. The name is
+/// first because it is what appears inside every callsign.
+#[must_use]
+pub fn roots(rows: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (name, dir) in rows {
+        record(&mut out, "root", &[name, dir]);
+    }
+    out
+}
+
 /// `ref` rather than `def` because a `def` record's first column is a change
 /// glyph, and a resolved definition did not change — it exists. Overloading
 /// `def` here would shift every later column by one for anything parsing by

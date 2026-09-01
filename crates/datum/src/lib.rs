@@ -88,6 +88,14 @@ pub struct Definition {
     pub datum: Datum,
     /// `blake3(raw source bytes of the span)` — sensitive to exactly those.
     pub span_hash: String,
+    /// `blake3` of the frontend-canonical *interface* bytes: everything a
+    /// caller can observe without reading the body. A body-only edit moves
+    /// the datum and holds the sig; a signature edit moves both. Same
+    /// constructor discipline as the datum — only a frontend's normalizer
+    /// builds one, and each frontend owns its canonical form under the one
+    /// rule that a fact is in the sig iff a caller can observe it without
+    /// the body.
+    pub sig: Datum,
     /// Byte range of the definition in the source.
     pub span: std::ops::Range<usize>,
     /// Identity with the definition's own name erased — the rename-join
@@ -167,4 +175,8 @@ pub struct FileRefs {
     /// names other files may reach through this module. A subset of
     /// `imports` by construction.
     pub reexports: Vec<Import>,
+    /// Out-of-line module declarations that relocate their file:
+    /// `(mod name, declared file path)` from `#[path = "..."] mod name;`.
+    /// The path is as written — relative to the declaring file's directory.
+    pub path_mods: Vec<(String, String)>,
 }

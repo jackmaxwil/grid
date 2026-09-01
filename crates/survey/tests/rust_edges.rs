@@ -181,3 +181,51 @@ fn a_lib_rename_is_the_name_a_use_reaches_for() {
     // main -> renamed.helper: `[lib] name` wins over `[package] name`.
     assert_eq!(s.edges, 1);
 }
+
+#[test]
+fn a_path_attribute_files_the_module_where_the_declaration_says() {
+    let dir = repo(&[
+        (
+            "crates/app/src/lib.rs",
+            "#[path = \"weird/place.rs\"]\nmod baz;\nuse crate::baz::helper;\npub fn go() -> u32 { helper() }\n",
+        ),
+        ("crates/app/src/weird/place.rs", "pub fn helper() -> u32 { 1 }\n"),
+    ]);
+    let s = survey(dir.path());
+    // go -> helper resolves only if weird/place.rs is charted as app.baz,
+    // the module the `#[path]` declaration materializes it as.
+    assert_eq!(s.edges, 1);
+}
+
+#[test]
+fn a_python_self_write_becomes_an_edge_to_the_class() {
+    let dir = repo(&[(
+        "pkg/thing.py",
+        "class Foo:\n    def m(self):\n        self.x = 1\n",
+    )]);
+    let s = survey(dir.path());
+    // Foo.m -writes_field-> Foo is the one relationship in the tree.
+    assert_eq!(s.edges, 1);
+}
+
+#[test]
+fn a_pyproject_src_layout_roots_python_at_the_import_name() {
+    let dir = repo(&[
+        (
+            "python/yi_runtime/pyproject.toml",
+            "[project]\nname = \"yi-runtime\"\n",
+        ),
+        (
+            "python/yi_runtime/src/rlm/harness.py",
+            "def now():\n    return 1\n",
+        ),
+        (
+            "python/yi_runtime/src/rlm/use_it.py",
+            "from rlm.harness import now\n\ndef f():\n    return now()\n",
+        ),
+    ]);
+    let s = survey(dir.path());
+    // f -> now resolves only if the files chart as `rlm.*` — the spelling
+    // an import reaches for — not as `python.yi_runtime.src.rlm.*`.
+    assert_eq!(s.edges, 1);
+}

@@ -33,7 +33,7 @@ pub struct Symbol {
     pub is_class: bool,
     /// The adapter that found it.
     pub lang: Lang,
-    /// The epoch-2 columns: location, shape, complexity.
+    /// The stored per-definition columns: location, shape, complexity, sig.
     pub facts: grid_chart::DefFacts,
 }
 
@@ -85,6 +85,7 @@ impl DefIndex {
                     ),
                     shape: shape_bytes(def),
                     complexity: def.complexity,
+                    sig: sig_bytes(def),
                 },
             };
             // The same datum under the same name twice is the same definition
@@ -186,6 +187,12 @@ pub fn datum_bytes(def: &Definition) -> [u8; 32] {
 #[must_use]
 pub fn shape_bytes(def: &Definition) -> [u8; 32] {
     hex_bytes(def.shape.as_str())
+}
+
+/// The interface digest, same wire-to-raw parse as the datum.
+#[must_use]
+pub fn sig_bytes(def: &Definition) -> [u8; 32] {
+    hex_bytes(def.sig.as_str())
 }
 
 fn hex_bytes(wire: &str) -> [u8; 32] {

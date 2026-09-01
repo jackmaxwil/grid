@@ -66,6 +66,7 @@ fn walk(body: &[Stmt], source: &str, prefix: &str, out: &mut Vec<Definition>) {
             callsign: callsign.clone(),
             datum: hash_of(stmt),
             span_hash: span_hash(text),
+            sig: Datum::of_canonical_bytes(&crate::sig::sig_bytes(stmt)),
             span,
             shape: hash_of(&shaped),
             complexity: complexity_of(stmt),

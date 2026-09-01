@@ -69,6 +69,24 @@ pub fn gate_check(
     grid_xte::check(&track, &params.head, &ChartDelta::open(root)?)
 }
 
+/// What one survey *run* did, as opposed to what the snapshot *is*. Neither
+/// field is a wire field: they describe this execution, which is why they are
+/// returned beside the snapshot rather than inside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ran {
+    /// Files whose facts came from the cache rather than the parser.
+    pub reread: u64,
+    /// Format epoch of a store this run superseded, if it found one. A store
+    /// written by an older epoch is dropped, not reinterpreted, and this is
+    /// how the caller gets to say so instead of the re-survey looking
+    /// unexplained.
+    pub superseded: Option<u32>,
+    /// References the resolver declined to bind, so no edge exists for them.
+    /// Every consumer that reads the edge set as "everything that reaches
+    /// this" is wrong by at most this much, and can now say so.
+    pub declined_refs: u64,
+}
+
 /// The repo's segment store, plus the survey cache that lives beside it.
 ///
 /// The cache is in-process and per-call for the CLI (one survey per process,
@@ -125,7 +143,7 @@ impl Chart {
     pub fn survey_run(
         &mut self,
         params: &SurveyRunParams,
-    ) -> Result<(SurveyRunResult, u64), chart_provider::Error> {
+    ) -> Result<(SurveyRunResult, Ran), chart_provider::Error> {
         // Surveying "at a rev" means the tree at that rev, read out of the
         // object store; with no rev it is the working tree, labelled with the
         // rev it was checked out from. Resolving the label is a git
@@ -149,6 +167,7 @@ impl Chart {
         // which is that rule in the type system.
         let mut store = grid_chart_io::Store::open(chart_provider::store_dir(&self.root))
             .map_err(chart_provider::Error::Store)?;
+        let superseded = store.superseded();
         let prev = store.load();
         let id = store
             .publish(&rev, None, &[survey.image])
@@ -197,12 +216,224 @@ impl Chart {
                     langs: Some(survey.langs),
                 },
             },
-            // How many files came from the cache rather than the parser. Not
-            // a wire field — it describes this *run*, not the snapshot, which
-            // is why it is returned beside the snapshot instead of inside it.
-            survey.reread,
+            Ran {
+                reread: survey.reread,
+                superseded,
+                declined_refs: survey.declined_refs,
+            },
         ))
     }
+}
+
+/// `grid.drift` — dependents of changed interfaces.
+///
+/// Both endpoints are surveyed on demand, exactly as `grid gate` surveys
+/// them, so CI needs no second command. Head is special in one way: a
+/// literal `HEAD` surveys the *working tree*, because drift's everyday
+/// question is "what did my uncommitted edits leave stale", and because the
+/// survey it runs is also where the declined-reference count comes from. Any
+/// other rev is surveyed at that rev; a snapshot id is taken as published,
+/// and its declined count is then unknown rather than zero.
+///
+/// # Errors
+/// [`crate::drift::Error::Chart`] when an endpoint does not resolve;
+/// [`crate::drift::Error::BudgetRejected`] when an inbound walk ran past its
+/// fuel — refused whole, never truncated.
+pub fn drift(
+    params: &grid_wire::methods::DriftParams,
+    root: &std::path::Path,
+) -> Result<grid_wire::methods::DriftResult, crate::drift::Error> {
+    let mut chart = Chart::new(root);
+    chart.ensure(&params.base)?;
+    let declined = match &params.head {
+        SnapshotOrRev::GitRev { git_rev } => {
+            let at = (git_rev.0 != "HEAD").then(|| git_rev.clone());
+            let (_, ran) = chart.survey_run(&SurveyRunParams {
+                git_rev: at,
+                worktree: None,
+            })?;
+            Some(ran.declined_refs)
+        }
+        // Nobody re-surveyed head in this run, so nobody can say what its
+        // survey declined. Unknown, not zero.
+        SnapshotOrRev::Snapshot { .. } => None,
+    };
+    // A declaration file that exists but does not parse is a loud error,
+    // never an absence of declarations: a covenant nobody can read is not a
+    // covenant nobody made.
+    let covenants = crate::covenant::load(root).map_err(crate::drift::Error::Covenants)?;
+    let mut report = crate::drift::compute(
+        root,
+        &crate::drift::Query {
+            floor: params
+                .floor
+                .unwrap_or(crate::drift::Query::new(&params.base, &params.head).floor),
+            track: params.track.as_ref(),
+            covenants: &covenants,
+            declined_refs: declined,
+            ..crate::drift::Query::new(&params.base, &params.head)
+        },
+    )?;
+    if params.tests == Some(true) {
+        let chart = ChartDelta::open(root).map_err(crate::drift::Error::Chart)?;
+        // Head, because the question is whether a recorded verdict still
+        // applies *now* — the closure key is identity math over the current
+        // chart, not over the one the verdict was taken against.
+        let epoch = chart
+            .epoch_of(&params.head)
+            .map_err(crate::drift::Error::Chart)?;
+        let base_epoch = chart
+            .epoch_of(&params.base)
+            .map_err(crate::drift::Error::Chart)?;
+        let found = crate::stale::tests(root, epoch.segments(), |test| {
+            // The `grid.resolve` rule, so the name a user can resolve is the
+            // name a verdict can be attributed by. Ambiguity resolves to
+            // nothing: two definitions is not one closure.
+            let hits = chart.resolve(&grid_wire::Locator::Callsign {
+                callsign: grid_wire::Callsign(test.to_owned()),
+            });
+            match hits.as_slice() {
+                [one] => grid_chart::DatumId::parse(&one.datum.0),
+                _ => None,
+            }
+        })
+        .map_err(crate::drift::Error::Stale)?;
+        report.unchecked.unattributed_entries = Some(found.unattributed);
+        report.stale_tests = Some(found.stale);
+        if !found.warnings.is_empty() {
+            report
+                .warnings
+                .get_or_insert_with(Vec::new)
+                .extend(found.warnings);
+        }
+        // Green-but-stale, over step 6's membership. Absent membership is an
+        // absence of derived data, not a claim that nothing is weak — the
+        // report simply does not answer a question it could not ask.
+        let store = grid_chart_io::Store::open(chart_provider::store_dir(root))
+            .map_err(|e| crate::drift::Error::Stale(e.to_string()))?;
+        if let Some(membership) = store
+            .membership()
+            .map_err(|e| crate::drift::Error::Stale(e.to_string()))?
+        {
+            let weak = crate::weak::join(
+                root,
+                &crate::weak::Inputs {
+                    membership: &membership,
+                    base: base_epoch.snapshot_id().as_str(),
+                    head: epoch.snapshot_id().as_str(),
+                    base_segments: base_epoch.segments(),
+                    head_segments: epoch.segments(),
+                },
+            )
+            .map_err(crate::drift::Error::Stale)?;
+            report.unchecked.weak_skipped = Some(weak.skipped);
+            report.weak = Some(weak.weak);
+        }
+    }
+    Ok(report)
+}
+
+/// How many charted callsigns a pattern matches.
+///
+/// Zero is the answer `grid bind` refuses on: a declaration about code that
+/// does not exist is a rule that will never fire.
+///
+/// # Errors
+/// [`chart_provider::Error`] if the store cannot be opened.
+pub fn matching(root: &std::path::Path, pattern: &str) -> Result<usize, chart_provider::Error> {
+    let chart = ChartDelta::open(root)?;
+    Ok(live_defs(&chart)
+        .into_iter()
+        .filter(|(_, callsign, _, _)| grid_xte::pattern::matches(pattern, callsign))
+        .count())
+}
+
+/// The `k` charted callsigns nearest to `name`: ranked by edit distance on
+/// the last dotted segment (the part a caller most likely typed), full-name
+/// distance as the tiebreak. This is what turns a silent miss into a hint.
+///
+/// # Errors
+/// [`chart_provider::Error`] if the store cannot be opened.
+pub fn nearest(
+    root: &std::path::Path,
+    name: &str,
+    k: usize,
+) -> Result<Vec<String>, chart_provider::Error> {
+    let tail = |s: &str| s.rsplit('.').next().unwrap_or(s).to_owned();
+    let wanted = tail(name);
+    let chart = ChartDelta::open(root)?;
+    let mut scored: Vec<(usize, usize, String)> = live_defs(&chart)
+        .into_iter()
+        .map(|(_, callsign, _, _)| {
+            (
+                edit_distance(&wanted, &tail(&callsign)),
+                edit_distance(name, &callsign),
+                callsign,
+            )
+        })
+        .collect();
+    scored.sort();
+    scored.dedup_by(|a, b| a.2 == b.2);
+    Ok(scored.into_iter().take(k).map(|(_, _, c)| c).collect())
+}
+
+/// Levenshtein distance, plain DP — the inputs are callsigns, short enough
+/// that anything cleverer is noise.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut row = vec![i.saturating_add(1)];
+        for (j, cb) in b.iter().enumerate() {
+            let sub = prev[j] + usize::from(ca != cb);
+            let best = sub
+                .min(prev[j + 1].saturating_add(1))
+                .min(row[j].saturating_add(1));
+            row.push(best);
+        }
+        prev = row;
+    }
+    prev.last().copied().unwrap_or(0)
+}
+
+/// `grid resolve <file>` — every definition the file contains, in line
+/// order: the "what is in here" opener, half of `scope` for a whole file.
+///
+/// # Errors
+/// [`chart_provider::Error`] if the store cannot be opened.
+pub fn defs_in_file(
+    root: &std::path::Path,
+    path: &str,
+) -> Result<Vec<grid_wire::DefRef>, chart_provider::Error> {
+    let chart = ChartDelta::open(root)?;
+    let mut out = Vec::new();
+    for segment in chart.head().segments() {
+        for i in 0..segment.def_count() {
+            let ord = grid_chart::Ordinal(i);
+            let Some(loc) = segment.location(ord) else {
+                continue;
+            };
+            if loc.path != path {
+                continue;
+            }
+            let (Some(datum), Some(callsign)) = (segment.datum(ord), segment.callsign(ord)) else {
+                continue;
+            };
+            out.push(grid_wire::DefRef {
+                datum: grid_wire::Datum(datum.to_string()),
+                callsign: Some(grid_wire::Callsign(callsign.to_owned())),
+                lang: segment.lang(ord),
+                signature: None,
+                materialization: Some(grid_wire::DefRefMaterialization {
+                    file: loc.path.to_owned(),
+                    line: u64::from(loc.line),
+                }),
+            });
+        }
+    }
+    out.sort_by_key(|d| d.materialization.as_ref().map_or(0, |m| m.line));
+    Ok(out)
 }
 
 /// Does a def materialized at `path` fall under the `--under` prefix?
@@ -281,10 +512,22 @@ pub struct Hotspot {
     pub materialization: Option<grid_wire::DefRefMaterialization>,
 }
 
+/// Where the churn multiplier came from — named so the caller can say so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChurnSource {
+    /// The grid patch log: identity-level, rename-proof.
+    Legs,
+    /// `git log --numstat`, file-level: every def in a file inherits its
+    /// file's commit count. Coarser, but honest on a fresh checkout.
+    GitFiles,
+    /// Neither exists; the ranking is complexity alone.
+    None,
+}
+
 /// `grid.hotspots` — complexity × churn, descending. Churn is the number of
 /// legs in the datum's identity component of the patch log, so it survives
-/// renames; with no log yet, every def scores churn 0 and the ranking
-/// degrades to complexity alone.
+/// renames; with no log yet it falls back to file-level git history, so a
+/// fresh checkout still ranks by both axes.
 ///
 /// # Errors
 /// [`chart_provider::Error`] if the store cannot be opened.
@@ -292,7 +535,7 @@ pub fn hotspots(
     root: &std::path::Path,
     limit: usize,
     under: Option<&str>,
-) -> Result<Vec<Hotspot>, chart_provider::Error> {
+) -> Result<(Vec<Hotspot>, ChurnSource), chart_provider::Error> {
     let chart = ChartDelta::open(root)?;
     // Union legs into identity components by plain map-merging: the log is
     // small (one row per recorded modification), so O(legs · chain) is fine.
@@ -331,6 +574,18 @@ pub fn hotspots(
             *per_component.entry(*id).or_insert(0) += 1;
         }
     }
+    let file_churn = if legs.is_empty() {
+        git_file_churn(root)
+    } else {
+        std::collections::HashMap::new()
+    };
+    let source = if !legs.is_empty() {
+        ChurnSource::Legs
+    } else if file_churn.is_empty() {
+        ChurnSource::None
+    } else {
+        ChurnSource::GitFiles
+    };
 
     let mut out = Vec::new();
     for segment in chart.head().segments() {
@@ -347,11 +602,18 @@ pub fn hotspots(
                 continue;
             }
             let datum = datum.to_string();
-            let churn = component
-                .get(&datum)
-                .and_then(|id| per_component.get(id))
-                .copied()
-                .unwrap_or(0);
+            let churn = match source {
+                ChurnSource::GitFiles => segment
+                    .location(ord)
+                    .and_then(|loc| file_churn.get(loc.path))
+                    .copied()
+                    .unwrap_or(0),
+                _ => component
+                    .get(&datum)
+                    .and_then(|id| per_component.get(id))
+                    .copied()
+                    .unwrap_or(0),
+            };
             out.push(Hotspot {
                 callsign: callsign.to_owned(),
                 datum,
@@ -369,7 +631,37 @@ pub fn hotspots(
     }
     out.sort_by(|a, b| b.score.cmp(&a.score).then(a.callsign.cmp(&b.callsign)));
     out.truncate(limit);
-    Ok(out)
+    Ok((out, source))
+}
+
+/// Commits touching each file, from `git log --numstat`.
+/// ponytail: capped at the last 1000 commits — churn is a ranking input,
+/// and deep history stops changing the order long before it stops costing.
+fn git_file_churn(root: &std::path::Path) -> std::collections::HashMap<String, u64> {
+    let out = std::process::Command::new("git")
+        .args(["log", "--numstat", "--format=", "-n", "1000"])
+        .current_dir(root)
+        .output();
+    let Ok(out) = out else {
+        return std::collections::HashMap::new();
+    };
+    if !out.status.success() {
+        return std::collections::HashMap::new();
+    }
+    let mut churn = std::collections::HashMap::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        // "added\tdeleted\tpath"; a rename spells "{a => b}/c" and is left
+        // uncounted — an omission, never a wrong attribution.
+        let mut parts = line.split('\t');
+        let (Some(_), Some(_), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        if path.contains("=>") {
+            continue;
+        }
+        *churn.entry(path.to_owned()).or_insert(0) += 1;
+    }
+    churn
 }
 
 /// `grid.snapshot.current` — the published snapshot, or `None` for a store
@@ -461,9 +753,15 @@ pub fn query_walk(
             visited: 0,
             hops: 0,
             ms: 0,
+            // Merged below: an answer merged from several segments is
+            // complete only to the shallowest radius any of them certified,
+            // and to nothing at all if one of them certified nothing.
+            complete_within: None,
         },
     };
     let mut frontier: Vec<grid_wire::Datum> = Vec::new();
+    let mut certified: Option<u64> = None;
+    let mut contributed = false;
     for segment in chart.head().segments() {
         let Ok(part) = grid_leadline::query(segment, &params.query, snapshot.clone()) else {
             continue;
@@ -474,6 +772,17 @@ pub fn query_walk(
         merged.stats.visited += part.stats.visited;
         merged.stats.hops = merged.stats.hops.max(part.stats.hops);
         merged.stats.ms += part.stats.ms;
+        // The weakest certificate wins: the union of several answers is
+        // complete only as far as every contributing walk finished.
+        // The weakest certificate wins, and `None` from any contributor
+        // poisons the merge: one walk that certified nothing means the union
+        // certifies nothing.
+        certified = match (contributed, certified, part.stats.complete_within) {
+            (false, _, first) => first,
+            (true, Some(a), Some(b)) => Some(a.min(b)),
+            (true, _, _) => None,
+        };
+        contributed = true;
         frontier.extend(part.frontier.into_iter().flatten());
         if let Some(reached) = &mut merged.reached {
             reached.extend(part.reached.into_iter().flatten());
@@ -486,6 +795,7 @@ pub fn query_walk(
     frontier.sort_by(|a, b| a.0.cmp(&b.0));
     frontier.dedup();
     merged.frontier = (!frontier.is_empty()).then_some(frontier);
+    merged.stats.complete_within = certified;
     if let Some(reached) = &mut merged.reached {
         reached.sort_by(|a, b| a.datum.0.cmp(&b.datum.0));
         reached.dedup_by(|a, b| a.datum == b.datum);
@@ -495,7 +805,7 @@ pub fn query_walk(
 
 /// Where the cache log and the chart store live under a repo root. Both are
 /// engine state, so both sit under `.grid/`.
-fn cache_path(root: &std::path::Path) -> std::path::PathBuf {
+pub(crate) fn cache_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join(".grid/cache/verdicts")
 }
 
@@ -621,6 +931,10 @@ pub fn cache_record(
                             },
                             recorded_at: recorded_at.clone(),
                             wake_id: params.wake_id.clone(),
+                            // Stored so the key can be recomputed later:
+                            // `grid drift --tests` asks whether this verdict
+                            // still applies, and a key is a hash.
+                            env_hash: Some(params.env_hash.clone()),
                         },
                     )
                     .map_err(|e| e.to_string())?;
@@ -1045,6 +1359,6 @@ pub fn wake_diff(
     let (green, red) = (load(&params.green)?, load(&params.red)?);
     Ok(grid_wake::diff(&green, &red))
 }
-fn wake_dir(root: &std::path::Path) -> std::path::PathBuf {
+pub(crate) fn wake_dir(root: &std::path::Path) -> std::path::PathBuf {
     root.join(".grid/wakes")
 }

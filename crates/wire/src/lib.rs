@@ -192,10 +192,10 @@ pub struct DefChange {
     pub before: Option<Datum>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<Datum>,
-    /// For [`DefChangeAction::Moved`]: the callsign the datum answered to
-    /// before. A rename rebinds the callsign; the datum does not change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moved_from: Option<Callsign>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig_changed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -491,6 +491,8 @@ pub struct LeadlineResultStats {
     pub visited: u64,
     pub hops: u64,
     pub ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complete_within: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -762,6 +764,94 @@ pub struct SuspectsRankedItem {
     pub datum: Datum,
     pub score: f64,
     pub via: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Covenant {
+    pub a: CallsignPattern,
+    pub b: CallsignPattern,
+    pub via: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WeakTest {
+    pub test: String,
+    pub def: DefRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StaleTest {
+    pub test: String,
+    pub reason: StaleTestReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StaleTestReason {
+    #[serde(rename = "closure-changed")]
+    ClosureChanged,
+    #[serde(rename = "closure-rejected")]
+    ClosureRejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DriftDelta {
+    pub suspect: DriftSuspect,
+    pub weight: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DriftWarning {
+    pub subject: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DriftSuspect {
+    pub dependent: DefRef,
+    pub changed: DefRef,
+    pub relation: Relation,
+    pub zoc: Zoc,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig_before: Option<Datum>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig_after: Option<Datum>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DriftUnchecked {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unresolved_refs: Option<u64>,
+    pub budget_rejected: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unattributed_entries: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weak_skipped: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DriftReport {
+    pub base: SnapshotId,
+    pub head: SnapshotId,
+    pub suspects: Vec<DriftSuspect>,
+    pub unchecked: DriftUnchecked,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<DriftWarning>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_tests: Option<Vec<StaleTest>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weak: Option<Vec<WeakTest>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

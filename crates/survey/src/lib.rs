@@ -35,7 +35,7 @@ use grid_wire::Lang;
 
 pub use files::SourceFile;
 pub use index::{DefIndex, Symbol};
-pub use resolve::ResolvedEdge;
+pub use resolve::{Resolved, ResolvedEdge};
 
 /// Why a survey could not be produced.
 #[derive(Debug)]
@@ -102,6 +102,12 @@ pub struct Survey {
     /// Names defined in more than one place, and therefore not resolved
     /// against. Surfaced so a survey can say what it declined to prove.
     pub ambiguous: u64,
+    /// References whose source definition resolved and whose target did not:
+    /// a glob import's supply, a name from outside the tree, an ambiguous
+    /// callsign. No edge was recorded for any of them, so every consumer
+    /// that reads the edge set as "everything that reaches this" is wrong by
+    /// at most this much — and can say so.
+    pub declined_refs: u64,
 }
 
 /// The definitions the frontend `lang` names finds in `source`. This is the
@@ -241,12 +247,44 @@ fn extract_all<'s>(
     (per_file, reread)
 }
 
-fn run_sources(
+/// Survey an already-discovered file set.
+///
+/// Discovery is the expensive part of [`run`] on a warm tree — `git ls-files`
+/// plus a read of every tracked file — and a caller that already holds the
+/// list, and knows which entries changed, has no reason to pay it again.
+/// Phases 2 and 3 still run over the whole tree, and must: an edge is a fact
+/// about two files, so cross-file resolution is recomputed from per-file
+/// facts every time. That is the incremental-equals-full rule, not an
+/// oversight.
+///
+/// # Errors
+/// [`SurveyError::Chart`] if the graph exceeds what a segment can address.
+pub fn run_sources(
     sources: &[SourceFile],
     roots: &files::CrateRoots,
     cache: &mut Cache,
 ) -> Result<Survey, SurveyError> {
     let (per_file, reread) = extract_all(sources, cache);
+
+    // `#[path]` relocations first: the declaration, not the filesystem,
+    // decides what module the target file materializes.
+    let mut relocations: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for (file, facts) in &per_file {
+        for (name, declared) in &facts.refs.path_mods {
+            let module = files::module_of(file.lang, &file.path, roots);
+            relocations.insert(
+                files::relocated(&file.path, declared),
+                format!("{module}.{name}"),
+            );
+        }
+    }
+    let module_for = |file: &SourceFile| {
+        relocations
+            .get(&file.path)
+            .cloned()
+            .unwrap_or_else(|| files::module_of(file.lang, &file.path, roots))
+    };
 
     // Phase 2 — index the whole tree. Edges cannot be resolved before every
     // definition is known, which is the reason for two phases and the reason
@@ -254,7 +292,7 @@ fn run_sources(
     let mut index = DefIndex::default();
     for (file, facts) in &per_file {
         index.insert_file(
-            &files::module_of(file.lang, &file.path, roots),
+            &module_for(file),
             file.lang,
             &facts.defs,
             &file.path,
@@ -265,7 +303,7 @@ fn run_sources(
     // a re-export of the same spelling. A reexport inside a function body
     // is unreachable from other files and stays out of the map.
     for (file, facts) in &per_file {
-        let module = files::module_of(file.lang, &file.path, roots);
+        let module = module_for(file);
         for rx in &facts.refs.reexports {
             if rx.scope.is_empty() {
                 index.insert_alias(format!("{module}.{}", rx.alias), &module, &rx.target);
@@ -277,13 +315,16 @@ fn run_sources(
     // rules: what "this name binds to" means is per-language, so the
     // resolver dispatches exactly where extraction does.
     let mut edges = Vec::new();
+    let mut declined_refs = 0u64;
     for (file, facts) in &per_file {
-        let module = files::module_of(file.lang, &file.path, roots);
-        edges.extend(match file.lang {
+        let module = module_for(file);
+        let resolved = match file.lang {
             Lang::Py => resolve::resolve(&index, &module, &facts.refs.imports, &facts.refs.refs),
             Lang::Rs => resolve_rs::resolve(&index, &module, &facts.refs.imports, &facts.refs.refs),
-            Lang::Ts | Lang::Js => Vec::new(),
-        });
+            Lang::Ts | Lang::Js => Resolved::default(),
+        };
+        declined_refs = declined_refs.saturating_add(u64::from(resolved.declined));
+        edges.extend(resolved.edges);
     }
 
     let chart_defs: Vec<grid_chart::Def> = index
@@ -328,5 +369,6 @@ fn run_sources(
         reread,
         langs,
         ambiguous: index.ambiguous_count() as u64,
+        declined_refs,
     })
 }

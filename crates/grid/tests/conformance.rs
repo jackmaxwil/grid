@@ -410,6 +410,51 @@ fn delta_answers_with_a_made_good_the_contract_accepts() {
     );
 }
 
+/// The certified radius crosses the socket: a walk's answer says how far it
+/// is *complete*, not only where it stopped.
+#[test]
+fn query_walk_reports_the_radius_it_finished() {
+    let dir = repo();
+    let daemon = Daemon::start(dir.path());
+    daemon.call("grid.survey.run", &json!({}));
+    let response = daemon.call(
+        "grid.query.walk",
+        &json!({"query": {"from": [{"callsign": "b"}], "fuel": {"max_hops": 2}}}),
+    );
+    assert!(response.get("error").is_none(), "walk errored: {response}");
+    let stats = &response["result"]["stats"];
+    assert!(
+        stats.get("complete_within").is_some(),
+        "a walk that drained certifies its bound: {stats}"
+    );
+}
+
+/// C10 for `grid.drift`: the daemon answers it over the real socket with the
+/// same computation the CLI runs, refusals included.
+#[test]
+fn drift_answers_over_the_socket_with_its_refusals_attached() {
+    let dir = repo();
+    let daemon = Daemon::start(dir.path());
+    let response = daemon.call(
+        "grid.drift",
+        &json!({"base": {"git_rev": "HEAD~1"}, "head": {"git_rev": "HEAD"}}),
+    );
+    assert!(response.get("error").is_none(), "drift errored: {response}");
+    let result = &response["result"];
+    for key in ["base", "head", "suspects", "unchecked"] {
+        assert!(
+            result.get(key).is_some(),
+            "DriftReport missing {key}: {result}"
+        );
+    }
+    // The refusal counts ride with every answer, including an empty one:
+    // "no suspects" without them would be silence dressed as a result.
+    assert!(
+        result["unchecked"].get("budget_rejected").is_some(),
+        "unchecked must state what was not walked: {result}"
+    );
+}
+
 #[test]
 fn resolve_finds_a_definition_by_unique_suffix() {
     let dir = repo();
