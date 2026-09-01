@@ -9,12 +9,12 @@
 //! The rule, over a patch `P` from base to head:
 //!
 //! - a definition `d` whose datum changed across `P`;
-//! - a retained wake showing test `t` covering `d`, and still describing code
+//! - a retained trace showing test `t` covering `d`, and still describing code
 //!   base holds — a *decayed* trace produces no finding at all;
 //! - `t`'s own datum unchanged across `P`;
 //! - a recorded `Pass` for `t` at base's closure key **and** at head's.
 //!
-//! Then `t` is weak for `d`. `Zoc::Heuristic` — a ranking, never a gate, and
+//! Then `t` is weak for `d`. `Grade::Heuristic` — a ranking, never a gate, and
 //! the exit code does not move for it.
 //!
 //! The join runs over step 6's membership image: "datum changed" is a
@@ -57,7 +57,7 @@ pub struct Inputs<'a, B: AsRef<[u8]>> {
 ///
 /// # Errors
 /// A human-readable message when a named snapshot is not in the retained
-/// chain, or when the wake store or verdict log cannot be read. None of
+/// chain, or when the trace store or verdict log cannot be read. None of
 /// those is an empty answer.
 pub fn join<B: AsRef<[u8]>>(
     root: &std::path::Path,
@@ -86,22 +86,22 @@ pub fn join<B: AsRef<[u8]>>(
         .index_of(inputs.head)
         .ok_or_else(|| format!("snapshot {} is not in the retained chain", inputs.head))?;
 
-    let wakes = grid_wake::Store::open(crate::rpc::wake_dir(root))
+    let traces = grid_wake::Store::open(crate::rpc::trace_dir(root))
         .and_then(|store| store.retained())
         .map_err(|e| e.to_string())?;
     let cache = grid_cache::Cache::open(crate::rpc::cache_path(root)).map_err(|e| e.to_string())?;
 
     // The environments each test's verdicts were recorded in — the same
-    // attribution `grid drift --tests` uses, through the wake id the cache
+    // attribution `grid drift --tests` uses, through the trace id the cache
     // line already carries.
     let mut envs: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    let test_of: BTreeMap<&str, &str> = wakes
+    let test_of: BTreeMap<&str, &str> = traces
         .iter()
-        .filter_map(|w| Some((w.wake.wake_id.as_str(), w.wake.command.as_deref()?)))
+        .filter_map(|w| Some((w.trace.trace_id.as_str(), w.trace.command.as_deref()?)))
         .collect();
     for (_, entry) in cache.entries() {
         if let Some((test, env)) = entry
-            .wake_id
+            .trace_id
             .as_deref()
             .and_then(|id| test_of.get(id))
             .zip(entry.env_hash.as_deref())
@@ -115,8 +115,8 @@ pub fn join<B: AsRef<[u8]>>(
     let mut weak: BTreeMap<(String, DatumId), WeakTest> = BTreeMap::new();
     let mut skipped = 0u64;
 
-    for stored in &wakes {
-        let Some(test) = stored.wake.command.as_deref() else {
+    for stored in &traces {
+        let Some(test) = stored.trace.command.as_deref() else {
             continue;
         };
         for edge in stored.edges() {
@@ -126,7 +126,7 @@ pub fn join<B: AsRef<[u8]>>(
             // Conservatism: coverage carried by a decayed trace is a
             // heuristic on top of a demoted heuristic, which is noise. Grid
             // declines it and counts the declining.
-            if grid_wake::grade(inputs.base_segments, edge).zoc != grid_wire::Zoc::Observed {
+            if grid_wake::grade(inputs.base_segments, edge).grade != grid_wire::Grade::Observed {
                 skipped = skipped.saturating_add(1);
                 continue;
             }

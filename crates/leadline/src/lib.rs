@@ -1,7 +1,7 @@
 //! grid-leadline — query engine: budgeted multi-hop traversal, evidence-labeled.
 //!
-//! One entry point, [`query`]: a wire [`grid_wire::LeadlineQuery`] against a
-//! graph, answering a wire [`grid_wire::LeadlineResult`]. Two shapes, chosen by
+//! One entry point, [`query`]: a wire [`grid_wire::WalkQuery`] against a
+//! graph, answering a wire [`grid_wire::WalkResult`]. Two shapes, chosen by
 //! the query and not by the caller: `to` absent is a reachability sweep
 //! (`reached`), `to` present is path-finding (`paths`).
 //!
@@ -13,7 +13,7 @@
 //! There is no unbudgeted path through this crate: [`fuel::Budget::new`]
 //! applies the contract's defaults when a query names no fuel, and the walk
 //! spends the budget on every node and every layer. A walk that runs out says
-//! so — [`grid_wire::LeadlineResultStatus::Aground`] with the unexpanded
+//! so — [`grid_wire::WalkResultStatus::Aground`] with the unexpanded
 //! frontier — rather than truncating silently or hanging. `aground` is a
 //! result, not an error: a lower bound with its edge shown is more useful than
 //! a timeout, and the caller can raise the budget and ask again.
@@ -23,15 +23,14 @@ pub mod graph;
 pub mod walk;
 
 use grid_wire::{
-    Callsign, Datum, DefRef, LeadlineQuery, LeadlineResult, LeadlineResultStats,
-    LeadlineResultStatus, Locator, Path,
+    Callsign, Datum, DefRef, Locator, Path, WalkQuery, WalkResult, WalkResultStatus, WalkStats,
 };
 
 use graph::{DatumId, Direction, Graph, Ordinal};
 use walk::{Filter, Status};
 
 /// Why a query could not be answered. Not a walk failure: running out of fuel
-/// is a [`LeadlineResultStatus::Aground`] result, not an error.
+/// is a [`WalkResultStatus::Aground`] result, not an error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     /// A locator named nothing in this snapshot.
@@ -70,7 +69,7 @@ pub fn resolve<G: Graph + ?Sized>(graph: &G, locator: &Locator) -> Result<Ordina
         Locator::Handle { handle } => {
             by_name(graph, handle.0.split('@').next().unwrap_or(&handle.0))
         }
-        Locator::Fix { .. } => Err(Error::Unsupported("fix")),
+        Locator::Position { .. } => Err(Error::Unsupported("fix")),
         Locator::FileLine { .. } => Err(Error::Unsupported("file:line")),
     }
 }
@@ -113,9 +112,9 @@ fn by_name<G: Graph + ?Sized>(graph: &G, name: &str) -> Result<Ordinal, Error> {
 /// which the empty `paths` array already says.
 pub fn query<G: Graph + ?Sized>(
     graph: &G,
-    q: &LeadlineQuery,
+    q: &WalkQuery,
     snapshot: grid_wire::SnapshotId,
-) -> Result<LeadlineResult, Error> {
+) -> Result<WalkResult, Error> {
     let roots = q
         .from
         .iter()
@@ -148,10 +147,10 @@ pub fn query<G: Graph + ?Sized>(
     });
 
     let status = match walk.status {
-        Status::Complete => LeadlineResultStatus::Complete,
-        Status::Aground => LeadlineResultStatus::Aground,
+        Status::Complete => WalkResultStatus::Complete,
+        Status::Aground => WalkResultStatus::Aground,
     };
-    let counters = LeadlineResultStats {
+    let counters = WalkStats {
         visited: walk.visited,
         hops: walk.hops,
         ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -171,7 +170,7 @@ pub fn query<G: Graph + ?Sized>(
         None => (None, Some(reached(graph, &walk, &roots))),
     };
 
-    Ok(LeadlineResult {
+    Ok(WalkResult {
         status,
         snapshot,
         paths,
@@ -242,7 +241,7 @@ fn path_of<G: Graph + ?Sized>(graph: &G, walk: &walk::Walk, target: Ordinal) -> 
                 src,
                 relation: step.relation,
                 dst,
-                zoc: step.zoc,
+                grade: step.grade,
                 via: None,
             });
         }

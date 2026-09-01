@@ -2,7 +2,7 @@
 //! input is treated as a *set*, sorted by content, so two surveys that found
 //! the same graph write byte-identical bytes regardless of discovery order.
 use crate::{
-    checksum, lang_tag, relation_tag, zoc_tag, ChartError, DatumId, Section, FORMAT_EPOCH,
+    checksum, grade_tag, lang_tag, relation_tag, ChartError, DatumId, Section, FORMAT_EPOCH,
     HEADER_LEN, MAGIC, SECTION_COUNT, SECTION_ENTRY_LEN,
 };
 
@@ -51,7 +51,7 @@ pub struct Edge {
     /// Typed edge kind.
     pub relation: grid_wire::Relation,
     /// Evidence grade.
-    pub zoc: grid_wire::Zoc,
+    pub grade: grid_wire::Grade,
 }
 
 /// Serialize defs and edges into a validated segment image.
@@ -78,12 +78,12 @@ pub fn build(defs: &[Def], edges: &[Edge]) -> Result<Vec<u8>, ChartError> {
             .and_then(|i| u32::try_from(i).ok())
     };
 
-    // (src, dst, relation, zoc) as ordinals, sorted so CSR rows are contiguous
+    // (src, dst, relation, grade) as ordinals, sorted so CSR rows are contiguous
     // and the byte image is a function of the edge *set*.
     let mut rows: Vec<(u32, u32, u16)> = edges
         .iter()
         .filter_map(|e| {
-            let attrs = (u16::from(relation_tag(e.relation)) << 8) | u16::from(zoc_tag(e.zoc));
+            let attrs = (u16::from(relation_tag(e.relation)) << 8) | u16::from(grade_tag(e.grade));
             Some((ordinal(&e.src)?, ordinal(&e.dst)?, attrs))
         })
         .collect();

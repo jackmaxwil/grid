@@ -2,8 +2,8 @@
   "openrpc": "1.2.6",
   "info": {
     "title": "Grid wire contract",
-    "version": "0.1.0",
-    "description": "JSON-RPC 2.0 contract for the grid daemon (crates/wire is the Rust source of truth; this document is the normative external vocabulary). Conventions: (1) Promise-space vs actual-space — a Track (promised delta) references code by CallsignPattern because unwritten code has no Datum yet; a MadeGood (actual delta) is datum-space with callsign annotations; xte unifies the two at gate time. (2) Zoc ranking, strongest first: proven (compiler-grade static) > observed (happened in a wake at least once) > modeled (registry/schema unification) > heuristic (name/shape match). Filters use at_or_above semantics. (3) Fuel exhaustion is not an error: a walk that runs out of fuel returns status 'aground' with its frontier, and the caller may resume. (4) Determinism: for a given snapshot_id, pure query methods return identical results across calls and daemon restarts, with two carve-outs: the stats object is excluded from the comparison surface, and walks that set fuel.max_ms are excluded entirely, since wall-clock exhaustion varies run to run. The C2 property test compares responses with stats stripped and max_ms unset; callers wanting cacheable results budget by max_hops/max_nodes only. (5) Versioning: this document is semver'd; breaking changes bump major; the daemon reports its wire version via grid.version and refuses clients that pin an incompatible major."
+    "version": "1.0.0",
+    "description": "JSON-RPC 2.0 contract for the grid daemon (crates/wire is the Rust source of truth; this document is the normative external vocabulary). Conventions: (1) Promise-space vs actual-space — a Plan (promised delta) references code by CallsignPattern because unwritten code has no Datum yet; a Diff (actual delta) is datum-space with callsign annotations; the gate verdict unifies the two. This is wire epoch 1: the one declared break, taken before any consumer existed (docs/plans/2026-09-01-naming.md); epoch 0 is served by nothing. (2) Grade ranking, strongest first: proven (compiler-grade static) > observed (happened in a trace at least once) > modeled (registry/schema unification) > heuristic (name/shape match). Filters use at_or_above semantics. (3) Fuel exhaustion is not an error: a walk that runs out of fuel returns status 'aground' with its frontier, and the caller may resume. (4) Determinism: for a given snapshot_id, pure query methods return identical results across calls and daemon restarts, with two carve-outs: the stats object is excluded from the comparison surface, and walks that set fuel.max_ms are excluded entirely, since wall-clock exhaustion varies run to run. The C2 property test compares responses with stats stripped and max_ms unset; callers wanting cacheable results budget by max_hops/max_nodes only. (5) Versioning: this document is semver'd; breaking changes bump major; the daemon reports its wire version via grid.version and refuses clients that pin an incompatible major."
   },
   "x-transport": {
     "socket": "unix domain socket",
@@ -27,7 +27,7 @@
         {
           "name": "current versions",
           "params": [],
-          "result": { "name": "version", "value": { "wire": "0.1.0", "engine": "grid 0.1.0", "porcelain": "2.0.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
+          "result": { "name": "version", "value": { "wire": "1.0.0", "engine": "grid 0.1.0", "porcelain": "2.0.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
         }
       ],
       "result": {
@@ -83,7 +83,7 @@
     },
     {
       "name": "grid.resolve",
-      "summary": "Resolve a locator (datum, fix, callsign, or file:line) to definition references. Unknown locators resolve to an empty list, not an error.",
+      "summary": "Resolve a locator (datum, position, callsign, or file:line) to definition references. Unknown locators resolve to an empty list, not an error.",
       "paramStructure": "by-name",
       "params": [
         { "name": "locator", "required": true, "schema": { "$ref": "#/components/schemas/Locator" } },
@@ -104,7 +104,7 @@
     },
     {
       "name": "grid.delta",
-      "summary": "Compute the actual delta (MadeGood) between two snapshots or revs. Datum set-difference plus edge changes with move detection.",
+      "summary": "Compute the actual delta (Diff) between two snapshots or revs. Datum set-difference plus edge changes with move detection.",
       "paramStructure": "by-name",
       "params": [
         { "name": "base", "required": true, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } },
@@ -117,42 +117,42 @@
             { "name": "base", "value": { "git_rev": "bc21972" } },
             { "name": "head", "value": { "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
           ],
-          "result": { "name": "made_good", "value": { "base": "snap:b3:a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4", "head": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1", "defs": [{ "action": "modified", "callsign": "cortana.reaper.Reaper.sweep", "before": "b3:897d897d897d897d897d897d897d897d897d897d897d897d897d897d897d897d", "after": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f" }, { "action": "added", "callsign": "cortana.reaper.TagContract.validate", "after": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c" }], "edges": [{ "action": "added", "edge": { "src": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "relation": "calls", "dst": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "zoc": "proven" } }] } }
+          "result": { "name": "diff", "value": { "base": "snap:b3:a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4", "head": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1", "defs": [{ "action": "modified", "callsign": "cortana.reaper.Reaper.sweep", "before": "b3:897d897d897d897d897d897d897d897d897d897d897d897d897d897d897d897d", "after": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f" }, { "action": "added", "callsign": "cortana.reaper.TagContract.validate", "after": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c" }], "edges": [{ "action": "added", "edge": { "src": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "relation": "calls", "dst": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "grade": "proven" } }] } }
         }
       ],
-      "result": { "name": "made_good", "schema": { "$ref": "#/components/schemas/MadeGood" } },
+      "result": { "name": "diff", "schema": { "$ref": "#/components/schemas/Diff" } },
       "errors": [{ "$ref": "#/components/errors/UnknownSnapshot" }]
     },
     {
       "name": "grid.gate.check",
-      "summary": "Check a Track (promised delta + expected tests + invariants) against the MadeGood at head. The verdict feeds the Beelink merge-gate pipeline.",
+      "summary": "Check a Plan (promised delta + expected tests + invariants) against the Diff at head. The verdict feeds the Beelink merge-gate pipeline.",
       "paramStructure": "by-name",
       "params": [
-        { "name": "track", "required": true, "schema": { "$ref": "#/components/schemas/Track" } },
+        { "name": "plan", "required": true, "schema": { "$ref": "#/components/schemas/Plan" } },
         { "name": "head", "required": true, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } }
       ],
       "examples": [
         {
-          "name": "gate PR 381 against its track",
+          "name": "gate PR 381 against its plan",
           "params": [
-            { "name": "track", "value": { "track_id": "track:pr-381-plan-v3", "pr": 381, "plan_rev": "v3", "base": { "git_rev": "bc21972" }, "delta": { "defs": [{ "action": "add", "callsign": "cortana.reaper.TagContract.*" }, { "action": "modify", "callsign": "cortana.reaper.Reaper.sweep" }], "edges": [{ "action": "add", "src": "cortana.reaper.Reaper.sweep", "relation": "calls", "dst": "cortana.reaper.TagContract.validate" }] }, "tests": [{ "test": "tests/test_tag_contract.py::test_retry_window", "expect": "pass", "new": true }], "invariants": [{ "id": "boards-skip-persistence", "description": "Board code may not call persistence directly", "rule": { "forbid_edge": { "src": "cortana.boards.**", "relation": "calls", "dst": "cortana.persistence.**" } } }], "tolerate": [{ "src": "cortana.reaper.**", "relation": "reads_field", "dst": "cortana.reaper.**" }] } },
+            { "name": "plan", "value": { "plan_id": "plan:pr-381-plan-v3", "pr": 381, "plan_rev": "v3", "base": { "git_rev": "bc21972" }, "delta": { "defs": [{ "action": "add", "callsign": "cortana.reaper.TagContract.*" }, { "action": "modify", "callsign": "cortana.reaper.Reaper.sweep" }], "edges": [{ "action": "add", "src": "cortana.reaper.Reaper.sweep", "relation": "calls", "dst": "cortana.reaper.TagContract.validate" }] }, "tests": [{ "test": "tests/test_tag_contract.py::test_retry_window", "expect": "pass", "new": true }], "invariants": [{ "id": "boards-skip-persistence", "description": "Board code may not call persistence directly", "rule": { "forbid_edge": { "src": "cortana.boards.**", "relation": "calls", "dst": "cortana.persistence.**" } } }], "tolerate": [{ "src": "cortana.reaper.**", "relation": "reads_field", "dst": "cortana.reaper.**" }] } },
             { "name": "head", "value": { "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
           ],
-          "result": { "name": "verdict", "value": { "gate": "pass", "track_id": "track:pr-381-plan-v3", "head": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1", "matched": [{ "action": "add", "src": "cortana.reaper.Reaper.sweep", "relation": "calls", "dst": "cortana.reaper.TagContract.validate" }], "missing": [], "surplus": [], "tolerated": [{ "action": "added", "edge": { "src": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "relation": "reads_field", "dst": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "zoc": "proven" } }], "defs_unaccounted": [], "tests": [{ "test": "tests/test_tag_contract.py::test_retry_window", "expected": "pass", "actual": "pass", "ok": true }], "invariant_violations": [], "reasons": [] } }
+          "result": { "name": "verdict", "value": { "gate": "pass", "plan_id": "plan:pr-381-plan-v3", "head": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1", "matched": [{ "action": "add", "src": "cortana.reaper.Reaper.sweep", "relation": "calls", "dst": "cortana.reaper.TagContract.validate" }], "missing": [], "surplus": [], "tolerated": [{ "action": "added", "edge": { "src": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "relation": "reads_field", "dst": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "grade": "proven" } }], "defs_unaccounted": [], "tests": [{ "test": "tests/test_tag_contract.py::test_retry_window", "expected": "pass", "actual": "pass", "ok": true }], "invariant_violations": [], "reasons": [] } }
         }
       ],
-      "result": { "name": "verdict", "schema": { "$ref": "#/components/schemas/XteVerdict" } },
+      "result": { "name": "verdict", "schema": { "$ref": "#/components/schemas/GateVerdict" } },
       "errors": [
-        { "$ref": "#/components/errors/InvalidTrack" },
+        { "$ref": "#/components/errors/InvalidPlan" },
         { "$ref": "#/components/errors/UnknownSnapshot" }
       ]
     },
     {
       "name": "grid.query.walk",
-      "summary": "Run a leadline walk: budgeted, evidence-filtered multi-hop traversal. Reachability sweep when 'to' is absent; path-finding when present.",
+      "summary": "Run a walk walk: budgeted, evidence-filtered multi-hop traversal. Reachability sweep when 'to' is absent; path-finding when present.",
       "paramStructure": "by-name",
       "params": [
-        { "name": "query", "required": true, "schema": { "$ref": "#/components/schemas/LeadlineQuery" } }
+        { "name": "query", "required": true, "schema": { "$ref": "#/components/schemas/WalkQuery" } }
       ],
       "examples": [
         {
@@ -161,7 +161,7 @@
           "result": { "name": "result", "value": { "status": "complete", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1", "reached": [{ "datum": "b3:4da74da74da74da74da74da74da74da74da74da74da74da74da74da74da74da7", "callsign": "webapp.api.fetchCard", "lang": "ts" }], "stats": { "visited": 812, "hops": 4, "ms": 3 } } }
         }
       ],
-      "result": { "name": "result", "schema": { "$ref": "#/components/schemas/LeadlineResult" } },
+      "result": { "name": "result", "schema": { "$ref": "#/components/schemas/WalkResult" } },
       "errors": [{ "$ref": "#/components/errors/UnknownSnapshot" }]
     },
     {
@@ -176,10 +176,10 @@
         {
           "name": "carry a review pin across an edit",
           "params": [
-            { "name": "anchors", "value": [{ "anchor_id": "anchor:01J4XD9M5F1T6V8W0B2D4F6H7J", "fix": { "datum": "b3:897d897d897d897d897d897d897d897d897d897d897d897d897d897d897d897d", "path": [{ "role": "body", "index": 3 }] }, "kind": "annotation", "created_at": "2026-08-06T22:10:00Z" }] },
+            { "name": "anchors", "value": [{ "anchor_id": "anchor:01J4XD9M5F1T6V8W0B2D4F6H7J", "position": { "datum": "b3:897d897d897d897d897d897d897d897d897d897d897d897d897d897d897d897d", "path": [{ "role": "body", "index": 3 }] }, "kind": "annotation", "created_at": "2026-08-06T22:10:00Z" }] },
             { "name": "to", "value": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" }
           ],
-          "result": { "name": "carried", "value": [{ "anchor_id": "anchor:01J4XD9M5F1T6V8W0B2D4F6H7J", "status": "carried", "fix": { "datum": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "path": [{ "role": "body", "index": 3 }] }, "confidence": 0.93, "via": [{ "from": "b3:897d897d897d897d897d897d897d897d897d897d897d897d897d897d897d897d", "to": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "git_rev": "4f2c9e1" }] }] }
+          "result": { "name": "carried", "value": [{ "anchor_id": "anchor:01J4XD9M5F1T6V8W0B2D4F6H7J", "status": "carried", "position": { "datum": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "path": [{ "role": "body", "index": 3 }] }, "confidence": 0.93, "via": [{ "from": "b3:897d897d897d897d897d897d897d897d897d897d897d897d897d897d897d897d", "to": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "git_rev": "4f2c9e1" }] }] }
         }
       ],
       "result": {
@@ -189,16 +189,16 @@
       "errors": [{ "$ref": "#/components/errors/UnknownSnapshot" }]
     },
     {
-      "name": "grid.wake.ingest",
-      "summary": "Ingest a wake (runtime trace from a test run). Observations are resolved to datums where possible; unresolved symbols are returned, not dropped silently.",
+      "name": "grid.trace.ingest",
+      "summary": "Ingest a trace (runtime trace from a test run). Observations are resolved to datums where possible; unresolved symbols are returned, not dropped silently.",
       "paramStructure": "by-name",
       "params": [
-        { "name": "wake", "required": true, "schema": { "$ref": "#/components/schemas/Wake" } }
+        { "name": "trace", "required": true, "schema": { "$ref": "#/components/schemas/Trace" } }
       ],
       "examples": [
         {
-          "name": "ingest a test-run wake",
-          "params": [{ "name": "wake", "value": { "wake_id": "wake:01J4XC8K4E0S5T7V9W1B3D5F6G", "git_rev": "4f2c9e1", "command": "just cortana test", "started_at": "2026-08-07T18:02:11Z", "observations": [{ "caller": { "datum": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f" }, "callee": { "symbol": "cortana/reaper.py:TagEmitter.emit_with_receipt" }, "count": 12 }] } }],
+          "name": "ingest a test-run trace",
+          "params": [{ "name": "trace", "value": { "trace_id": "trace:01J4XC8K4E0S5T7V9W1B3D5F6G", "git_rev": "4f2c9e1", "command": "just cortana test", "started_at": "2026-08-07T18:02:11Z", "observations": [{ "caller": { "datum": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f" }, "callee": { "symbol": "cortana/reaper.py:TagEmitter.emit_with_receipt" }, "count": 12 }] } }],
           "result": { "name": "ingested", "value": { "observed_edges": 1, "resolved": 1, "unresolved_symbols": [] } }
         }
       ],
@@ -228,7 +228,7 @@
         {
           "name": "check verdict cache before running tests",
           "params": [{ "name": "request", "value": { "kind": "test", "env_hash": "env:b3:77aa77aa", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1", "datums": ["b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "b3:4da74da74da74da74da74da74da74da74da74da74da74da74da74da74da74da7"] } }],
-          "result": { "name": "result", "value": { "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1", "hits": [{ "datum": "b3:4da74da74da74da74da74da74da74da74da74da74da74da74da74da74da74da7", "verdict": "pass", "recorded_at": "2026-08-07T18:05:40Z", "wake_id": "wake:01J4XC8K4E0S5T7V9W1B3D5F6G" }], "misses": ["b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c"] } }
+          "result": { "name": "result", "value": { "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1", "hits": [{ "datum": "b3:4da74da74da74da74da74da74da74da74da74da74da74da74da74da74da74da7", "verdict": "pass", "recorded_at": "2026-08-07T18:05:40Z", "trace_id": "trace:01J4XC8K4E0S5T7V9W1B3D5F6G" }], "misses": ["b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c"] } }
         }
       ],
       "result": { "name": "result", "schema": { "$ref": "#/components/schemas/CacheCheckResult" } },
@@ -242,7 +242,7 @@
         { "name": "kind", "required": true, "schema": { "type": "string", "enum": ["typecheck", "lint", "test"] } },
         { "name": "env_hash", "required": true, "schema": { "type": "string", "minLength": 1 } },
         { "name": "snapshot", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotId" } },
-        { "name": "wake_id", "required": false, "schema": { "type": "string", "pattern": "^wake:[0-9A-HJKMNP-TV-Z]{26}$", "description": "Wake produced by the recorded run, if any; stored on each entry." } },
+        { "name": "trace_id", "required": false, "schema": { "type": "string", "pattern": "^trace:[0-9A-HJKMNP-TV-Z]{26}$", "description": "Trace produced by the recorded run, if any; stored on each entry." } },
         { "name": "results", "required": true, "schema": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/CacheResultEntry" } } }
       ],
       "examples": [
@@ -251,7 +251,7 @@
           "params": [
             { "name": "kind", "value": "test" },
             { "name": "env_hash", "value": "env:b3:77aa77aa" },
-            { "name": "wake_id", "value": "wake:01J4XC8K4E0S5T7V9W1B3D5F6G" },
+            { "name": "trace_id", "value": "trace:01J4XC8K4E0S5T7V9W1B3D5F6G" },
             { "name": "results", "value": [{ "datum": "b3:4da74da74da74da74da74da74da74da74da74da74da74da74da74da74da74da7", "verdict": "pass" }] }
           ],
           "result": { "name": "recorded", "value": { "recorded": 1, "rejected": [] } }
@@ -296,46 +296,46 @@
         {
           "name": "scope the reaper contract",
           "params": [{ "name": "callsigns", "value": ["cortana.reaper.TagContract.**"] }],
-          "result": { "name": "pack", "value": { "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1", "defs": [{ "datum": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "callsign": "cortana.reaper.TagContract.validate", "lang": "py", "signature": "def validate(self, tags: list[Tag]) -> Receipt" }], "in_edges": [{ "src": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "relation": "calls", "dst": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "zoc": "proven" }], "out_edges": [{ "src": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "relation": "calls", "dst": "b3:5c195c195c195c195c195c195c195c195c195c195c195c195c195c195c195c19", "zoc": "proven" }], "invariants": [], "anchors": [], "churn": [{ "datum": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "legs": 3 }] } }
+          "result": { "name": "pack", "value": { "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1", "defs": [{ "datum": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "callsign": "cortana.reaper.TagContract.validate", "lang": "py", "signature": "def validate(self, tags: list[Tag]) -> Receipt" }], "in_edges": [{ "src": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "relation": "calls", "dst": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "grade": "proven" }], "out_edges": [{ "src": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "relation": "calls", "dst": "b3:5c195c195c195c195c195c195c195c195c195c195c195c195c195c195c195c19", "grade": "proven" }], "invariants": [], "anchors": [], "churn": [{ "datum": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "edits": 3 }] } }
         }
       ],
       "result": { "name": "pack", "schema": { "$ref": "#/components/schemas/ScopePack" } },
       "errors": [{ "$ref": "#/components/errors/UnknownSnapshot" }]
     },
     {
-      "name": "grid.track.lint",
-      "summary": "Validate a track before code exists: promised callsigns must resolve or plausibly pattern-match; promised edges are checked against standing invariants. Pure validation — no survey.",
+      "name": "grid.plan.lint",
+      "summary": "Validate a plan before code exists: promised callsigns must resolve or plausibly pattern-match; promised edges are checked against standing invariants. Pure validation — no survey.",
       "paramStructure": "by-name",
       "params": [
-        { "name": "track", "required": true, "schema": { "$ref": "#/components/schemas/Track" } }
+        { "name": "plan", "required": true, "schema": { "$ref": "#/components/schemas/Plan" } }
       ],
       "examples": [
         {
           "name": "impossible plan dies at plan time",
-          "params": [{ "name": "track", "value": { "track_id": "track:pr-390-plan-v1", "base": { "git_rev": "bc21972" }, "delta": { "defs": [], "edges": [{ "action": "add", "src": "cortana.boards.render", "relation": "calls", "dst": "cortana.persistence.write" }] } } }],
+          "params": [{ "name": "plan", "value": { "plan_id": "plan:pr-390-plan-v1", "base": { "git_rev": "bc21972" }, "delta": { "defs": [], "edges": [{ "action": "add", "src": "cortana.boards.render", "relation": "calls", "dst": "cortana.persistence.write" }] } } }],
           "result": { "name": "lint", "value": { "errors": [{ "promise": "add cortana.boards.render -calls-> cortana.persistence.write", "reason": "violates invariant boards-skip-persistence" }], "warnings": [] } }
         }
       ],
       "result": { "name": "lint", "schema": { "$ref": "#/components/schemas/LintResult" } },
-      "errors": [{ "$ref": "#/components/errors/InvalidTrack" }]
+      "errors": [{ "$ref": "#/components/errors/InvalidPlan" }]
     },
     {
-      "name": "grid.track.estimate",
+      "name": "grid.plan.estimate",
       "summary": "Blast radius as numbers: definitions in the promised delta's closure, tests in reverse closure, predicted cache misses. Mechanical footing for effort estimation.",
       "paramStructure": "by-name",
       "params": [
-        { "name": "track", "required": true, "schema": { "$ref": "#/components/schemas/Track" } },
+        { "name": "plan", "required": true, "schema": { "$ref": "#/components/schemas/Plan" } },
         { "name": "base", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } }
       ],
       "examples": [
         {
           "name": "estimate PR 381",
-          "params": [{ "name": "track", "value": { "track_id": "track:pr-381-plan-v3", "base": { "git_rev": "bc21972" }, "delta": { "defs": [], "edges": [{ "action": "add", "src": "cortana.reaper.Reaper.sweep", "relation": "calls", "dst": "cortana.reaper.TagContract.validate" }] } } }],
+          "params": [{ "name": "plan", "value": { "plan_id": "plan:pr-381-plan-v3", "base": { "git_rev": "bc21972" }, "delta": { "defs": [], "edges": [{ "action": "add", "src": "cortana.reaper.Reaper.sweep", "relation": "calls", "dst": "cortana.reaper.TagContract.validate" }] } } }],
           "result": { "name": "estimate", "value": { "defs_in_closure": 14, "tests_in_reverse_closure": ["tests/test_tag_contract.py::test_retry_window"], "predicted_cache_misses": 2 } }
         }
       ],
       "result": { "name": "estimate", "schema": { "$ref": "#/components/schemas/Estimate" } },
-      "errors": [{ "$ref": "#/components/errors/UnknownSnapshot" }, { "$ref": "#/components/errors/InvalidTrack" }]
+      "errors": [{ "$ref": "#/components/errors/UnknownSnapshot" }, { "$ref": "#/components/errors/InvalidPlan" }]
     },
     {
       "name": "grid.edit.apply",
@@ -355,84 +355,84 @@
     },
     {
       "name": "grid.todo",
-      "summary": "A view over grid.gate.check's promise accounting — not a second delta engine. The track's promises partitioned into done and pending, with a fraction over all promise kinds.",
+      "summary": "A view over grid.gate.check's promise accounting — not a second delta engine. The plan's promises partitioned into done and pending, with a fraction over all promise kinds.",
       "paramStructure": "by-name",
       "params": [
-        { "name": "track", "required": true, "schema": { "$ref": "#/components/schemas/TrackId" } },
+        { "name": "plan", "required": true, "schema": { "$ref": "#/components/schemas/PlanId" } },
         { "name": "head", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } }
       ],
       "examples": [
         {
           "name": "mid-implementation worklist",
-          "params": [{ "name": "track", "value": "track:pr-381-plan-v3" }],
-          "result": { "name": "todo", "value": { "track_id": "track:pr-381-plan-v3", "defs_done": [{ "action": "add", "callsign": "cortana.reaper.TagContract.*" }], "defs_pending": [], "edges_done": [], "edges_pending": [{ "action": "add", "src": "cortana.reaper.Reaper.sweep", "relation": "calls", "dst": "cortana.reaper.TagContract.validate" }], "tests_done": [], "tests_pending": ["tests/test_tag_contract.py::test_retry_window"], "fraction": { "num": 1, "den": 3 } } }
+          "params": [{ "name": "plan", "value": "plan:pr-381-plan-v3" }],
+          "result": { "name": "todo", "value": { "plan_id": "plan:pr-381-plan-v3", "defs_done": [{ "action": "add", "callsign": "cortana.reaper.TagContract.*" }], "defs_pending": [], "edges_done": [], "edges_pending": [{ "action": "add", "src": "cortana.reaper.Reaper.sweep", "relation": "calls", "dst": "cortana.reaper.TagContract.validate" }], "tests_done": [], "tests_pending": ["tests/test_tag_contract.py::test_retry_window"], "fraction": { "num": 1, "den": 3 } } }
         }
       ],
       "result": { "name": "todo", "schema": { "$ref": "#/components/schemas/TodoList" } },
-      "errors": [{ "$ref": "#/components/errors/UnknownTrack" }, { "$ref": "#/components/errors/UnknownSnapshot" }]
+      "errors": [{ "$ref": "#/components/errors/UnknownPlan" }, { "$ref": "#/components/errors/UnknownSnapshot" }]
     },
     {
-      "name": "grid.review.pack",
-      "summary": "The reviewer's bundle in one call: verdict, per-promise fulfilling paths, surplus with provenance, changed-but-unexecuted coverage, open anchors.",
+      "name": "grid.check",
+      "summary": "Is this change ok, in one call: the gate verdict, and why — per-promise fulfilling paths, surplus with provenance, changed-but-unexecuted coverage, open anchors.",
       "paramStructure": "by-name",
       "params": [
-        { "name": "track", "required": true, "schema": { "$ref": "#/components/schemas/TrackId" } },
+        { "name": "plan", "required": true, "schema": { "$ref": "#/components/schemas/PlanId" } },
         { "name": "head", "required": true, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } },
-        { "name": "wake", "required": false, "schema": { "$ref": "#/components/schemas/WakeId" } }
+        { "name": "trace", "required": false, "schema": { "$ref": "#/components/schemas/TraceId" } }
       ],
       "examples": [
         {
-          "name": "pack PR 381 for review",
+          "name": "check PR 381 against its plan",
           "params": [
-            { "name": "track", "value": "track:pr-381-plan-v3" },
+            { "name": "plan", "value": "plan:pr-381-plan-v3" },
             { "name": "head", "value": { "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } },
-            { "name": "wake", "value": "wake:01J4XC8K4E0S5T7V9W1B3D5F6G" }
+            { "name": "trace", "value": "trace:01J4XC8K4E0S5T7V9W1B3D5F6G" }
           ],
-          "result": { "name": "pack", "value": { "verdict": { "gate": "pass", "track_id": "track:pr-381-plan-v3", "head": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1", "matched": [{ "action": "add", "src": "cortana.reaper.Reaper.sweep", "relation": "calls", "dst": "cortana.reaper.TagContract.validate" }], "missing": [], "surplus": [], "tolerated": [], "defs_unaccounted": [], "tests": [{ "test": "tests/test_tag_contract.py::test_retry_window", "expected": "pass", "actual": "pass", "ok": true }], "invariant_violations": [], "reasons": [] }, "fulfilling": [{ "promise": { "action": "add", "src": "cortana.reaper.Reaper.sweep", "relation": "calls", "dst": "cortana.reaper.TagContract.validate" }, "hops": [{ "nodes": ["b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c"], "edges": [{ "src": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "relation": "calls", "dst": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "zoc": "proven" }] }] }], "surplus": [], "coverage": ["b3:2b712b712b712b712b712b712b712b712b712b712b712b712b712b712b712b71"], "open_anchors": [] } }
+          "result": { "name": "check", "value": { "verdict": { "gate": "pass", "plan_id": "plan:pr-381-plan-v3", "head": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1", "matched": [{ "action": "add", "src": "cortana.reaper.Reaper.sweep", "relation": "calls", "dst": "cortana.reaper.TagContract.validate" }], "missing": [], "surplus": [], "tolerated": [], "defs_unaccounted": [], "tests": [{ "test": "tests/test_tag_contract.py::test_retry_window", "expected": "pass", "actual": "pass", "ok": true }], "invariant_violations": [], "reasons": [] }, "why": { "fulfilling": [{ "promise": { "action": "add", "src": "cortana.reaper.Reaper.sweep", "relation": "calls", "dst": "cortana.reaper.TagContract.validate" }, "hops": [{ "nodes": ["b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c"], "edges": [{ "src": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "relation": "calls", "dst": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "grade": "proven" }] }] }], "surplus": [], "coverage": ["b3:2b712b712b712b712b712b712b712b712b712b712b712b712b712b712b712b71"], "open_anchors": [] } } }
         }
       ],
-      "result": { "name": "pack", "schema": { "$ref": "#/components/schemas/ReviewPack" } },
-      "errors": [{ "$ref": "#/components/errors/UnknownTrack" }, { "$ref": "#/components/errors/UnknownSnapshot" }, { "$ref": "#/components/errors/UnknownWake" }]
+      "result": { "name": "check", "schema": { "$ref": "#/components/schemas/CheckResult" } },
+      "errors": [{ "$ref": "#/components/errors/UnknownPlan" }, { "$ref": "#/components/errors/UnknownSnapshot" }, { "$ref": "#/components/errors/UnknownTrace" }]
     },
     {
-      "name": "grid.wake.diff",
-      "summary": "Two traces compared at call granularity; the first divergent hop is where behavior forked. Requires wake retention.",
+      "name": "grid.trace.diff",
+      "summary": "Two traces compared at call granularity; the first divergent hop is where behavior forked. Requires trace retention.",
       "paramStructure": "by-name",
       "params": [
-        { "name": "green", "required": true, "schema": { "$ref": "#/components/schemas/WakeId" } },
-        { "name": "red", "required": true, "schema": { "$ref": "#/components/schemas/WakeId" } }
+        { "name": "green", "required": true, "schema": { "$ref": "#/components/schemas/TraceId" } },
+        { "name": "red", "required": true, "schema": { "$ref": "#/components/schemas/TraceId" } }
       ],
       "examples": [
         {
           "name": "where the red run forked",
           "params": [
-            { "name": "green", "value": "wake:01J4XC8K4E0S5T7V9W1B3D5F6G" },
-            { "name": "red", "value": "wake:01J4XE0N6G2V7W9B1D3F5H7J8K" }
+            { "name": "green", "value": "trace:01J4XC8K4E0S5T7V9W1B3D5F6G" },
+            { "name": "red", "value": "trace:01J4XE0N6G2V7W9B1D3F5H7J8K" }
           ],
-          "result": { "name": "diff", "value": { "first_divergence": { "caller": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "green_callee": "b3:5c195c195c195c195c195c195c195c195c195c195c195c195c195c195c195c19" }, "added": [], "removed": [{ "src": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "relation": "calls", "dst": "b3:5c195c195c195c195c195c195c195c195c195c195c195c195c195c195c195c19", "zoc": "observed" }] } }
+          "result": { "name": "diff", "value": { "first_divergence": { "caller": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "green_callee": "b3:5c195c195c195c195c195c195c195c195c195c195c195c195c195c195c195c19" }, "added": [], "removed": [{ "src": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "relation": "calls", "dst": "b3:5c195c195c195c195c195c195c195c195c195c195c195c195c195c195c195c19", "grade": "observed" }] } }
         }
       ],
-      "result": { "name": "diff", "schema": { "$ref": "#/components/schemas/WakeDiff" } },
-      "errors": [{ "$ref": "#/components/errors/UnknownWake" }]
+      "result": { "name": "diff", "schema": { "$ref": "#/components/schemas/TraceDiff" } },
+      "errors": [{ "$ref": "#/components/errors/UnknownTrace" }]
     },
     {
       "name": "grid.suspects",
-      "summary": "Fault localization: the failing test's observed closure intersected with the recent delta, ranked. Requires wake retention and a populated verdict cache for history-aware scoring.",
+      "summary": "Fault localization: the failing test's observed closure intersected with the recent delta, ranked. Requires trace retention and a populated verdict cache for history-aware scoring.",
       "paramStructure": "by-name",
       "params": [
         { "name": "test", "required": true, "schema": { "type": "string", "minLength": 1 } },
-        { "name": "wake", "required": false, "schema": { "$ref": "#/components/schemas/WakeId" } },
+        { "name": "trace", "required": false, "schema": { "$ref": "#/components/schemas/TraceId" } },
         { "name": "base", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } }
       ],
       "examples": [
         {
           "name": "rank suspects for a red test",
           "params": [{ "name": "test", "value": "tests/test_tag_contract.py::test_retry_window" }],
-          "result": { "name": "suspects", "value": { "ranked": [{ "datum": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "score": 0.87, "via": "changed in delta and observed in failing wake" }] } }
+          "result": { "name": "suspects", "value": { "ranked": [{ "datum": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "score": 0.87, "via": "changed in delta and observed in failing trace" }] } }
         }
       ],
       "result": { "name": "suspects", "schema": { "$ref": "#/components/schemas/Suspects" } },
-      "errors": [{ "$ref": "#/components/errors/UnknownWake" }, { "$ref": "#/components/errors/UnknownSnapshot" }]
+      "errors": [{ "$ref": "#/components/errors/UnknownTrace" }, { "$ref": "#/components/errors/UnknownSnapshot" }]
     },
     {
       "name": "grid.bisect",
@@ -445,7 +445,7 @@
       ],
       "examples": [
         {
-          "name": "find the culprit leg",
+          "name": "find the culprit edit",
           "params": [
             { "name": "good", "value": { "git_rev": "bc21972" } },
             { "name": "bad", "value": { "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } },
@@ -464,8 +464,8 @@
       "params": [
         { "name": "base", "required": true, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } },
         { "name": "head", "required": true, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } },
-        { "name": "floor", "required": false, "schema": { "$ref": "#/components/schemas/Zoc" } },
-        { "name": "track", "required": false, "schema": { "$ref": "#/components/schemas/Track" } },
+        { "name": "floor", "required": false, "schema": { "$ref": "#/components/schemas/Grade" } },
+        { "name": "plan", "required": false, "schema": { "$ref": "#/components/schemas/Plan" } },
         { "name": "tests", "required": false, "schema": { "type": "boolean", "description": "Also enumerate every known test and report the ones whose recorded verdict no longer applies." } }
       ],
       "examples": [
@@ -485,7 +485,7 @@
                   "dependent": { "datum": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "callsign": "cortana.reaper.Reaper.sweep" },
                   "changed": { "datum": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "callsign": "cortana.reaper.TagContract.validate" },
                   "relation": "calls",
-                  "zoc": "proven",
+                  "grade": "proven",
                   "sig_before": "b3:897d897d897d897d897d897d897d897d897d897d897d897d897d897d897d897d",
                   "sig_after": "b3:1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b"
                 }
@@ -542,7 +542,7 @@
         "items": { "$ref": "#/components/schemas/PathStep" },
         "description": "Interior coordinate: structural path inside a definition's AST, by role, never by byte offset. Empty array addresses the whole definition."
       },
-      "Fix": {
+      "Position": {
         "type": "object",
         "required": ["datum"],
         "properties": {
@@ -570,7 +570,7 @@
       "Locator": {
         "oneOf": [
           { "type": "object", "required": ["datum"], "properties": { "datum": { "$ref": "#/components/schemas/Datum" } }, "additionalProperties": false },
-          { "type": "object", "required": ["fix"], "properties": { "fix": { "$ref": "#/components/schemas/Fix" } }, "additionalProperties": false },
+          { "type": "object", "required": ["position"], "properties": { "position": { "$ref": "#/components/schemas/Position" } }, "additionalProperties": false },
           { "type": "object", "required": ["callsign"], "properties": { "callsign": { "$ref": "#/components/schemas/Callsign" } }, "additionalProperties": false },
           { "type": "object", "required": ["handle"], "properties": { "handle": { "$ref": "#/components/schemas/Handle" } }, "additionalProperties": false },
           { "type": "object", "required": ["file", "line"], "properties": { "file": { "type": "string" }, "line": { "type": "integer", "minimum": 1 } }, "additionalProperties": false, "description": "Advisory: resolves via the current materialization; prefer datum or callsign." }
@@ -616,24 +616,24 @@
         ],
         "description": "Typed edge kinds of the chart. The call graph is the 'calls' + 'dispatches_to' view."
       },
-      "Zoc": {
+      "Grade": {
         "type": "string",
         "enum": ["proven", "observed", "modeled", "heuristic"],
-        "description": "Evidence grade (after CATZOC), listed strongest first: proven = compiler-grade static; observed = seen in a wake at least once; modeled = registry/schema/route unification; heuristic = name or shape match. Filters use at_or_above semantics over this order."
+        "description": "Evidence grade (after CATZOC), listed strongest first: proven = compiler-grade static; observed = seen in a trace at least once; modeled = registry/schema/route unification; heuristic = name or shape match. Filters use at_or_above semantics over this order."
       },
       "Edge": {
         "type": "object",
-        "required": ["src", "relation", "dst", "zoc"],
+        "required": ["src", "relation", "dst", "grade"],
         "properties": {
           "src": { "$ref": "#/components/schemas/Datum" },
           "relation": { "$ref": "#/components/schemas/Relation" },
           "dst": { "$ref": "#/components/schemas/Datum" },
-          "zoc": { "$ref": "#/components/schemas/Zoc" },
+          "grade": { "$ref": "#/components/schemas/Grade" },
           "via": { "type": "string", "description": "For modeled edges, the bridge that established the connection, e.g. 'route:/api/cards/:id' or 'key:card.archived'." }
         },
         "additionalProperties": false
       },
-      "Leg": {
+      "Edit": {
         "type": "object",
         "required": ["from", "to"],
         "properties": {
@@ -678,7 +678,7 @@
           "sig_changed": { "type": "boolean", "description": "Whether the interface identity changed, when both snapshots carry sigs. Absent means at least one side predates segment epoch 3, and a consumer treats unknown as changed." }
         },
         "additionalProperties": false,
-        "description": "added: 'after' only. removed: 'before' only. modified: both (this pair is a Leg)."
+        "description": "added: 'after' only. removed: 'before' only. modified: both (this pair is a Edit)."
       },
       "EdgeChange": {
         "type": "object",
@@ -699,7 +699,7 @@
         },
         "additionalProperties": false
       },
-      "MadeGood": {
+      "Diff": {
         "type": "object",
         "required": ["base", "head", "defs", "edges"],
         "properties": {
@@ -711,7 +711,7 @@
         "additionalProperties": false,
         "description": "The actual delta, datum-space. Deterministically ordered: defs by callsign, edges by (relation, src, dst)."
       },
-      "TrackDefPromise": {
+      "PlanDefPromise": {
         "type": "object",
         "required": ["action", "callsign"],
         "properties": {
@@ -720,7 +720,7 @@
         },
         "additionalProperties": false
       },
-      "TrackEdgePromise": {
+      "PlanEdgePromise": {
         "type": "object",
         "required": ["action", "src", "relation", "dst"],
         "properties": {
@@ -731,12 +731,12 @@
         },
         "additionalProperties": false
       },
-      "TrackDelta": {
+      "PlanDelta": {
         "type": "object",
         "required": ["defs", "edges"],
         "properties": {
-          "defs": { "type": "array", "items": { "$ref": "#/components/schemas/TrackDefPromise" } },
-          "edges": { "type": "array", "items": { "$ref": "#/components/schemas/TrackEdgePromise" } }
+          "defs": { "type": "array", "items": { "$ref": "#/components/schemas/PlanDefPromise" } },
+          "edges": { "type": "array", "items": { "$ref": "#/components/schemas/PlanEdgePromise" } }
         },
         "additionalProperties": false,
         "description": "The promised delta, name-space (patterns), authored by the planner before code exists."
@@ -758,7 +758,7 @@
           "src": { "$ref": "#/components/schemas/CallsignPattern" },
           "relation": { "$ref": "#/components/schemas/Relation" },
           "dst": { "$ref": "#/components/schemas/CallsignPattern" },
-          "at_or_above": { "$ref": "#/components/schemas/Zoc" }
+          "at_or_above": { "$ref": "#/components/schemas/Grade" }
         },
         "additionalProperties": false,
         "description": "Edge shape for invariants. Omitted relation means any. at_or_above defaults to 'heuristic' (i.e. any evidence)."
@@ -779,18 +779,18 @@
         "additionalProperties": false,
         "description": "A standing query checked at every gate, e.g. forbid_edge {src: 'cortana.boards.**', relation: 'calls', dst: 'cortana.persistence.**'} — board code may not call persistence directly. The pattern language has no negation; state rules in positive scope terms."
       },
-      "Track": {
+      "Plan": {
         "type": "object",
-        "required": ["track_id", "base", "delta"],
+        "required": ["plan_id", "base", "delta"],
         "properties": {
-          "track_id": { "type": "string", "pattern": "^track:[A-Za-z0-9._-]{1,64}$" },
+          "plan_id": { "type": "string", "pattern": "^plan:[A-Za-z0-9._-]{1,64}$" },
           "pr": { "type": "integer", "minimum": 1 },
-          "plan_rev": { "type": "string", "description": "Plan revision this track was authored against, e.g. 'v3'." },
+          "plan_rev": { "type": "string", "description": "Plan revision this plan was authored against, e.g. 'v3'." },
           "base": { "$ref": "#/components/schemas/SnapshotOrRev" },
-          "delta": { "$ref": "#/components/schemas/TrackDelta" },
+          "delta": { "$ref": "#/components/schemas/PlanDelta" },
           "tests": { "type": "array", "items": { "$ref": "#/components/schemas/ExpectedTest" } },
           "invariants": { "type": "array", "items": { "$ref": "#/components/schemas/Invariant" } },
-          "tolerate": { "type": "array", "items": { "$ref": "#/components/schemas/EdgeRule" }, "description": "Surplus edge changes matching any rule here do not hold the gate; they surface in XteVerdict.tolerated. The pressure valve against gate fatigue from incidental helper edges." }
+          "tolerate": { "type": "array", "items": { "$ref": "#/components/schemas/EdgeRule" }, "description": "Surplus edge changes matching any rule here do not hold the gate; they surface in GateVerdict.tolerated. The pressure valve against gate fatigue from incidental helper edges." }
         },
         "additionalProperties": false,
         "description": "The spec: promised delta + expected test outcomes + invariants + tolerances. Authored by the planner; checked by grid.gate.check."
@@ -816,24 +816,24 @@
         "additionalProperties": false,
         "description": "The witness path is the concrete evidence chain that violates the invariant."
       },
-      "XteVerdict": {
+      "GateVerdict": {
         "type": "object",
-        "required": ["gate", "track_id", "head", "matched", "missing", "surplus", "tolerated", "defs_unaccounted", "tests", "invariant_violations"],
+        "required": ["gate", "plan_id", "head", "matched", "missing", "surplus", "tolerated", "defs_unaccounted", "tests", "invariant_violations"],
         "properties": {
           "gate": { "type": "string", "enum": ["pass", "hold"] },
-          "track_id": { "type": "string" },
+          "plan_id": { "type": "string" },
           "head": { "$ref": "#/components/schemas/SnapshotId" },
-          "matched": { "type": "array", "items": { "$ref": "#/components/schemas/TrackEdgePromise" }, "description": "Promises fulfilled by the MadeGood." },
-          "missing": { "type": "array", "items": { "$ref": "#/components/schemas/TrackEdgePromise" }, "description": "Promised but not made good." },
+          "matched": { "type": "array", "items": { "$ref": "#/components/schemas/PlanEdgePromise" }, "description": "Promises fulfilled by the Diff." },
+          "missing": { "type": "array", "items": { "$ref": "#/components/schemas/PlanEdgePromise" }, "description": "Promised but not made good." },
           "surplus": { "type": "array", "items": { "$ref": "#/components/schemas/EdgeChange" }, "description": "Made good, not promised, and not tolerated." },
-          "tolerated": { "type": "array", "items": { "$ref": "#/components/schemas/EdgeChange" }, "description": "Surplus changes matched by Track.tolerate; reported for visibility, never a hold cause." },
+          "tolerated": { "type": "array", "items": { "$ref": "#/components/schemas/EdgeChange" }, "description": "Surplus changes matched by Plan.tolerate; reported for visibility, never a hold cause." },
           "defs_unaccounted": { "type": "array", "items": { "$ref": "#/components/schemas/DefChange" }, "description": "Definitions changed by the diff but covered by no def promise." },
           "tests": { "type": "array", "items": { "$ref": "#/components/schemas/TestComparison" } },
           "invariant_violations": { "type": "array", "items": { "$ref": "#/components/schemas/InvariantViolation" } },
           "reasons": { "type": "array", "items": { "type": "string" }, "description": "Human-readable one-liners, one per contributing hold cause; empty on pass." }
         },
         "additionalProperties": false,
-        "description": "Cross-track error. Surplus is computed after tolerate filtering. gate is 'hold' iff missing, surplus, defs_unaccounted, a failed TestComparison, or an invariant violation is non-empty; 'pass' otherwise. The verdict itemizes divergence — it never says only 'hold'."
+        "description": "Cross-plan error. Surplus is computed after tolerate filtering. gate is 'hold' iff missing, surplus, defs_unaccounted, a failed TestComparison, or an invariant violation is non-empty; 'pass' otherwise. The verdict itemizes divergence — it never says only 'hold'."
       },
       "Fuel": {
         "type": "object",
@@ -845,7 +845,7 @@
         "additionalProperties": false,
         "description": "Traversal budget. Every walk carries fuel; there are no unbounded queries."
       },
-      "LeadlineQuery": {
+      "WalkQuery": {
         "type": "object",
         "required": ["from"],
         "properties": {
@@ -853,7 +853,7 @@
           "to": { "type": "array", "items": { "$ref": "#/components/schemas/Locator" }, "description": "Present: find paths from 'from' to 'to'. Absent: reachability sweep from 'from'." },
           "direction": { "type": "string", "enum": ["out", "in", "both"], "default": "out" },
           "relations": { "type": "array", "items": { "$ref": "#/components/schemas/Relation" }, "description": "Restrict traversal to these edge kinds. Absent means all." },
-          "at_or_above": { "$ref": "#/components/schemas/Zoc" },
+          "at_or_above": { "$ref": "#/components/schemas/Grade" },
           "fuel": { "$ref": "#/components/schemas/Fuel" },
           "snapshot": { "$ref": "#/components/schemas/SnapshotId" }
         },
@@ -867,9 +867,9 @@
           "edges": { "type": "array", "items": { "$ref": "#/components/schemas/Edge" } }
         },
         "additionalProperties": false,
-        "description": "edges[i] connects nodes[i] to nodes[i+1]; edges.length = nodes.length - 1. Every hop carries its zoc — a path's overall confidence is its weakest hop."
+        "description": "edges[i] connects nodes[i] to nodes[i+1]; edges.length = nodes.length - 1. Every hop carries its grade — a path's overall confidence is its weakest hop."
       },
-      "LeadlineResult": {
+      "WalkResult": {
         "type": "object",
         "required": ["status", "snapshot", "stats"],
         "properties": {
@@ -878,27 +878,28 @@
           "paths": { "type": "array", "items": { "$ref": "#/components/schemas/Path" }, "description": "Path-finding results (query had 'to')." },
           "reached": { "type": "array", "items": { "$ref": "#/components/schemas/DefRef" }, "description": "Sweep results (query had no 'to')." },
           "frontier": { "type": "array", "items": { "$ref": "#/components/schemas/Datum" }, "description": "Present iff status is 'aground': where the walk ran out of fuel. Resume by issuing a new walk from the frontier." },
-          "stats": {
-            "type": "object",
-            "description": "Diagnostics, plus one claim. visited/hops/ms are diagnostics and are excluded from the determinism comparison surface; complete_within is not a diagnostic — it is a statement about the answer, is a pure function of the graph and the query, and belongs to the comparison surface.",
-            "required": ["visited", "hops", "ms"],
-            "properties": {
-              "visited": { "type": "integer", "minimum": 0 },
-              "hops": { "type": "integer", "minimum": 0 },
-              "ms": { "type": "integer", "minimum": 0 },
-              "complete_within": { "type": "integer", "minimum": 0, "description": "Depth through which the answer is complete: every definition reachable within this many hops, under this query's relations and evidence floor, is in the result. On 'complete' it is the effective hop bound. On 'aground' it is the last layer the walk fully expanded before the budget refused; absent when even the roots' own layer did not finish, which certifies nothing and says so." }
-            },
-            "additionalProperties": false
-          }
+          "stats": { "$ref": "#/components/schemas/WalkStats" }
+        },
+        "additionalProperties": false
+      },
+      "WalkStats": {
+        "type": "object",
+        "description": "Diagnostics, plus one claim. visited/hops/ms are diagnostics and are excluded from the determinism comparison surface; complete_within is not a diagnostic — it is a statement about the answer, is a pure function of the graph and the query, and belongs to the comparison surface.",
+        "required": ["visited", "hops", "ms"],
+        "properties": {
+          "visited": { "type": "integer", "minimum": 0 },
+          "hops": { "type": "integer", "minimum": 0 },
+          "ms": { "type": "integer", "minimum": 0 },
+          "complete_within": { "type": "integer", "minimum": 0, "description": "Depth through which the answer is complete: every definition reachable within this many hops, under this query's relations and evidence floor, is in the result. On 'complete' it is the effective hop bound. On 'aground' it is the last layer the walk fully expanded before the budget refused; absent when even the roots' own layer did not finish, which certifies nothing and says so." }
         },
         "additionalProperties": false
       },
       "Anchor": {
         "type": "object",
-        "required": ["anchor_id", "fix", "kind", "created_at"],
+        "required": ["anchor_id", "position", "kind", "created_at"],
         "properties": {
-          "anchor_id": { "type": "string", "pattern": "^anchor:[0-9A-HJKMNP-TV-Z]{26}$", "description": "Storage identity only; renders display the anchor's fix handle, never the ULID." },
-          "fix": { "$ref": "#/components/schemas/Fix" },
+          "anchor_id": { "type": "string", "pattern": "^anchor:[0-9A-HJKMNP-TV-Z]{26}$", "description": "Storage identity only; renders display the anchor's position handle, never the ULID." },
+          "position": { "$ref": "#/components/schemas/Position" },
           "kind": { "type": "string", "enum": ["annotation", "spec_ref"] },
           "created_at": { "type": "string", "format": "date-time" }
         },
@@ -910,41 +911,41 @@
         "required": ["anchor_id", "status", "confidence", "via"],
         "properties": {
           "anchor_id": { "type": "string" },
-          "status": { "type": "string", "enum": ["exact", "carried", "orphaned"], "description": "exact: datum unchanged. carried: followed legs to a successor. orphaned: no successor found; 'fix' is absent." },
-          "fix": { "$ref": "#/components/schemas/Fix" },
+          "status": { "type": "string", "enum": ["exact", "carried", "orphaned"], "description": "exact: datum unchanged. carried: followed edits to a successor. orphaned: no successor found; 'position' is absent." },
+          "position": { "$ref": "#/components/schemas/Position" },
           "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-          "via": { "type": "array", "items": { "$ref": "#/components/schemas/Leg" }, "description": "The legs followed, in order; empty when exact." }
+          "via": { "type": "array", "items": { "$ref": "#/components/schemas/Edit" }, "description": "The edits followed, in order; empty when exact." }
         },
         "additionalProperties": false
       },
-      "WakeObservation": {
+      "TraceObservation": {
         "type": "object",
         "required": ["caller", "callee"],
         "properties": {
-          "caller": { "$ref": "#/components/schemas/WakeEndpoint" },
-          "callee": { "$ref": "#/components/schemas/WakeEndpoint" },
+          "caller": { "$ref": "#/components/schemas/TraceEndpoint" },
+          "callee": { "$ref": "#/components/schemas/TraceEndpoint" },
           "count": { "type": "integer", "minimum": 1, "default": 1 }
         },
         "additionalProperties": false
       },
-      "WakeEndpoint": {
+      "TraceEndpoint": {
         "oneOf": [
           { "type": "object", "required": ["datum"], "properties": { "datum": { "$ref": "#/components/schemas/Datum" } }, "additionalProperties": false },
           { "type": "object", "required": ["symbol"], "properties": { "symbol": { "type": "string", "minLength": 1, "description": "Raw runtime symbol when the instrument cannot know datums, e.g. 'cortana/reaper.py:TagContract.validate'. The daemon resolves it." } }, "additionalProperties": false }
         ]
       },
-      "Wake": {
+      "Trace": {
         "type": "object",
-        "required": ["wake_id", "git_rev", "observations"],
+        "required": ["trace_id", "git_rev", "observations"],
         "properties": {
-          "wake_id": { "type": "string", "pattern": "^wake:[0-9A-HJKMNP-TV-Z]{26}$", "description": "Storage identity only; renders display the contextual form command@rev/time, never the ULID." },
+          "trace_id": { "type": "string", "pattern": "^trace:[0-9A-HJKMNP-TV-Z]{26}$", "description": "Storage identity only; renders display the contextual form command@rev/time, never the ULID." },
           "git_rev": { "$ref": "#/components/schemas/GitRev" },
-          "command": { "type": "string", "description": "The test command that produced this wake." },
+          "command": { "type": "string", "description": "The test command that produced this trace." },
           "started_at": { "type": "string", "format": "date-time" },
-          "observations": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/WakeObservation" } }
+          "observations": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/TraceObservation" } }
         },
         "additionalProperties": false,
-        "description": "A runtime trace from a test run: the path actually traveled. Ingested observations become zoc 'observed' edges."
+        "description": "A runtime trace from a test run: the path actually traveled. Ingested observations become grade 'observed' edges."
       },
       "CacheCheckRequest": {
         "type": "object",
@@ -956,7 +957,7 @@
           "datums": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/Datum" } }
         },
         "additionalProperties": false,
-        "description": "Cache lookup. Keys are per-kind, all scoped by (env_hash, snapshot). lint keys on span_hash — blake3 of the definition's raw source bytes at the snapshot — because comments (noqa, eslint-disable) are lint input that the normalized datum deliberately discards. typecheck keys on span_hash plus the closure over proven signature-bearing edges (type-ignore comments are self-input; dependency signatures live in their datums). test keys on the closure over ALL edges regardless of zoc — closure traversal ignores at_or_above by design, since a missed dependency is a false hit. Soundness is one-directional: a miss for a cacheable definition is acceptable; a hit for a closure grid could not fully establish is a contract violation. What the chart cannot see — hermeticity, ambient state, monkeypatching — is warranted by the caller, not by grid (assurance claim C4)."
+        "description": "Cache lookup. Keys are per-kind, all scoped by (env_hash, snapshot). lint keys on span_hash — blake3 of the definition's raw source bytes at the snapshot — because comments (noqa, eslint-disable) are lint input that the normalized datum deliberately discards. typecheck keys on span_hash plus the closure over proven signature-bearing edges (type-ignore comments are self-input; dependency signatures live in their datums). test keys on the closure over ALL edges regardless of grade — closure traversal ignores at_or_above by design, since a missed dependency is a false hit. Soundness is one-directional: a miss for a cacheable definition is acceptable; a hit for a closure grid could not fully establish is a contract violation. What the chart cannot see — hermeticity, ambient state, monkeypatching — is warranted by the caller, not by grid (assurance claim C4)."
       },
       "CacheHit": {
         "type": "object",
@@ -965,7 +966,7 @@
           "datum": { "$ref": "#/components/schemas/Datum" },
           "verdict": { "type": "string", "enum": ["pass", "fail"], "description": "The stored result. fail-hits are the valuable case: skip re-running a known-red verification." },
           "recorded_at": { "type": "string", "format": "date-time" },
-          "wake_id": { "type": "string", "pattern": "^wake:[0-9A-HJKMNP-TV-Z]{26}$", "description": "Present when the recorded run also produced a wake." }
+          "trace_id": { "type": "string", "pattern": "^trace:[0-9A-HJKMNP-TV-Z]{26}$", "description": "Present when the recorded run also produced a trace." }
         },
         "additionalProperties": false
       },
@@ -989,15 +990,15 @@
         "additionalProperties": false,
         "description": "{hit.datum} ∪ misses = request.datums, disjoint. Normative: any datum whose closure traversal exhausted fuel or touched an unresolved endpoint is a miss — never a hit."
       },
-      "TrackId": {
+      "PlanId": {
         "type": "string",
-        "pattern": "^track:[A-Za-z0-9._-]{1,64}$",
-        "description": "Track identity, resolved against the daemon's track store (.grid/tracks)."
+        "pattern": "^plan:[A-Za-z0-9._-]{1,64}$",
+        "description": "Plan identity, resolved against the daemon's plan store (.grid/plans)."
       },
-      "WakeId": {
+      "TraceId": {
         "type": "string",
-        "pattern": "^wake:[0-9A-HJKMNP-TV-Z]{26}$",
-        "description": "Wake storage identity (ULID); renders display command@rev/time."
+        "pattern": "^trace:[0-9A-HJKMNP-TV-Z]{26}$",
+        "description": "Trace storage identity (ULID); renders display command@rev/time."
       },
       "ScopePack": {
         "type": "object",
@@ -1013,14 +1014,14 @@
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["datum", "legs"],
+              "required": ["datum", "edits"],
               "properties": {
                 "datum": { "$ref": "#/components/schemas/Datum" },
-                "legs": { "type": "integer", "minimum": 0 }
+                "edits": { "type": "integer", "minimum": 0 }
               },
               "additionalProperties": false
             },
-            "description": "Edit-frequency signal: leg count per definition in scope."
+            "description": "Edit-frequency signal: edit count per definition in scope."
           }
         },
         "additionalProperties": false
@@ -1042,7 +1043,7 @@
           "warnings": { "type": "array", "items": { "$ref": "#/components/schemas/LintFinding" } }
         },
         "additionalProperties": false,
-        "description": "Pure validation of a track — no survey, no snapshot involved."
+        "description": "Pure validation of a plan — no survey, no snapshot involved."
       },
       "Estimate": {
         "type": "object",
@@ -1088,13 +1089,13 @@
       },
       "TodoList": {
         "type": "object",
-        "required": ["track_id", "defs_done", "defs_pending", "edges_done", "edges_pending", "tests_done", "tests_pending", "fraction"],
+        "required": ["plan_id", "defs_done", "defs_pending", "edges_done", "edges_pending", "tests_done", "tests_pending", "fraction"],
         "properties": {
-          "track_id": { "$ref": "#/components/schemas/TrackId" },
-          "defs_done": { "type": "array", "items": { "$ref": "#/components/schemas/TrackDefPromise" } },
-          "defs_pending": { "type": "array", "items": { "$ref": "#/components/schemas/TrackDefPromise" } },
-          "edges_done": { "type": "array", "items": { "$ref": "#/components/schemas/TrackEdgePromise" } },
-          "edges_pending": { "type": "array", "items": { "$ref": "#/components/schemas/TrackEdgePromise" } },
+          "plan_id": { "$ref": "#/components/schemas/PlanId" },
+          "defs_done": { "type": "array", "items": { "$ref": "#/components/schemas/PlanDefPromise" } },
+          "defs_pending": { "type": "array", "items": { "$ref": "#/components/schemas/PlanDefPromise" } },
+          "edges_done": { "type": "array", "items": { "$ref": "#/components/schemas/PlanEdgePromise" } },
+          "edges_pending": { "type": "array", "items": { "$ref": "#/components/schemas/PlanEdgePromise" } },
           "tests_done": { "type": "array", "items": { "type": "string" } },
           "tests_pending": { "type": "array", "items": { "type": "string" } },
           "fraction": {
@@ -1110,30 +1111,40 @@
         },
         "additionalProperties": false
       },
-      "ReviewPack": {
+      "CheckResult": {
         "type": "object",
-        "required": ["verdict", "fulfilling", "surplus", "coverage", "open_anchors"],
+        "required": ["verdict"],
         "properties": {
-          "verdict": { "$ref": "#/components/schemas/XteVerdict" },
+          "verdict": { "$ref": "#/components/schemas/GateVerdict" },
+          "why": { "$ref": "#/components/schemas/CheckWhy" }
+        },
+        "additionalProperties": false,
+        "description": "Is this change ok: the gate verdict, and the reasoning behind it. The verdict is grid.gate.check's own, so a reviewer and CI cannot disagree about whether the promise was kept."
+      },
+      "CheckWhy": {
+        "type": "object",
+        "required": ["fulfilling", "surplus", "coverage", "open_anchors"],
+        "properties": {
           "fulfilling": {
             "type": "array",
             "items": {
               "type": "object",
               "required": ["promise", "hops"],
               "properties": {
-                "promise": { "$ref": "#/components/schemas/TrackEdgePromise" },
+                "promise": { "$ref": "#/components/schemas/PlanEdgePromise" },
                 "hops": { "type": "array", "items": { "$ref": "#/components/schemas/Path" } }
               },
               "additionalProperties": false
             }
           },
           "surplus": { "type": "array", "items": { "$ref": "#/components/schemas/EdgeChange" } },
-          "coverage": { "type": "array", "items": { "$ref": "#/components/schemas/Datum" }, "description": "Changed but not reached by the supplied wake — the reviewer's red flags." },
+          "coverage": { "type": "array", "items": { "$ref": "#/components/schemas/Datum" }, "description": "Changed but not reached by the supplied trace — the reviewer's red flags." },
           "open_anchors": { "type": "array", "items": { "$ref": "#/components/schemas/Anchor" } }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "Why the verdict says what it says: a path per fulfilled promise, the surplus nobody promised, what changed without being run, and what is still open against this code."
       },
-      "WakeDiff": {
+      "TraceDiff": {
         "type": "object",
         "required": ["added", "removed"],
         "properties": {
@@ -1226,12 +1237,12 @@
       },
       "DriftSuspect": {
         "type": "object",
-        "required": ["dependent", "changed", "relation", "zoc"],
+        "required": ["dependent", "changed", "relation", "grade"],
         "properties": {
           "dependent": { "$ref": "#/components/schemas/DefRef", "description": "The definition that depends on the changed one and did not itself change." },
           "changed": { "$ref": "#/components/schemas/DefRef", "description": "The definition whose interface moved, as it was at base." },
           "relation": { "$ref": "#/components/schemas/Relation" },
-          "zoc": { "$ref": "#/components/schemas/Zoc", "description": "Evidence grade of the edge that made this a suspect." },
+          "grade": { "$ref": "#/components/schemas/Grade", "description": "Evidence grade of the edge that made this a suspect." },
           "sig_before": { "$ref": "#/components/schemas/Datum", "description": "The changed definition's interface identity at base, when the snapshot carries one." },
           "sig_after": { "$ref": "#/components/schemas/Datum", "description": "Its interface identity at head, when the snapshot carries one. Absent on both sides means the sig was unknown and the change was treated as visible." },
           "reason": { "type": "string", "description": "Why this edge implicated the dependent beyond the edge itself: 'stale-trace' for a decayed observation, 'covenant:<via>' for a declared coupling." }
@@ -1244,7 +1255,7 @@
         "properties": {
           "unresolved_refs": { "type": "integer", "minimum": 0, "description": "References the head survey declined to bind, so no edge exists for them and no dependent could be found through them. Absent means head was a published snapshot nobody re-surveyed in this run, so the count is unknown — never reported as zero." },
           "budget_rejected": { "type": "integer", "minimum": 0, "description": "Definitions whose inbound walk ran past its budget. The walk is rejected whole, never truncated: a truncated walk is indistinguishable from a smaller one." },
-          "unattributed_entries": { "type": "integer", "minimum": 0, "description": "Recorded verdicts no retained wake claims, so no test owns them and no test-staleness check covered them. Present when the report was asked for tests." },
+          "unattributed_entries": { "type": "integer", "minimum": 0, "description": "Recorded verdicts no retained trace claims, so no test owns them and no test-staleness check covered them. Present when the report was asked for tests." },
           "weak_skipped": { "type": "integer", "minimum": 0, "description": "Weak-test checks declined because their coverage came from a decayed trace. A heuristic built on a demoted heuristic is noise, so grid declines it and says how often." }
         },
         "additionalProperties": false,
@@ -1295,9 +1306,9 @@
         "message": "no language adapter for file",
         "data": { "type": "object", "properties": { "file": { "type": "string" } } }
       },
-      "InvalidTrack": {
+      "InvalidPlan": {
         "code": -32006,
-        "message": "track failed validation",
+        "message": "plan failed validation",
         "data": { "type": "object", "properties": { "reason": { "type": "string" } } }
       },
       "CorruptSegment": {
@@ -1305,15 +1316,15 @@
         "message": "segment failed validation on load; store integrity is suspect",
         "data": { "type": "object", "properties": { "path": { "type": "string" }, "reason": { "type": "string" } } }
       },
-      "UnknownTrack": {
+      "UnknownPlan": {
         "code": -32007,
-        "message": "unknown track id",
-        "data": { "type": "object", "properties": { "track_id": { "type": "string" } } }
+        "message": "unknown plan id",
+        "data": { "type": "object", "properties": { "plan_id": { "type": "string" } } }
       },
-      "UnknownWake": {
+      "UnknownTrace": {
         "code": -32008,
-        "message": "unknown wake id",
-        "data": { "type": "object", "properties": { "wake_id": { "type": "string" } } }
+        "message": "unknown trace id",
+        "data": { "type": "object", "properties": { "trace_id": { "type": "string" } } }
       }
     }
   }

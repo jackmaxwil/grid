@@ -1,4 +1,4 @@
-//! The delta between two charts: what a `MadeGood` actually says.
+//! The delta between two charts: what a `Diff` actually says.
 //!
 //! Comparison happens in **callsign space, with datums as the evidence**, and
 //! that choice is the whole design. Comparing edges by datum would be
@@ -13,8 +13,8 @@
 use std::collections::BTreeMap;
 
 use grid_wire::{
-    Callsign, Datum, DefChange, DefChangeAction, Edge, EdgeChange, EdgeChangeAction,
-    EdgeChangeMovedFrom, MadeGood, Relation, SnapshotId, Zoc,
+    Callsign, Datum, DefChange, DefChangeAction, Diff, Edge, EdgeChange, EdgeChangeAction,
+    EdgeChangeMovedFrom, Grade, Relation, SnapshotId,
 };
 
 use crate::{relation_tag, DatumId, Ordinal, Segment};
@@ -51,7 +51,7 @@ struct EdgeFacts {
     src: DatumId,
     dst: DatumId,
     relation: Relation,
-    zoc: Zoc,
+    grade: Grade,
 }
 
 /// Read the definitions of a live set.
@@ -98,7 +98,7 @@ fn edges_of<B: AsRef<[u8]>>(segments: &[Segment<B>]) -> Edges {
                         src,
                         dst,
                         relation: n.relation,
-                        zoc: n.zoc,
+                        grade: n.grade,
                     },
                 );
             }
@@ -116,22 +116,22 @@ fn wire_edge(facts: EdgeFacts) -> Edge {
         src: datum(facts.src),
         relation: facts.relation,
         dst: datum(facts.dst),
-        zoc: facts.zoc,
+        grade: facts.grade,
         via: None,
     }
 }
 
-/// Compare two live sets into a wire `MadeGood`.
+/// Compare two live sets into a wire `Diff`.
 ///
 /// Output order is deterministic (both maps are sorted), which the wire
 /// contract requires and every downstream hash depends on.
 #[must_use]
-pub fn made_good<A: AsRef<[u8]>, B: AsRef<[u8]>>(
+pub fn diff<A: AsRef<[u8]>, B: AsRef<[u8]>>(
     base_id: SnapshotId,
     base: &[Segment<A>],
     head_id: SnapshotId,
     head: &[Segment<B>],
-) -> MadeGood {
+) -> Diff {
     let (base_defs, head_defs) = (defs_of(base), defs_of(head));
     let mut defs = Vec::new();
     let mut added: Vec<(&String, DefFacts)> = Vec::new();
@@ -141,7 +141,7 @@ pub fn made_good<A: AsRef<[u8]>, B: AsRef<[u8]>>(
         match base_defs.get(callsign) {
             None => added.push((callsign, *head_facts)),
             // Same callsign, same datum: the definition did not change. Not a
-            // record — a `MadeGood` reports what changed.
+            // record — a `Diff` reports what changed.
             Some((before, _, _)) if *before == after => {}
             Some((before, _, before_sig)) => defs.push(DefChange {
                 action: DefChangeAction::Modified,
@@ -179,7 +179,7 @@ pub fn made_good<A: AsRef<[u8]>, B: AsRef<[u8]>>(
         ))
     });
 
-    MadeGood {
+    Diff {
         base: base_id,
         head: head_id,
         defs,

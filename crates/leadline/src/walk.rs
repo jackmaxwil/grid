@@ -33,19 +33,19 @@
 
 use std::collections::HashMap;
 
-use grid_wire::{Relation, Zoc};
+use grid_wire::{Grade, Relation};
 
 use crate::fuel::Budget;
 use crate::graph::{Direction, Graph, Ordinal, Step};
 
 /// Evidence grade as a comparable rank; strongest is 0, matching the on-disk
-/// order (`grid_chart::zoc_tag`) and the porcelain column order.
-const fn rank(z: Zoc) -> u8 {
+/// order (`grid_chart::grade_tag`) and the porcelain column order.
+const fn rank(z: Grade) -> u8 {
     match z {
-        Zoc::Proven => 0,
-        Zoc::Observed => 1,
-        Zoc::Modeled => 2,
-        Zoc::Heuristic => 3,
+        Grade::Proven => 0,
+        Grade::Observed => 1,
+        Grade::Modeled => 2,
+        Grade::Heuristic => 3,
     }
 }
 
@@ -55,16 +55,16 @@ pub struct Filter {
     /// Restrict traversal to these edge kinds; empty means all.
     pub relations: Vec<Relation>,
     /// Weakest evidence a hop may carry.
-    pub at_or_above: Option<Zoc>,
+    pub at_or_above: Option<Grade>,
 }
 
 impl Filter {
     fn admits(&self, step: Step) -> bool {
         let relation_ok = self.relations.is_empty() || self.relations.contains(&step.relation);
-        let zoc_ok = self
+        let grade_ok = self
             .at_or_above
-            .is_none_or(|floor| rank(step.zoc) <= rank(floor));
-        relation_ok && zoc_ok
+            .is_none_or(|floor| rank(step.grade) <= rank(floor));
+        relation_ok && grade_ok
     }
 }
 

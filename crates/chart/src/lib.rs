@@ -20,7 +20,7 @@ mod manifest;
 mod membership;
 
 pub use build::{build, Def, DefFacts, Edge};
-pub use delta::made_good;
+pub use delta::diff;
 pub use manifest::{Manifest, SegmentEntry, SnapshotId};
 pub use membership::{
     build as build_membership, Change, Member, Membership, MembershipError, MEMBERSHIP_EPOCH,
@@ -55,13 +55,13 @@ pub enum Section {
     OutOffsets = 1,
     /// One u32 destination ordinal per out-edge.
     OutTargets = 2,
-    /// One u16 `(relation << 8) | zoc` per out-edge.
+    /// One u16 `(relation << 8) | grade` per out-edge.
     OutAttrs = 3,
     /// `def_count + 1` u32 CSR row starts into [`Section::InTargets`].
     InOffsets = 4,
     /// One u32 source ordinal per in-edge.
     InTargets = 5,
-    /// One u16 `(relation << 8) | zoc` per in-edge.
+    /// One u16 `(relation << 8) | grade` per in-edge.
     InAttrs = 6,
     /// `def_count + 1` u32 byte starts into [`Section::CallsignBytes`].
     CallsignOffsets = 7,
@@ -117,7 +117,7 @@ pub enum ChartError {
     OrdinalOutOfRange,
     /// A callsign is not UTF-8.
     BadUtf8,
-    /// A relation or zoc byte is not one this version knows.
+    /// A relation or grade byte is not one this version knows.
     BadAttrs,
     /// More defs or edges than the format's u32 ordinals can address.
     TooLarge,
@@ -137,7 +137,7 @@ impl std::fmt::Display for ChartError {
             Self::UnsortedDatums => f.write_str("datum digests are not strictly ascending"),
             Self::OrdinalOutOfRange => f.write_str("edge names an unknown ordinal"),
             Self::BadUtf8 => f.write_str("callsign is not UTF-8"),
-            Self::BadAttrs => f.write_str("unknown relation or zoc"),
+            Self::BadAttrs => f.write_str("unknown relation or grade"),
             Self::TooLarge => f.write_str("more defs or edges than u32 ordinals address"),
         }
     }
@@ -192,7 +192,7 @@ pub struct Neighbour {
     /// Typed edge kind.
     pub relation: grid_wire::Relation,
     /// Evidence grade.
-    pub zoc: grid_wire::Zoc,
+    pub grade: grid_wire::Grade,
 }
 
 /// Wire `Relation` as its on-disk tag, and back. The on-disk order is frozen:
@@ -235,11 +235,11 @@ fn relation_of_tag(tag: u8) -> Option<grid_wire::Relation> {
     })
 }
 
-/// Wire `Zoc` as its on-disk tag. Strongest evidence is 0, so the byte order
+/// Wire `Grade` as its on-disk tag. Strongest evidence is 0, so the byte order
 /// is the `at_or_above` filter order.
 #[must_use]
-pub fn zoc_tag(z: grid_wire::Zoc) -> u8 {
-    use grid_wire::Zoc as Z;
+pub fn grade_tag(z: grid_wire::Grade) -> u8 {
+    use grid_wire::Grade as Z;
     match z {
         Z::Proven => 0,
         Z::Observed => 1,
@@ -248,8 +248,8 @@ pub fn zoc_tag(z: grid_wire::Zoc) -> u8 {
     }
 }
 
-fn zoc_of_tag(tag: u8) -> Option<grid_wire::Zoc> {
-    use grid_wire::Zoc as Z;
+fn grade_of_tag(tag: u8) -> Option<grid_wire::Grade> {
+    use grid_wire::Grade as Z;
     Some(match tag {
         0 => Z::Proven,
         1 => Z::Observed,
@@ -501,8 +501,8 @@ impl<B: AsRef<[u8]>> Segment<B> {
             for raw in self.section(attrs).chunks_exact(2) {
                 let packed = u16::from_le_bytes(raw.try_into().unwrap_or_default());
                 let rel = u8::try_from(packed >> 8).unwrap_or(u8::MAX);
-                let zoc = u8::try_from(packed & 0xff).unwrap_or(u8::MAX);
-                if relation_of_tag(rel).is_none() || zoc_of_tag(zoc).is_none() {
+                let grade = u8::try_from(packed & 0xff).unwrap_or(u8::MAX);
+                if relation_of_tag(rel).is_none() || grade_of_tag(grade).is_none() {
                     return Err(ChartError::BadAttrs);
                 }
             }
@@ -699,7 +699,7 @@ impl<B: AsRef<[u8]>> Segment<B> {
             Some(Neighbour {
                 other: Ordinal(other),
                 relation: relation_of_tag(u8::try_from(packed >> 8).ok()?)?,
-                zoc: zoc_of_tag(u8::try_from(packed & 0xff).ok()?)?,
+                grade: grade_of_tag(u8::try_from(packed & 0xff).ok()?)?,
             })
         })
     }

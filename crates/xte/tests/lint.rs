@@ -1,17 +1,17 @@
-//! `track.lint`: everything checkable about a promise before code exists.
+//! `plan.lint`: everything checkable about a promise before code exists.
 
 use grid_wire::*;
 use grid_xte::lint::lint;
 
-fn track(edges: Vec<TrackEdgePromise>, invariants: Vec<Invariant>) -> Track {
-    Track {
-        track_id: "track:pr-390-plan-v1".into(),
+fn plan(edges: Vec<PlanEdgePromise>, invariants: Vec<Invariant>) -> Plan {
+    Plan {
+        plan_id: "plan:pr-390-plan-v1".into(),
         pr: None,
         plan_rev: None,
         base: SnapshotOrRev::GitRev {
             git_rev: GitRev("bc21972".into()),
         },
-        delta: TrackDelta {
+        delta: PlanDelta {
             defs: Vec::new(),
             edges,
         },
@@ -36,9 +36,9 @@ fn forbid(id: &str, src: &str, dst: &str) -> Invariant {
     }
 }
 
-fn add(src: &str, dst: &str) -> TrackEdgePromise {
-    TrackEdgePromise {
-        action: TrackEdgePromiseAction::Add,
+fn add(src: &str, dst: &str) -> PlanEdgePromise {
+    PlanEdgePromise {
+        action: PlanEdgePromiseAction::Add,
         src: CallsignPattern(src.into()),
         relation: Relation::Calls,
         dst: CallsignPattern(dst.into()),
@@ -48,7 +48,7 @@ fn add(src: &str, dst: &str) -> TrackEdgePromise {
 /// The contract's own example, to the letter.
 #[test]
 fn an_impossible_plan_dies_at_plan_time() {
-    let t = track(
+    let t = plan(
         vec![add("cortana.boards.render", "cortana.persistence.write")],
         vec![forbid(
             "boards-skip-persistence",
@@ -75,7 +75,7 @@ fn an_impossible_plan_dies_at_plan_time() {
 /// impossibility — the failure mode that makes a linter get switched off.
 #[test]
 fn overlap_is_not_impossibility() {
-    let t = track(
+    let t = plan(
         vec![add("cortana.**", "cortana.**")],
         vec![forbid(
             "narrow",
@@ -89,7 +89,7 @@ fn overlap_is_not_impossibility() {
     );
 
     // But a promise entirely inside the forbidden region cannot.
-    let t = track(
+    let t = plan(
         vec![add("cortana.boards.*", "cortana.persistence.*")],
         vec![forbid(
             "narrow",
@@ -103,7 +103,7 @@ fn overlap_is_not_impossibility() {
 /// A relation-specific rule says nothing about other relations.
 #[test]
 fn a_rule_scoped_to_a_relation_stays_there() {
-    let mut t = track(
+    let mut t = plan(
         vec![add("a.**", "b.**")],
         vec![forbid("calls-only", "a.**", "b.**")],
     );
@@ -115,18 +115,18 @@ fn a_rule_scoped_to_a_relation_stays_there() {
 /// Removing an edge an invariant forbids is the fix, not the violation.
 #[test]
 fn only_additions_can_violate_a_forbid_rule() {
-    let mut t = track(
+    let mut t = plan(
         vec![add("a.x", "b.y")],
         vec![forbid("no-a-to-b", "a.**", "b.**")],
     );
     assert_eq!(lint(&t).errors.len(), 1);
-    t.delta.edges[0].action = TrackEdgePromiseAction::Remove;
+    t.delta.edges[0].action = PlanEdgePromiseAction::Remove;
     assert!(lint(&t).errors.is_empty());
 }
 
 #[test]
 fn unmatchable_patterns_are_errors() {
-    let mut t = track(vec![add("a..b", "c")], vec![]);
+    let mut t = plan(vec![add("a..b", "c")], vec![]);
     assert_eq!(lint(&t).errors.len(), 1, "an empty segment matches nothing");
 
     t.delta.edges = vec![add("a.re*", "c")];
@@ -140,16 +140,16 @@ fn unmatchable_patterns_are_errors() {
 
 #[test]
 fn a_malformed_track_id_is_an_error() {
-    let mut t = track(vec![add("a", "b")], vec![]);
-    t.track_id = "pr-390".into();
+    let mut t = plan(vec![add("a", "b")], vec![]);
+    t.plan_id = "pr-390".into();
     let errors = lint(&t).errors;
     assert_eq!(errors.len(), 1);
-    assert!(errors[0].reason.contains("track:"));
+    assert!(errors[0].reason.contains("plan:"));
 }
 
 #[test]
 fn a_vacuous_track_warns_but_is_usable() {
-    let result = lint(&track(vec![], vec![]));
+    let result = lint(&plan(vec![], vec![]));
     assert!(result.errors.is_empty());
     assert_eq!(result.warnings.len(), 1);
     assert!(result.warnings[0].reason.contains("passes vacuously"));
@@ -157,7 +157,7 @@ fn a_vacuous_track_warns_but_is_usable() {
 
 #[test]
 fn duplicate_invariant_ids_warn() {
-    let t = track(
+    let t = plan(
         vec![],
         vec![
             forbid("same", "a.**", "b.**"),

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate wire crate sources from docs/wire-v0.openrpc.json.
+"""Generate wire crate sources from docs/wire-v1.openrpc.json.
 
 The contract document is the source of truth. After any contract change:
     python3 scripts/gen-wire.py && cargo test -p grid-wire
@@ -9,13 +9,13 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CONTRACT = ROOT / "docs" / "wire-v0.openrpc.json"
+CONTRACT = ROOT / "docs" / "wire-v1.openrpc.json"
 OUT = ROOT / "crates" / "wire" / "src"
 
 LIB_HEADER = (
     "//! grid-wire - versioned external schemas; the only public vocabulary.\n"
     "//!\n"
-    "//! GENERATED from docs/wire-v0.openrpc.json by scripts/gen-wire.py - do not\n"
+    "//! GENERATED from docs/wire-v1.openrpc.json by scripts/gen-wire.py - do not\n"
     "//! edit by hand. `deny_unknown_fields` everywhere: unknown keys are a wire\n"
     "//! error, never silently dropped.\n"
     "\n"

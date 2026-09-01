@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 
 use grid_cache::{Cache, Chart, Entry, Kind, Reject, Verdict, FUEL};
 use grid_chart::{build, DatumId, Def, Edge, Segment};
-use grid_wire::{Lang, Relation, Zoc};
+use grid_wire::{Grade, Lang, Relation};
 use proptest::prelude::*;
 
 /// Digest `n`: distinct datums that are cheap to talk about in a failure.
@@ -30,12 +30,12 @@ fn def(n: u8, callsign: &str) -> Def {
     }
 }
 
-fn edge(src: u8, dst: u8, zoc: Zoc) -> Edge {
+fn edge(src: u8, dst: u8, grade: Grade) -> Edge {
     Edge {
         src: datum(src),
         dst: datum(dst),
         relation: Relation::Calls,
-        zoc,
+        grade,
     }
 }
 
@@ -50,10 +50,10 @@ fn lint_closure_is_the_datum_alone() {
     // A lint verdict must not be invalidated by a callee change: lint reads
     // one span. This is the claim that makes per-kind keys worth having.
     let defs = vec![def(1, "a"), def(2, "b")];
-    let before = segment(&defs, &[edge(1, 2, Zoc::Proven)]);
+    let before = segment(&defs, &[edge(1, 2, Grade::Proven)]);
     let after = segment(
         &[def(1, "a"), def(3, "b_changed")],
-        &[edge(1, 3, Zoc::Proven)],
+        &[edge(1, 3, Grade::Proven)],
     );
 
     let key = |seg: &Segment<Vec<u8>>| {
@@ -70,7 +70,7 @@ fn typecheck_follows_proven_edges_and_stops_at_weaker_ones() {
     let chart_defs = defs.clone();
     let seg = segment(
         &chart_defs,
-        &[edge(1, 2, Zoc::Proven), edge(1, 3, Zoc::Heuristic)],
+        &[edge(1, 2, Grade::Proven), edge(1, 3, Grade::Heuristic)],
     );
     let chart = Chart::new(std::slice::from_ref(&seg));
 
@@ -95,11 +95,11 @@ fn a_callee_change_invalidates_its_callers() {
     // must move even though a itself is byte-identical.
     let seg = segment(
         &[def(1, "a"), def(2, "b")],
-        &[edge(1, 2, Zoc::Proven), edge(2, 4, Zoc::Proven)],
+        &[edge(1, 2, Grade::Proven), edge(2, 4, Grade::Proven)],
     );
     let mutated = segment(
         &[def(1, "a"), def(5, "b")],
-        &[edge(1, 5, Zoc::Proven), edge(5, 4, Zoc::Proven)],
+        &[edge(1, 5, Grade::Proven), edge(5, 4, Grade::Proven)],
     );
 
     for kind in [Kind::Typecheck, Kind::Test] {
@@ -142,7 +142,7 @@ fn a_closure_past_fuel_is_rejected() {
             src: chain_datum(i),
             dst: chain_datum(i + 1),
             relation: Relation::Calls,
-            zoc: Zoc::Proven,
+            grade: Grade::Proven,
         })
         .collect();
     let seg = segment(&defs, &edges);
@@ -206,7 +206,7 @@ fn a_recorded_verdict_survives_reopening() {
             Entry {
                 verdict: Verdict::Fail,
                 recorded_at: "2026-08-07T18:05:40Z".into(),
-                wake_id: None,
+                trace_id: None,
                 env_hash: Some("env".into()),
             },
         )
@@ -233,7 +233,7 @@ fn a_torn_tail_line_is_dropped_not_guessed_at() {
             Entry {
                 verdict: Verdict::Pass,
                 recorded_at: "2026-08-07T18:05:40Z".into(),
-                wake_id: Some("wake:1".into()),
+                trace_id: Some("trace:1".into()),
                 env_hash: Some("env".into()),
             },
         )
@@ -259,10 +259,10 @@ fn chart_strategy() -> impl Strategy<Value = (Vec<Def>, Vec<Edge>)> {
                 0..n,
                 0..n,
                 prop_oneof![
-                    Just(Zoc::Proven),
-                    Just(Zoc::Observed),
-                    Just(Zoc::Modeled),
-                    Just(Zoc::Heuristic)
+                    Just(Grade::Proven),
+                    Just(Grade::Observed),
+                    Just(Grade::Modeled),
+                    Just(Grade::Heuristic)
                 ],
             )
                 .prop_map(|(s, d, z)| edge(s, d, z)),

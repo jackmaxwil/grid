@@ -5,7 +5,7 @@
 //! quietly re-open one. Every case must produce a typed `ChartError`, never a
 //! panic and never a `Segment` whose accessors could read out of bounds.
 use grid_chart::{build, ChartError, DatumId, Def, Edge, Ordinal, Section, Segment, HEADER_LEN};
-use grid_wire::{Lang, Relation, Zoc};
+use grid_wire::{Grade, Lang, Relation};
 
 fn sample() -> Vec<u8> {
     let defs: Vec<Def> = (0u8..6)
@@ -21,7 +21,7 @@ fn sample() -> Vec<u8> {
             src: DatumId([i; 32]),
             dst: DatumId([i + 1; 32]),
             relation: Relation::Calls,
-            zoc: Zoc::Proven,
+            grade: Grade::Proven,
         })
         .collect();
     build(&defs, &edges).unwrap()
@@ -269,7 +269,7 @@ fn edges_to_unknown_defs_are_dropped_not_dangling() {
         src: DatumId([1; 32]),
         dst: DatumId([2; 32]), // never surveyed
         relation: Relation::Calls,
-        zoc: Zoc::Proven,
+        grade: Grade::Proven,
     }];
     let seg = Segment::parse(build(&defs, &edges).unwrap()).unwrap();
     assert_eq!(seg.edge_count(), 0);

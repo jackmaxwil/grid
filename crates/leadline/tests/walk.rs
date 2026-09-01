@@ -10,7 +10,7 @@ use grid_chart::{build, DatumId, Def, Edge, Segment};
 use grid_leadline::fuel::{Budget, DEFAULT_MAX_HOPS, DEFAULT_MAX_NODES};
 use grid_leadline::graph::{Direction, Ordinal};
 use grid_leadline::walk::{walk, Filter, Status};
-use grid_wire::{Lang, Relation, Zoc};
+use grid_wire::{Grade, Lang, Relation};
 use proptest::prelude::*;
 
 fn datum(seed: u8) -> DatumId {
@@ -31,7 +31,7 @@ fn edge(s: u8, d: u8) -> Edge {
         src: datum(s),
         dst: datum(d),
         relation: Relation::Calls,
-        zoc: Zoc::Proven,
+        grade: Grade::Proven,
     }
 }
 
@@ -177,13 +177,13 @@ fn direction_decides_who_is_reachable() {
 fn an_evidence_floor_refuses_weaker_hops() {
     let defs: Vec<Def> = (0..3).map(def).collect();
     let weak = Edge {
-        zoc: Zoc::Heuristic,
+        grade: Grade::Heuristic,
         ..edge(1, 2)
     };
     let seg = Segment::parse(build(&defs, &[edge(0, 1), weak]).unwrap()).unwrap();
     let filter = Filter {
         relations: Vec::new(),
-        at_or_above: Some(Zoc::Observed),
+        at_or_above: Some(Grade::Observed),
     };
     let w = walk(
         &seg,

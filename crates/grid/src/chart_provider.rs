@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use grid_chart_io::{Epoch, Store};
-use grid_wire::{Callsign, Datum, MadeGood, SnapshotId, SnapshotOrRev};
+use grid_wire::{Callsign, Datum, Diff, SnapshotId, SnapshotOrRev};
 use grid_xte::DeltaProvider;
 
 /// Why a chart-backed delta could not be produced.
@@ -34,8 +34,8 @@ pub enum Error {
     /// A snapshot other than the live one was named. The engine holds
     /// exactly one live epoch; anything else cannot be answered from it.
     NotLive(String),
-    /// A named track does not exist or does not parse.
-    Track(String),
+    /// A named plan does not exist or does not parse.
+    Plan(String),
 }
 
 impl std::fmt::Display for Error {
@@ -46,7 +46,7 @@ impl std::fmt::Display for Error {
             Self::NoSnapshotForRev(rev) => {
                 write!(f, "no snapshot for rev {rev}: run `grid survey` first")
             }
-            Self::Config(msg) | Self::Track(msg) => f.write_str(msg),
+            Self::Config(msg) | Self::Plan(msg) => f.write_str(msg),
             Self::NoSnapshot => f.write_str("no snapshot published: run `grid survey` first"),
             Self::NotLive(id) => write!(f, "snapshot {id} is not the live epoch"),
         }
@@ -199,7 +199,7 @@ impl ChartDelta {
                     L::Datum { datum: want } => datum.to_string() == want.0,
                     L::Callsign { callsign: want } => suffix_matches(callsign, &want.0),
                     L::Handle { handle } => handle_matches(callsign, &datum.to_string(), &handle.0),
-                    L::Fix { fix } => datum.to_string() == fix.datum.0,
+                    L::Position { position } => datum.to_string() == position.datum.0,
                     L::FileLine { file, line } => segment.location(ord).is_some_and(|loc| {
                         loc.path == file.as_str()
                             && u64::from(loc.line) <= *line
@@ -310,13 +310,9 @@ fn wire_id(id: &grid_chart::SnapshotId) -> SnapshotId {
 impl DeltaProvider for ChartDelta {
     type Error = Error;
 
-    fn made_good(
-        &self,
-        base: &SnapshotOrRev,
-        head: &SnapshotOrRev,
-    ) -> Result<MadeGood, Self::Error> {
+    fn diff(&self, base: &SnapshotOrRev, head: &SnapshotOrRev) -> Result<Diff, Self::Error> {
         let (base_epoch, head_epoch) = (self.epoch_of(base)?, self.epoch_of(head)?);
-        Ok(grid_chart::made_good(
+        Ok(grid_chart::diff(
             wire_id(base_epoch.snapshot_id()),
             base_epoch.segments(),
             wire_id(head_epoch.snapshot_id()),
@@ -329,7 +325,7 @@ impl DeltaProvider for ChartDelta {
     }
 
     // `test_outcome` keeps the trait default: the chart records structure, not
-    // test runs. Real outcomes arrive with wake ingestion (Wave 8).
+    // test runs. Real outcomes arrive with trace ingestion (Wave 8).
 }
 
 /// Does `callsign` end with `want` on a dotted-segment boundary?

@@ -1,5 +1,5 @@
 //! Callsign patterns: the properties a glob language has to have, and the
-//! containment relation `track.lint` calls a plan impossible with.
+//! containment relation `plan.lint` calls a plan impossible with.
 
 use grid_xte::pattern::{matches, subsumes};
 use proptest::prelude::*;

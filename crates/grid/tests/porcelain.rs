@@ -155,18 +155,18 @@ fn grid_hints_0_silences_stderr_entirely() {
 
 fn write_track(dir: &Path, name: &str, value: &serde_json::Value) -> std::path::PathBuf {
     let path = dir.join(format!("{name}.json"));
-    std::fs::write(&path, value.to_string()).expect("write track");
+    std::fs::write(&path, value.to_string()).expect("write plan");
     path
 }
 
 #[test]
 fn gate_hold_is_exit_3_and_the_first_record_says_so() {
     let dir = repo();
-    let track = write_track(
+    let plan = write_track(
         dir.path(),
         "t",
         &json!({
-            "track_id": "track:pr-1-v1",
+            "plan_id": "plan:pr-1-v1",
             "base": {"git_rev": "HEAD~1"},
             "delta": {"defs": [], "edges": [{
                 "action": "add",
@@ -176,14 +176,14 @@ fn gate_hold_is_exit_3_and_the_first_record_says_so() {
             }]}
         }),
     );
-    let out = grid(dir.path(), &["gate", track.to_str().expect("path"), "HEAD"]);
+    let out = grid(dir.path(), &["gate", plan.to_str().expect("path"), "HEAD"]);
 
     assert_eq!(code(&out), 3, "a hold is exit 3, uniformly");
     let text = stdout(&out);
     let mut lines = text.lines();
     let first = columns(lines.next().expect("a verdict record"));
     assert_eq!(first[0], "hold", "the verdict is the first record");
-    assert_eq!(first[1], "track:pr-1-v1");
+    assert_eq!(first[1], "plan:pr-1-v1");
     // The promised edge no file-level provider can see comes back as a miss,
     // in the shape CI greps for.
     assert!(
@@ -198,18 +198,18 @@ fn gate_hold_is_exit_3_and_the_first_record_says_so() {
 #[test]
 fn gate_pass_is_exit_0() {
     let dir = repo();
-    let track = write_track(
+    let plan = write_track(
         dir.path(),
         "t",
         &json!({
-            "track_id": "track:pr-2-v1",
+            "plan_id": "plan:pr-2-v1",
             "base": {"git_rev": "HEAD~1"},
             // Callsigns are module-qualified now that the chart is real:
             // `b.py` defines `b.b`, not `b`.
             "delta": {"defs": [{"action": "add", "callsign": "b.b"}], "edges": []}
         }),
     );
-    let out = grid(dir.path(), &["gate", track.to_str().expect("path"), "HEAD"]);
+    let out = grid(dir.path(), &["gate", plan.to_str().expect("path"), "HEAD"]);
     assert_eq!(code(&out), 0, "stdout was:\n{}", stdout(&out));
     assert_eq!(
         columns(stdout(&out).lines().next().expect("record"))[0],
@@ -220,7 +220,7 @@ fn gate_pass_is_exit_0() {
 #[test]
 fn a_missing_track_is_bad_input_not_a_divergence() {
     let dir = repo();
-    let out = grid(dir.path(), &["gate", "track:nope"]);
+    let out = grid(dir.path(), &["gate", "plan:nope"]);
     assert_eq!(code(&out), 2, "unreadable input is 2, never 3");
     assert!(
         stdout(&out).is_empty(),
@@ -232,19 +232,19 @@ fn a_missing_track_is_bad_input_not_a_divergence() {
 }
 
 #[test]
-fn track_new_then_lint_then_show_is_the_planning_loop() {
+fn plan_new_then_lint_then_show_is_the_planning_loop() {
     let dir = repo();
     let out = grid(dir.path(), &["plan", "new", "pr-3-v1"]);
     assert_eq!(code(&out), 0);
     assert!(dir.path().join(".grid/plans/pr-3-v1.json").is_file());
 
-    // A track that promises nothing is a warning, not an error: it is
+    // A plan that promises nothing is a warning, not an error: it is
     // authorable, just vacuous.
     let out = grid(dir.path(), &["plan", "lint", "pr-3-v1"]);
     assert_eq!(code(&out), 0);
     assert!(stdout(&out).contains("promises nothing"));
 
-    let out = grid(dir.path(), &["plan", "show", "track:pr-3-v1"]);
+    let out = grid(dir.path(), &["plan", "show", "plan:pr-3-v1"]);
     assert_eq!(code(&out), 0);
     assert_eq!(
         columns(stdout(&out).lines().next().expect("record"))[0],
@@ -267,11 +267,11 @@ fn lint_rejects_an_impossible_plan_with_exit_2() {
         .to_string(),
     )
     .expect("write");
-    let track = write_track(
+    let plan = write_track(
         dir.path(),
         "t",
         &json!({
-            "track_id": "track:pr-4-v1",
+            "plan_id": "plan:pr-4-v1",
             "base": {"git_rev": "HEAD"},
             "delta": {"defs": [], "edges": [{
                 "action": "add", "src": "app.boards.render",
@@ -280,7 +280,7 @@ fn lint_rejects_an_impossible_plan_with_exit_2() {
         }),
     );
 
-    let out = grid(dir.path(), &["plan", "lint", track.to_str().expect("path")]);
+    let out = grid(dir.path(), &["plan", "lint", plan.to_str().expect("path")]);
     assert_eq!(code(&out), 2, "an impossible plan dies at plan time");
     assert!(stdout(&out).contains("violates invariant no-cross-layer"));
 }
@@ -288,24 +288,24 @@ fn lint_rejects_an_impossible_plan_with_exit_2() {
 #[test]
 fn json_is_the_wire_result_verbatim() {
     let dir = repo();
-    let track = write_track(
+    let plan = write_track(
         dir.path(),
         "t",
         &json!({
-            "track_id": "track:pr-5-v1",
+            "plan_id": "plan:pr-5-v1",
             "base": {"git_rev": "HEAD~1"},
             "delta": {"defs": [], "edges": []}
         }),
     );
     let out = grid(
         dir.path(),
-        &["gate", track.to_str().expect("path"), "HEAD", "--json"],
+        &["gate", plan.to_str().expect("path"), "HEAD", "--json"],
     );
     // --json does not change the verdict, only the rendering: still exit 3.
     assert_eq!(code(&out), 3);
-    let verdict: grid_wire::XteVerdict =
-        serde_json::from_str(stdout(&out).trim()).expect("--json emits a wire XteVerdict");
-    assert_eq!(verdict.gate, grid_wire::XteVerdictGate::Hold);
+    let verdict: grid_wire::GateVerdict =
+        serde_json::from_str(stdout(&out).trim()).expect("--json emits a wire GateVerdict");
+    assert_eq!(verdict.gate, grid_wire::GateVerdictGate::Hold);
 }
 
 #[test]
@@ -465,7 +465,7 @@ fn seed_chart(dir: &Path, callee_byte: u8) -> (String, String) {
             src: caller,
             dst: target,
             relation: grid_wire::Relation::Calls,
-            zoc: grid_wire::Zoc::Proven,
+            grade: grid_wire::Grade::Proven,
         }],
     )
     .expect("build");
@@ -592,11 +592,11 @@ fn a_gate_over_a_real_edge_promise_passes_when_the_edge_is_built() {
     // The wave's headline: a promise about a *call* is now checked against a
     // surveyed call, not reported `missing` for want of a chart.
     let dir = repo_with_a_call();
-    let track = write_track(
+    let plan = write_track(
         dir.path(),
         "edge",
         &json!({
-            "track_id": "track:edge/v1",
+            "plan_id": "plan:edge/v1",
             "base": {"git_rev": "HEAD~1"},
             "delta": {
                 "defs": [
@@ -612,7 +612,7 @@ fn a_gate_over_a_real_edge_promise_passes_when_the_edge_is_built() {
             }
         }),
     );
-    let out = grid(dir.path(), &["gate", track.to_str().expect("path"), "HEAD"]);
+    let out = grid(dir.path(), &["gate", plan.to_str().expect("path"), "HEAD"]);
     let text = stdout(&out);
     assert_eq!(code(&out), 0, "stdout:\n{text}");
     assert!(
@@ -629,11 +629,11 @@ fn a_gate_holds_when_the_promised_edge_was_not_built() {
     // The inverse, and the one CI branches on: exit 3, with the divergence
     // itemized as records.
     let dir = repo_with_a_call();
-    let track = write_track(
+    let plan = write_track(
         dir.path(),
         "unbuilt",
         &json!({
-            "track_id": "track:unbuilt/v1",
+            "plan_id": "plan:unbuilt/v1",
             "base": {"git_rev": "HEAD~1"},
             "delta": {
                 "defs": [],
@@ -646,7 +646,7 @@ fn a_gate_holds_when_the_promised_edge_was_not_built() {
             }
         }),
     );
-    let out = grid(dir.path(), &["gate", track.to_str().expect("path"), "HEAD"]);
+    let out = grid(dir.path(), &["gate", plan.to_str().expect("path"), "HEAD"]);
     let text = stdout(&out);
     assert_eq!(code(&out), 3, "stdout:\n{text}");
     assert!(
@@ -801,11 +801,11 @@ fn uses_on_an_ambiguous_name_lists_pasteable_commands() {
 #[test]
 fn todo_renders_the_fraction_then_the_pending_promises() {
     let dir = repo_with_a_call();
-    let track = write_track(
+    let plan = write_track(
         dir.path(),
         "todo",
         &json!({
-            "track_id": "track:todo-v1",
+            "plan_id": "plan:todo-v1",
             "base": {"git_rev": "HEAD~1"},
             "delta": {
                 "defs": [{"action": "add", "callsign": "pkg.util.extra"}],
@@ -818,7 +818,7 @@ fn todo_renders_the_fraction_then_the_pending_promises() {
             }
         }),
     );
-    let out = grid(dir.path(), &["todo", track.to_str().expect("path"), "HEAD"]);
+    let out = grid(dir.path(), &["todo", plan.to_str().expect("path"), "HEAD"]);
     assert_eq!(code(&out), 0, "a worklist is a report, not a verdict");
     let text = stdout(&out);
     let first = columns(text.lines().next().expect("the fraction record"));
@@ -826,7 +826,7 @@ fn todo_renders_the_fraction_then_the_pending_promises() {
     // Two promises made good (one def, one edge), one edge pending: 2/3.
     assert_eq!(first[1], "2/3", "{text}");
     assert!(text.contains("edges 1/2 · defs 1/1 · tests 0/0"), "{text}");
-    // The pending promise prints as the same record a fresh track would show.
+    // The pending promise prints as the same record a fresh plan would show.
     let pending: Vec<&str> = text.lines().filter(|l| l.contains("never_built")).collect();
     assert_eq!(pending.len(), 1, "{text}");
     assert_eq!(columns(pending[0])[0], "edge");
@@ -863,8 +863,8 @@ fn explain_handle_names_the_definition_the_prefix_pins() {
     assert_eq!(code(&out), 0);
     assert!(stdout(&out).contains("pkg.util.extra"), "{}", stdout(&out));
 }
-/// Write a wake JSON into `dir` and return its path for `grid wake ingest`.
-fn wake_file(dir: &Path, name: &str, wake_id: &str, hops: &[(&str, &str)]) -> std::path::PathBuf {
+/// Write a trace JSON into `dir` and return its path for `grid trace ingest`.
+fn trace_file(dir: &Path, name: &str, trace_id: &str, hops: &[(&str, &str)]) -> std::path::PathBuf {
     let observations: Vec<serde_json::Value> = hops
         .iter()
         .map(|(caller, callee)| {
@@ -878,25 +878,25 @@ fn wake_file(dir: &Path, name: &str, wake_id: &str, hops: &[(&str, &str)]) -> st
     std::fs::write(
         &path,
         serde_json::json!({
-            "wake_id": wake_id,
+            "trace_id": trace_id,
             "git_rev": "4f2c9e1",
             "observations": observations,
         })
         .to_string(),
     )
-    .expect("write wake");
+    .expect("write trace");
     path
 }
 #[test]
 #[allow(clippy::similar_names)] // caller/callee are the domain words
-fn wake_ingest_then_diff_is_the_ci_loop() {
+fn trace_ingest_then_diff_is_the_ci_loop() {
     let dir = repo();
     let (caller, callee) = seed_chart(dir.path(), 0x22);
-    let green = wake_file(dir.path(), "green.json", "wake:g", &[(&caller, &callee)]);
-    let red = wake_file(
+    let green = trace_file(dir.path(), "green.json", "trace:g", &[(&caller, &callee)]);
+    let red = trace_file(
         dir.path(),
         "red.json",
-        "wake:r",
+        "trace:r",
         &[(&caller, &callee), (&callee, &caller)],
     );
     for (file, want) in [(&green, "1/1"), (&red, "2/2")] {
@@ -911,11 +911,11 @@ fn wake_ingest_then_diff_is_the_ci_loop() {
         assert_eq!(cols[1], want);
     }
     // Same trace twice: no fork, exit 0.
-    let same = grid(dir.path(), &["trace", "diff", "wake:g", "wake:g"]);
+    let same = grid(dir.path(), &["trace", "diff", "trace:g", "trace:g"]);
     assert_eq!(code(&same), 0);
     assert!(stdout(&same).is_empty(), "no records without a difference");
     // Green against red: red kept calling, exit 3, fork then edge records.
-    let forked = grid(dir.path(), &["trace", "diff", "wake:g", "wake:r"]);
+    let forked = grid(dir.path(), &["trace", "diff", "trace:g", "trace:r"]);
     assert_eq!(code(&forked), 3, "a forked trace is a divergence");
     let text = stdout(&forked);
     let lines: Vec<&str> = text.lines().collect();
@@ -926,14 +926,14 @@ fn wake_ingest_then_diff_is_the_ci_loop() {
     assert_eq!(columns(lines[1])[5], "observed");
 }
 #[test]
-fn wake_ingest_reports_unresolved_symbols_never_drops_them() {
+fn trace_ingest_reports_unresolved_symbols_never_drops_them() {
     let dir = repo();
     seed_chart(dir.path(), 0x22);
-    let path = dir.path().join("wake.json");
+    let path = dir.path().join("trace.json");
     std::fs::write(
         &path,
         serde_json::json!({
-            "wake_id": "wake:u",
+            "trace_id": "trace:u",
             "git_rev": "4f2c9e1",
             "observations": [
                 { "caller": { "symbol": "caller" }, "callee": { "symbol": "no.such" } },
@@ -941,7 +941,7 @@ fn wake_ingest_reports_unresolved_symbols_never_drops_them() {
         })
         .to_string(),
     )
-    .expect("write wake");
+    .expect("write trace");
     let out = grid(
         dir.path(),
         &["trace", "ingest", path.to_str().expect("utf-8")],
@@ -958,7 +958,7 @@ fn wake_ingest_reports_unresolved_symbols_never_drops_them() {
 fn a_diff_against_an_unknown_wake_is_bad_input() {
     let dir = repo();
     seed_chart(dir.path(), 0x22);
-    let out = grid(dir.path(), &["trace", "diff", "wake:nope", "wake:alsono"]);
+    let out = grid(dir.path(), &["trace", "diff", "trace:nope", "trace:alsono"]);
     assert_eq!(code(&out), 2);
 }
 

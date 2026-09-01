@@ -1,4 +1,4 @@
-//! The wire-level surface: a `LeadlineQuery` in, a `LeadlineResult` out.
+//! The wire-level surface: a `WalkQuery` in, a `WalkResult` out.
 //!
 //! `walk.rs` covers the traversal; this covers the translation — locator
 //! resolution, the sweep/path-finding fork, and the promise that a rendered
@@ -7,8 +7,8 @@
 use grid_chart::{build, DatumId, Def, Edge, Segment};
 use grid_leadline::{query, resolve, Error};
 use grid_wire::{
-    Callsign, Datum, Fuel, Handle, Lang, LeadlineQuery, LeadlineQueryDirection,
-    LeadlineResultStatus, Locator, Relation, SnapshotId, Zoc,
+    Callsign, Datum, Fuel, Grade, Handle, Lang, Locator, Relation, SnapshotId, WalkQuery,
+    WalkQueryDirection, WalkResultStatus,
 };
 
 fn datum(seed: u8) -> DatumId {
@@ -29,7 +29,7 @@ fn edge(s: u8, d: u8) -> Edge {
         src: datum(s),
         dst: datum(d),
         relation: Relation::Calls,
-        zoc: Zoc::Proven,
+        grade: Grade::Proven,
     }
 }
 
@@ -54,8 +54,8 @@ fn callsign(name: &str) -> Locator {
     }
 }
 
-fn sweep(from: Vec<Locator>, dir: LeadlineQueryDirection) -> LeadlineQuery {
-    LeadlineQuery {
+fn sweep(from: Vec<Locator>, dir: WalkQueryDirection) -> WalkQuery {
+    WalkQuery {
         from,
         to: None,
         direction: Some(dir),
@@ -71,10 +71,10 @@ fn a_sweep_answers_who_reaches_a_definition() {
     let seg = chain();
     let q = sweep(
         vec![callsign("cortana.models.CardModel")],
-        LeadlineQueryDirection::In,
+        WalkQueryDirection::In,
     );
     let r = query(&seg, &q, snapshot()).unwrap();
-    assert_eq!(r.status, LeadlineResultStatus::Complete);
+    assert_eq!(r.status, WalkResultStatus::Complete);
     let reached = r.reached.expect("a sweep answers `reached`");
     // The caller asked who reaches CardModel: fetchCard, and not the root.
     let names: Vec<&str> = reached
@@ -91,11 +91,11 @@ fn a_sweep_answers_who_reaches_a_definition() {
 #[test]
 fn a_query_with_to_answers_paths() {
     let seg = chain();
-    let q = LeadlineQuery {
+    let q = WalkQuery {
         to: Some(vec![callsign("cortana.db.row")]),
         ..sweep(
             vec![callsign("webapp.api.fetchCard")],
-            LeadlineQueryDirection::Out,
+            WalkQueryDirection::Out,
         )
     };
     let r = query(&seg, &q, snapshot()).unwrap();
@@ -115,11 +115,11 @@ fn a_query_with_to_answers_paths() {
 #[test]
 fn an_unreached_target_is_an_empty_path_list_not_an_error() {
     let seg = chain();
-    let q = LeadlineQuery {
+    let q = WalkQuery {
         to: Some(vec![callsign("webapp.api.other")]),
         ..sweep(
             vec![callsign("webapp.api.fetchCard")],
-            LeadlineQueryDirection::Out,
+            WalkQueryDirection::Out,
         )
     };
     let r = query(&seg, &q, snapshot()).unwrap();
@@ -131,12 +131,9 @@ fn a_backwards_hop_still_names_the_real_source_and_destination() {
     let seg = chain();
     // Walking `both` from db.row crosses 1->2 against its direction; the
     // rendered edge must still say src=CardModel, dst=db.row.
-    let q = LeadlineQuery {
+    let q = WalkQuery {
         to: Some(vec![callsign("webapp.api.fetchCard")]),
-        ..sweep(
-            vec![callsign("cortana.db.row")],
-            LeadlineQueryDirection::Both,
-        )
+        ..sweep(vec![callsign("cortana.db.row")], WalkQueryDirection::Both)
     };
     let r = query(&seg, &q, snapshot()).unwrap();
     let p = &r.paths.unwrap()[0];
@@ -150,7 +147,7 @@ fn a_backwards_hop_still_names_the_real_source_and_destination() {
 #[test]
 fn running_out_of_fuel_is_aground_with_a_frontier() {
     let seg = chain();
-    let q = LeadlineQuery {
+    let q = WalkQuery {
         fuel: Some(Fuel {
             max_hops: Some(1),
             max_nodes: Some(10),
@@ -158,11 +155,11 @@ fn running_out_of_fuel_is_aground_with_a_frontier() {
         }),
         ..sweep(
             vec![callsign("webapp.api.fetchCard")],
-            LeadlineQueryDirection::Out,
+            WalkQueryDirection::Out,
         )
     };
     let r = query(&seg, &q, snapshot()).unwrap();
-    assert_eq!(r.status, LeadlineResultStatus::Aground);
+    assert_eq!(r.status, WalkResultStatus::Aground);
     // Aground shows its edge: the caller can raise the budget and ask again.
     assert_eq!(r.frontier.unwrap(), vec![Datum(datum(1).to_string())]);
 }
@@ -217,17 +214,17 @@ fn coordinate_locators_say_they_need_an_index_rather_than_guessing() {
 #[test]
 fn an_unknown_root_is_an_error_but_an_unknown_target_is_not() {
     let seg = chain();
-    let q = sweep(vec![callsign("nope.nothing")], LeadlineQueryDirection::Out);
+    let q = sweep(vec![callsign("nope.nothing")], WalkQueryDirection::Out);
     assert!(matches!(
         query(&seg, &q, snapshot()),
         Err(Error::Unresolved(_))
     ));
 
-    let q = LeadlineQuery {
+    let q = WalkQuery {
         to: Some(vec![callsign("nope.nothing")]),
         ..sweep(
             vec![callsign("webapp.api.fetchCard")],
-            LeadlineQueryDirection::Out,
+            WalkQueryDirection::Out,
         )
     };
     // An unknown target is simply not reachable: the empty answer is honest.
@@ -245,18 +242,18 @@ fn a_relation_filter_restricts_which_edges_are_followed() {
         ..edge(0, 1)
     };
     let seg = Segment::parse(build(&defs, &[constructs]).unwrap()).unwrap();
-    let q = LeadlineQuery {
+    let q = WalkQuery {
         relations: Some(vec![Relation::Calls]),
-        ..sweep(vec![callsign("a.f")], LeadlineQueryDirection::Out)
+        ..sweep(vec![callsign("a.f")], WalkQueryDirection::Out)
     };
     assert_eq!(
         query(&seg, &q, snapshot()).unwrap().reached.unwrap(),
         Vec::new()
     );
 
-    let q = LeadlineQuery {
+    let q = WalkQuery {
         relations: Some(vec![Relation::Constructs]),
-        ..sweep(vec![callsign("a.f")], LeadlineQueryDirection::Out)
+        ..sweep(vec![callsign("a.f")], WalkQueryDirection::Out)
     };
     assert_eq!(
         query(&seg, &q, snapshot()).unwrap().reached.unwrap().len(),
@@ -271,7 +268,7 @@ fn the_same_query_answers_the_same_bytes_every_time() {
     let seg = chain();
     let q = sweep(
         vec![callsign("webapp.api.fetchCard")],
-        LeadlineQueryDirection::Out,
+        WalkQueryDirection::Out,
     );
     let once = serde_json::to_string(&query(&seg, &q, snapshot()).unwrap().reached).unwrap();
     for _ in 0..32 {

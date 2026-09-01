@@ -221,7 +221,7 @@ fn drift_is_deterministic_for_a_snapshot_pair() {
     );
 }
 
-/// Track suppression is monotone: naming a promise can only remove suspects.
+/// Plan suppression is monotone: naming a promise can only remove suspects.
 /// A plan that *added* one would make the gate and drift disagree about who
 /// is responsible for a definition.
 #[test]
@@ -245,7 +245,7 @@ fn a_plan_never_adds_a_suspect() {
     assert!(before.len() >= 2, "two callers to start with: {before:?}");
 
     let plan = serde_json::json!({
-        "track_id": "track:drift",
+        "plan_id": "plan:drift",
         "base": { "git_rev": "HEAD~1" },
         "delta": {
             "defs": [{ "action": "modify", "callsign": "app.promised" }],
@@ -275,7 +275,7 @@ fn a_plan_never_adds_a_suspect() {
 }
 
 /// har-verify rung 5: the segment walk against an independent recomputation
-/// from the wire `MadeGood`. The reimplementation shares no code with the
+/// from the wire `Diff`. The reimplementation shares no code with the
 /// engine's — it reads `grid diff --json` and `grid uses --json` and joins
 /// them itself — so agreement is evidence, not a tautology.
 #[test]
@@ -356,7 +356,7 @@ fn recompute(dir: &Path, file: &str) -> Vec<(String, String)> {
             if !matches!(
                 edge["relation"].as_str(),
                 Some("calls" | "constructs" | "implements" | "writes_field")
-            ) || edge["zoc"].as_str() != Some("proven")
+            ) || edge["grade"].as_str() != Some("proven")
             {
                 continue;
             }
@@ -474,24 +474,24 @@ fn commit(dir: &Path, message: &str) {
     git(dir, &["commit", "-qm", message]);
 }
 
-/// A wake asserting one call, by symbol, so it resolves against whatever the
+/// A trace asserting one call, by symbol, so it resolves against whatever the
 /// live chart currently is.
 fn ingest_wake(dir: &Path, id: &str, from: &str, to: &str) {
-    let wake = serde_json::json!({
-        "wake_id": id,
+    let trace = serde_json::json!({
+        "trace_id": id,
         "git_rev": "HEAD",
         // `command` is the test the trace came from — the same field
-        // `grid wake ingest --lcov ... --test <name>` fills in, and the one
-        // that makes a retained wake a test-registry entry.
+        // `grid trace ingest --lcov ... --test <name>` fills in, and the one
+        // that makes a retained trace a test-registry entry.
         "command": from,
         "observations": [{
             "caller": { "symbol": from },
             "callee": { "symbol": to }
         }]
     });
-    let path = dir.join("wake.json");
-    std::fs::write(&path, wake.to_string()).expect("write wake");
-    let out = grid(dir, &["trace", "ingest", "wake.json"]);
+    let path = dir.join("trace.json");
+    std::fs::write(&path, trace.to_string()).expect("write trace");
+    let out = grid(dir, &["trace", "ingest", "trace.json"]);
     assert_eq!(
         code(&out),
         0,
@@ -507,7 +507,7 @@ fn ingest_wake(dir: &Path, id: &str, from: &str, to: &str) {
 
 /// Ground truth for step 3: coupling only a trace knows about is a suspect
 /// once the floor admits observations — and never at the proven default,
-/// because a wake is not a proof.
+/// because a trace is not a proof.
 #[test]
 fn observed_coupling_implicates_a_dependent_only_at_or_below_the_observed_floor() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -526,9 +526,9 @@ fn observed_coupling_implicates_a_dependent_only_at_or_below_the_observed_floor(
         ],
     );
     commit(dir.path(), "before");
-    // Survey, then trace: the wake resolves against the base chart.
+    // Survey, then trace: the trace resolves against the base chart.
     assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
-    ingest_wake(dir.path(), "wake:one", "caller.go", "api.window");
+    ingest_wake(dir.path(), "trace:one", "caller.go", "api.window");
 
     write(
         dir.path(),
@@ -543,7 +543,7 @@ fn observed_coupling_implicates_a_dependent_only_at_or_below_the_observed_floor(
     assert_eq!(
         code(&proven),
         0,
-        "a wake is not a proof: {}",
+        "a trace is not a proof: {}",
         stdout(&proven)
     );
     assert!(suspects(&proven).is_empty(), "{}", stdout(&proven));
@@ -590,7 +590,7 @@ fn a_decayed_trace_falls_to_heuristic_with_a_named_reason_and_recovers() {
     );
     commit(dir.path(), "one");
     assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
-    ingest_wake(dir.path(), "wake:one", "caller.go", "api.window");
+    ingest_wake(dir.path(), "trace:one", "caller.go", "api.window");
 
     // The traced caller is rewritten: its datum moves, so the retained hop
     // now names a definition the next base does not intern.
@@ -637,9 +637,9 @@ fn a_decayed_trace_falls_to_heuristic_with_a_named_reason_and_recovers() {
     );
 
     // Re-tracing against the current code restores the observation: the
-    // retained log is append-only, and the fresh wake is simply believed.
+    // retained log is append-only, and the fresh trace is simply believed.
     assert_eq!(code(&grid(dir.path(), &["survey", "HEAD~1"])), 0);
-    ingest_wake(dir.path(), "wake:two", "caller.go", "api.window");
+    ingest_wake(dir.path(), "trace:two", "caller.go", "api.window");
     let again = grid(dir.path(), &["drift", "HEAD~1", "HEAD"]);
     let rows = graded(&again);
     assert_eq!(
@@ -913,9 +913,9 @@ fn misses(out: &Output) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Record a `pass` for `datum` in environment `env`, tied to `wake` — which
+/// Record a `pass` for `datum` in environment `env`, tied to `trace` — which
 /// is how the verdict is attributed to the test that produced it.
-fn record_pass(dir: &Path, env: &str, datum: &str, wake: &str) {
+fn record_pass(dir: &Path, env: &str, datum: &str, trace: &str) {
     let out = grid(
         dir,
         &[
@@ -925,7 +925,7 @@ fn record_pass(dir: &Path, env: &str, datum: &str, wake: &str) {
             env,
             &format!("{datum}=pass"),
             "--trace",
-            wake,
+            trace,
         ],
     );
     assert_eq!(
@@ -951,7 +951,7 @@ fn datum_of(dir: &Path, callsign: &str) -> String {
         .to_owned()
 }
 
-/// A repo with a test that covers `pkg.lib.covered`, a wake recording that
+/// A repo with a test that covers `pkg.lib.covered`, a trace recording that
 /// coverage, and a recorded pass. Returns the directory.
 fn repo_with_a_recorded_verdict() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -972,9 +972,14 @@ fn repo_with_a_recorded_verdict() -> tempfile::TempDir {
     );
     commit(dir.path(), "before");
     assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
-    ingest_wake(dir.path(), "wake:t", "test_lib.test_covered", "lib.covered");
+    ingest_wake(
+        dir.path(),
+        "trace:t",
+        "test_lib.test_covered",
+        "lib.covered",
+    );
     let test_datum = datum_of(dir.path(), "pkg.test_lib.test_covered");
-    record_pass(dir.path(), "env-1", &test_datum, "wake:t");
+    record_pass(dir.path(), "env-1", &test_datum, "trace:t");
     dir
 }
 
@@ -1038,12 +1043,12 @@ fn a_change_outside_every_closure_stales_nothing() {
     );
 }
 
-/// Conservatism: a verdict no retained wake claims cannot be attributed to a
+/// Conservatism: a verdict no retained trace claims cannot be attributed to a
 /// test, so it is *counted*, not quietly treated as covering something.
 #[test]
 fn an_unattributed_verdict_is_counted_not_assumed() {
     let dir = repo_with_a_recorded_verdict();
-    // A second verdict with no wake behind it: nobody can say which test it
+    // A second verdict with no trace behind it: nobody can say which test it
     // belongs to.
     let datum = datum_of(dir.path(), "pkg.lib.covered");
     let out = grid(
@@ -1127,7 +1132,7 @@ fn warns(out: &Output) -> Vec<(String, String)> {
         .collect()
 }
 
-/// A repo where a test covers `pkg.lib.covered`, a wake records the
+/// A repo where a test covers `pkg.lib.covered`, a trace records the
 /// coverage, and a `pass` is recorded — with the whole thing surveyed and
 /// retained so both endpoints of the later patch are in the chain.
 fn repo_with_a_green_test() -> tempfile::TempDir {
@@ -1148,12 +1153,17 @@ fn repo_with_a_green_test() -> tempfile::TempDir {
     );
     commit(dir.path(), "before");
     assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
-    ingest_wake(dir.path(), "wake:t", "test_lib.test_covered", "lib.covered");
+    ingest_wake(
+        dir.path(),
+        "trace:t",
+        "test_lib.test_covered",
+        "lib.covered",
+    );
     record_pass(
         dir.path(),
         "env-1",
         &datum_of(dir.path(), "pkg.test_lib.test_covered"),
-        "wake:t",
+        "trace:t",
     );
     dir
 }
@@ -1166,7 +1176,7 @@ fn after_head_pass(dir: &Path) -> Output {
         dir,
         "env-1",
         &datum_of(dir, "pkg.test_lib.test_covered"),
-        "wake:t",
+        "trace:t",
     );
     grid(dir, &["drift", "HEAD~1", "HEAD", "--tests"])
 }

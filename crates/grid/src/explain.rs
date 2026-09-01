@@ -112,7 +112,7 @@ mod tests {
         assert!(lookup("datum").is_some());
         assert!(lookup("hold").is_some());
         // The wire contract's schema descriptions, lowercased schema names.
-        assert!(lookup("xteverdict").is_some());
+        assert!(lookup("gateverdict").is_some());
         assert!(lookup("callsignpattern").is_some());
     }
 

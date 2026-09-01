@@ -1,7 +1,7 @@
 //! Build-time generation of the `grid explain` corpus.
 //!
 //! Two sources of truth, one generated table: the wire contract's schema
-//! descriptions (`docs/wire-v0.openrpc.json`) and the normative vocabulary
+//! descriptions (`docs/wire-v1.openrpc.json`) and the normative vocabulary
 //! (`docs/ONTOLOGY.md`). ONTOLOGY wins a collision — it is the curated
 //! answer; the wire description is the fallback for everything else. Nothing
 //! about help text is hand-maintained in the binary, so help cannot drift
@@ -12,7 +12,7 @@ use std::path::Path;
 
 fn main() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let wire = manifest.join("../../docs/wire-v0.openrpc.json");
+    let wire = manifest.join("../../docs/wire-v1.openrpc.json");
     let ontology = manifest.join("../../docs/ONTOLOGY.md");
     println!("cargo:rerun-if-changed={}", wire.display());
     println!("cargo:rerun-if-changed={}", ontology.display());

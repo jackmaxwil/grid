@@ -2,7 +2,7 @@
 //! whose bytes no longer match its manifest.
 use grid_chart::{build, DatumId, Def, Edge};
 use grid_chart_io::{Store, StoreError, MANIFEST};
-use grid_wire::{Lang, Relation, Zoc};
+use grid_wire::{Grade, Lang, Relation};
 
 fn image(n: u8) -> Vec<u8> {
     let defs: Vec<Def> = (0..=n)
@@ -18,7 +18,7 @@ fn image(n: u8) -> Vec<u8> {
             src: DatumId([i; 32]),
             dst: DatumId([i + 1; 32]),
             relation: Relation::Calls,
-            zoc: Zoc::Proven,
+            grade: Grade::Proven,
         })
         .collect();
     build(&defs, &edges).unwrap()
