@@ -26,6 +26,7 @@ document.
 | `hop` | relation, target, evidence |
 | `hit` | callsign, verdict, recorded time |
 | `fork` | caller, green callee (`-` if the trace had no hop there), red callee |
+| `drift` | evidence grade, dependent callsign, `<-relation-`, changed callsign, sig transition (`old4→new4`, or `sig?` when either side carries no sig), the reason when one applies, dependent `file:line` (`grid drift`) |
 | `miss` | callsign, reason |
 | `pass` / `hold` | track id, snapshot id (first record of gate output) |
 | `warn` | callsign, message |
@@ -46,6 +47,15 @@ stderr and no stdout records. Seeded test fixtures exercise this grammar but
 are not production-history claims.
 
 Verdict roles on `edge` records: `match`, `miss`, `surplus`, `tolerated`.
+
+`grid drift` closes its output with `miss` records for what it could not
+check: `miss <n>  unresolved references unchecked` when the head survey
+declined names, and `miss ?  unresolved references uncounted (head was not
+surveyed)` when head was a published snapshot nobody re-surveyed, so the
+count is unknown rather than zero. A drift report with no suspects and
+nothing unchecked prints nothing and exits `0`; suspects exit `3`. An inbound
+walk that runs past its fuel is refused whole — exit `1` with the reason on
+stderr — never served as a shorter list.
 
 ## Glyphs
 

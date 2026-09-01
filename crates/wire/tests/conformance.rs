@@ -51,6 +51,7 @@ fn roundtrip(method: &str, params: &[Value], result: &Value) {
         "grid.survey.run" => SurveyRunParams, Snapshot,
         "grid.resolve" => ResolveParams, Vec<DefRef>,
         "grid.delta" => DeltaParams, MadeGood,
+        "grid.drift" => DriftParams, DriftReport,
         "grid.gate.check" => GateCheckParams, XteVerdict,
         "grid.query.walk" => QueryWalkParams, LeadlineResult,
         "grid.anchor.carry" => AnchorCarryParams, Vec<CarriedAnchor>,
@@ -73,7 +74,7 @@ fn roundtrip(method: &str, params: &[Value], result: &Value) {
 fn every_contract_example_roundtrips() {
     let c = contract();
     let methods = c["methods"].as_array().unwrap();
-    assert_eq!(methods.len(), 20, "contract must have 20 methods");
+    assert_eq!(methods.len(), 21, "contract must have 21 methods");
     let mut example_count = 0;
     for m in methods {
         let name = m["name"].as_str().unwrap();
@@ -87,7 +88,7 @@ fn every_contract_example_roundtrips() {
         }
     }
     assert_eq!(
-        example_count, 20,
+        example_count, 21,
         "one example per method, per the contract corpus"
     );
 }

@@ -24,6 +24,7 @@
 
 mod bisect;
 mod chart_provider;
+mod drift;
 mod edit;
 mod explain;
 mod lcov;
@@ -75,6 +76,7 @@ fn help() {
         "\nverbs:\n  \
          survey                       chart the worktree; idempotent\n  \
          diff [base] [head]           what changed, in defs and edges\n  \
+         drift [base] [head]          dependents of changed interfaces; exit 3 on suspects\n  \
          resolve <name|file|f:line>   where it is; a bare file lists its defs\n  \
          uses <name> [--relation r]   proven inbound edges\n  \
          scope <pattern> [--depth N]  context pack around an edit\n  \
@@ -148,6 +150,7 @@ fn main() -> ExitCode {
         Some((&"version", _)) => version(json),
         Some((&"survey", args)) => survey(args, json),
         Some((&"diff", args)) => diff(args, json),
+        Some((&"drift", args)) => drift_verb(args, json),
         Some((&"resolve", args)) => resolve(args, json),
         Some((&"gate", args)) => gate(args, json),
         Some((&"track", args)) => track::main(args, json),
@@ -484,6 +487,108 @@ fn diff(args: &[&str], json: bool) -> u8 {
             exit::OK
         }
     }
+}
+
+/// `grid drift [<base>] [<head>] [--floor <zoc>] [--track <file>]` — the
+/// dependents of every changed interface that did not themselves change.
+///
+/// Exit 3 when suspects exist: an unaddressed dependent of a changed
+/// interface is a divergence, and CI needs no output parsing to see it. Exit
+/// 1 when an inbound walk ran past its fuel — the answer is refused whole,
+/// because a truncated walk reports fewer suspects and looks cleaner for it.
+fn drift_verb(args: &[&str], json: bool) -> u8 {
+    let mut floor = None;
+    let mut track = None;
+    let mut positional = Vec::new();
+    let mut rest = args;
+    while let Some((arg, tail)) = rest.split_first() {
+        rest = tail;
+        match *arg {
+            "--floor" => {
+                let (Some(spec), Some(tail)) = (rest.first(), rest.get(1..)) else {
+                    hint(DRIFT_USAGE);
+                    return exit::BAD_INPUT;
+                };
+                let Some(want) = zoc_named(spec) else {
+                    hint(DRIFT_USAGE);
+                    return exit::BAD_INPUT;
+                };
+                floor = Some(want);
+                rest = tail;
+            }
+            "--track" => {
+                let (Some(spec), Some(tail)) = (rest.first(), rest.get(1..)) else {
+                    hint(DRIFT_USAGE);
+                    return exit::BAD_INPUT;
+                };
+                match track::load(spec) {
+                    Ok(t) => track = Some(t),
+                    Err(e) => {
+                        hint(&format!("grid: {e}"));
+                        return exit::BAD_INPUT;
+                    }
+                }
+                rest = tail;
+            }
+            other if other.starts_with("--") => {
+                hint(&format!("grid: unknown flag `{other}`\n{DRIFT_USAGE}"));
+                return exit::BAD_INPUT;
+            }
+            other => positional.push(other),
+        }
+    }
+    if positional.len() > 2 {
+        hint(DRIFT_USAGE);
+        return exit::BAD_INPUT;
+    }
+    let params = grid_wire::methods::DriftParams {
+        base: snapshot_or_rev(positional.first().unwrap_or(&"HEAD~1")),
+        head: snapshot_or_rev(positional.get(1).unwrap_or(&"HEAD")),
+        floor,
+        track,
+    };
+    match rpc::drift(&params, root()) {
+        Err(drift::Error::BudgetRejected(n)) => {
+            hint(&format!("grid: {}", drift::Error::BudgetRejected(n)));
+            exit::INTERNAL
+        }
+        Err(drift::Error::Chart(e)) => {
+            hint(&format!("grid: {e}"));
+            exit::BAD_INPUT
+        }
+        Ok(report) => {
+            let code = if report.suspects.is_empty() {
+                exit::OK
+            } else {
+                exit::DIVERGENCE
+            };
+            if json {
+                // A serialization failure is internal (1) and outranks the
+                // verdict, exactly as `grid gate` treats it.
+                return match emit_json(&report) {
+                    exit::OK => code,
+                    failure => failure,
+                };
+            }
+            print!("{}", porcelain::drift(&report));
+            if code == exit::DIVERGENCE {
+                hint(
+                    "grid: these depend on an interface that moved and were not touched — \
+                     update them, or promise them in a track and re-run with --track",
+                );
+            }
+            code
+        }
+    }
+}
+
+const DRIFT_USAGE: &str =
+    "usage: grid drift [<base>] [<head>] [--floor <proven|observed|modeled|heuristic>] [--track <file>]";
+
+/// The wire spelling of an evidence grade, for `--floor` arguments. The serde
+/// names are the vocabulary, so the flag cannot drift from the contract.
+fn zoc_named(name: &str) -> Option<grid_wire::Zoc> {
+    serde_json::from_value(serde_json::Value::String(name.to_owned())).ok()
 }
 
 /// `grid resolve <name>` — the definitions a name refers to.

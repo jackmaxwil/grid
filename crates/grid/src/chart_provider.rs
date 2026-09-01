@@ -249,12 +249,36 @@ impl ChartDelta {
         Ok(self.store.epoch_for_rev(&rev)?.is_some())
     }
 
+    /// Where a datum currently materializes, if the live epoch knows.
+    ///
+    /// Advisory, like every materialization: it is what makes a row
+    /// pasteable into an editor, not an address anything is stored under.
+    #[must_use]
+    pub fn locate(&self, datum: &Datum) -> Option<grid_wire::DefRefMaterialization> {
+        let id = grid_chart::DatumId::parse(&datum.0)?;
+        for segment in self.head.segments() {
+            if let Some(ord) = segment.ordinal(&id) {
+                if let Some(loc) = segment.location(ord) {
+                    return Some(grid_wire::DefRefMaterialization {
+                        file: loc.path.to_owned(),
+                        line: u64::from(loc.line),
+                    });
+                }
+            }
+        }
+        None
+    }
+
     /// The epoch a `SnapshotOrRev` names.
     ///
     /// A snapshot id is looked up directly. A rev is matched against published
     /// manifests, since a manifest records the rev it was surveyed at — so a
     /// caller holding only a rev (which is what CI holds) still resolves.
-    fn epoch(&self, target: &SnapshotOrRev) -> Result<Arc<Epoch>, Error> {
+    ///
+    /// # Errors
+    /// [`Error::NoSnapshotForRev`] when a rev has never been surveyed,
+    /// [`Error::Store`] when the store cannot be read.
+    pub fn epoch_of(&self, target: &SnapshotOrRev) -> Result<Arc<Epoch>, Error> {
         match target {
             SnapshotOrRev::Snapshot { snapshot } => Ok(self.store.epoch_of(&chart_id(snapshot))?),
             SnapshotOrRev::GitRev { git_rev } => {
@@ -291,7 +315,7 @@ impl DeltaProvider for ChartDelta {
         base: &SnapshotOrRev,
         head: &SnapshotOrRev,
     ) -> Result<MadeGood, Self::Error> {
-        let (base_epoch, head_epoch) = (self.epoch(base)?, self.epoch(head)?);
+        let (base_epoch, head_epoch) = (self.epoch_of(base)?, self.epoch_of(head)?);
         Ok(grid_chart::made_good(
             wire_id(base_epoch.snapshot_id()),
             base_epoch.segments(),

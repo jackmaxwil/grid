@@ -202,6 +202,17 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
                 .map(|d| encode(&d))
                 .map_err(|e| chart_error(&e))
         }
+        "grid.drift" => {
+            let params = serde_json::from_value(params).map_err(bad_params)?;
+            rpc::drift(&params, root)
+                .map(|d| encode(&d))
+                .map_err(|e| match &e {
+                    crate::drift::Error::Chart(chart) => chart_error(chart),
+                    // A refused walk is the engine declining to serve a short
+                    // answer, which is an internal condition, not bad input.
+                    crate::drift::Error::BudgetRejected(_) => (-32603, e.to_string()),
+                })
+        }
         "grid.resolve" => {
             let params = serde_json::from_value(params).map_err(bad_params)?;
             rpc::resolve(&params, root)

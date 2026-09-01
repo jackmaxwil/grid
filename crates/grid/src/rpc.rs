@@ -81,6 +81,10 @@ pub struct Ran {
     /// how the caller gets to say so instead of the re-survey looking
     /// unexplained.
     pub superseded: Option<u32>,
+    /// References the resolver declined to bind, so no edge exists for them.
+    /// Every consumer that reads the edge set as "everything that reaches
+    /// this" is wrong by at most this much, and can now say so.
+    pub declined_refs: u64,
 }
 
 /// The repo's segment store, plus the survey cache that lives beside it.
@@ -215,9 +219,54 @@ impl Chart {
             Ran {
                 reread: survey.reread,
                 superseded,
+                declined_refs: survey.declined_refs,
             },
         ))
     }
+}
+
+/// `grid.drift` — dependents of changed interfaces.
+///
+/// Both endpoints are surveyed on demand, exactly as `grid gate` surveys
+/// them, so CI needs no second command. Head is special in one way: a
+/// literal `HEAD` surveys the *working tree*, because drift's everyday
+/// question is "what did my uncommitted edits leave stale", and because the
+/// survey it runs is also where the declined-reference count comes from. Any
+/// other rev is surveyed at that rev; a snapshot id is taken as published,
+/// and its declined count is then unknown rather than zero.
+///
+/// # Errors
+/// [`crate::drift::Error::Chart`] when an endpoint does not resolve;
+/// [`crate::drift::Error::BudgetRejected`] when an inbound walk ran past its
+/// fuel — refused whole, never truncated.
+pub fn drift(
+    params: &grid_wire::methods::DriftParams,
+    root: &std::path::Path,
+) -> Result<grid_wire::methods::DriftResult, crate::drift::Error> {
+    let mut chart = Chart::new(root);
+    chart.ensure(&params.base)?;
+    let declined = match &params.head {
+        SnapshotOrRev::GitRev { git_rev } => {
+            let at = (git_rev.0 != "HEAD").then(|| git_rev.clone());
+            let (_, ran) = chart.survey_run(&SurveyRunParams {
+                git_rev: at,
+                worktree: None,
+            })?;
+            Some(ran.declined_refs)
+        }
+        // Nobody re-surveyed head in this run, so nobody can say what its
+        // survey declined. Unknown, not zero.
+        SnapshotOrRev::Snapshot { .. } => None,
+    };
+    crate::drift::compute(
+        root,
+        &crate::drift::Query {
+            floor: params.floor.unwrap_or(grid_wire::Zoc::Proven),
+            track: params.track.as_ref(),
+            declined_refs: declined,
+            ..crate::drift::Query::new(&params.base, &params.head)
+        },
+    )
 }
 
 /// The `k` charted callsigns nearest to `name`: ranked by edit distance on
