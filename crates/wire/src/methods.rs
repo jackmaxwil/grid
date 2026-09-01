@@ -239,6 +239,8 @@ pub struct DriftParams {
     pub floor: Option<Zoc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub track: Option<Track>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tests: Option<bool>,
 }
 
 pub type DriftResult = DriftReport;

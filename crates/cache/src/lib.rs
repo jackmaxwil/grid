@@ -16,6 +16,11 @@
 //! partial key is exactly how a stale verdict survives a change it depended
 //! on. A hit therefore implies an established closure. A miss implies nothing
 //! at all except "run it".
+//!
+//! The log is append-only and its line format grows only at the end: a line
+//! written by an older engine parses, with the fields it never carried
+//! reading as unknown. Unknown is not the same as absent, and nothing here
+//! treats it as such.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
@@ -270,8 +275,18 @@ pub struct Entry {
     pub verdict: Verdict,
     /// RFC 3339 UTC, second resolution — the wire's `recorded_at`.
     pub recorded_at: String,
-    /// The trace this verdict came from, when a wake produced it.
+    /// The trace this verdict came from, when a wake produced it. This is
+    /// also how a verdict is attributed to a test: a retained wake names the
+    /// test it came from, so the log needs no second copy of the name.
     pub wake_id: Option<String>,
+    /// The environment the verdict was produced in.
+    ///
+    /// Stored because a [`Key`] is a hash and cannot be inverted: without
+    /// the environment, nobody can recompute the key this verdict was filed
+    /// under and ask whether it still applies. `None` on a line written
+    /// before this field existed — such an entry cannot be re-keyed, which
+    /// is reported rather than assumed fresh.
+    pub env_hash: Option<String>,
 }
 
 /// The verdict store: keys to entries, backed by an append-only log.
@@ -319,6 +334,12 @@ impl Cache {
         self.entries.get(&key)
     }
 
+    /// Every stored key and entry. Iteration order is unspecified; a caller
+    /// that needs determinism sorts.
+    pub fn entries(&self) -> impl Iterator<Item = (&Key, &Entry)> {
+        self.entries.iter()
+    }
+
     /// How many distinct keys are stored.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -343,11 +364,12 @@ impl Cache {
             .open(&self.path)?;
         writeln!(
             file,
-            "{} {} {} {}",
+            "{} {} {} {} {}",
             key.to_hex(),
             entry.verdict.tag(),
             entry.recorded_at,
             entry.wake_id.as_deref().unwrap_or("-"),
+            entry.env_hash.as_deref().unwrap_or("-"),
         )?;
         file.sync_data()?;
         self.entries.insert(key, entry);
@@ -360,10 +382,14 @@ fn parse_line(line: &str) -> Option<(Key, Entry)> {
     let key = Key::parse(fields.next()?)?;
     let verdict = Verdict::parse(fields.next()?)?;
     let recorded_at = fields.next()?.to_string();
-    let wake_id = match fields.next()? {
-        "-" => None,
-        id => Some(id.to_string()),
+    let optional = |field: Option<&str>| match field {
+        None | Some("-") => None,
+        Some(value) => Some(value.to_string()),
     };
+    let wake_id = optional(Some(fields.next()?));
+    // Appended after the format shipped: a line written before it simply
+    // ends here, and the field reads as unknown rather than as absent.
+    let env_hash = optional(fields.next());
     // A trailing field means a line from a newer format, not a line to guess at.
     if fields.next().is_some() {
         return None;
@@ -374,6 +400,7 @@ fn parse_line(line: &str) -> Option<(Key, Entry)> {
             verdict,
             recorded_at,
             wake_id,
+            env_hash,
         },
     ))
 }

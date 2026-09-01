@@ -211,9 +211,9 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
                     // A refused walk and an unreadable wake store are both
                     // the engine declining to serve an answer it cannot
                     // stand behind — internal conditions, not bad input.
-                    crate::drift::Error::BudgetRejected(_) | crate::drift::Error::Wake(_) => {
-                        (-32603, e.to_string())
-                    }
+                    crate::drift::Error::BudgetRejected(_)
+                    | crate::drift::Error::Wake(_)
+                    | crate::drift::Error::Stale(_) => (-32603, e.to_string()),
                     // An unreadable declaration file is repo configuration,
                     // which is the caller's to fix.
                     crate::drift::Error::Covenants(_) => (-32602, e.to_string()),

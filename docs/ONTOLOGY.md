@@ -54,6 +54,7 @@ rows are `| \`token\` | one answer, at most three lines when printed |`.
 | `test` | record: a test comparison, `expected=actual`. |
 | `inv` | record: a standing invariant — `standing` when declared, `violated` when the gate found it broken. |
 | `hit` | record: a cache hit — datum handle, verdict, when it was recorded. |
+| `verdict-stale` | a recorded test verdict that no longer applies: the test's closure key, recomputed now, is not one the cache holds. Identity math, not a guess, so it gates. Reported as `miss <test> closure-changed`. |
 | `miss` | record: a cache miss — the datum must be run, not looked up. Not a failure; exits 0. |
 | `warn` | record: something reported rather than refused — callsign, then the message. |
 | `bind` | record: one declared covenant — pattern A, pattern B, and the boundary word (`grid bind --list`). |

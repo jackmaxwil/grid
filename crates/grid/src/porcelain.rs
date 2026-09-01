@@ -360,6 +360,17 @@ pub fn drift(report: &grid_wire::DriftReport) -> String {
         let refs: Vec<&str> = columns.iter().map(String::as_str).collect();
         record(&mut out, "drift", &refs);
     }
+    for stale in report.stale_tests.iter().flatten() {
+        // A stale verdict is a `miss` in the cache's own sense: the datum
+        // must be run, not looked up. The first column is the test name
+        // rather than a datum handle because a test is addressed by name
+        // everywhere else in the engine.
+        let reason = match stale.reason {
+            grid_wire::StaleTestReason::ClosureChanged => "closure-changed",
+            grid_wire::StaleTestReason::ClosureRejected => "closure-rejected",
+        };
+        record(&mut out, "miss", &[&stale.test, reason]);
+    }
     for warning in report.warnings.iter().flatten() {
         record(&mut out, "warn", &[&warning.subject, &warning.message]);
     }
@@ -398,6 +409,13 @@ fn drift_unchecked(unchecked: &grid_wire::DriftUnchecked) -> String {
                 "unresolved references uncounted (head was not surveyed)",
             ],
         ),
+    }
+    if unchecked.unattributed_entries.is_some_and(|n| n > 0) {
+        let count = unchecked
+            .unattributed_entries
+            .unwrap_or_default()
+            .to_string();
+        record(&mut out, "miss", &[&count, "unattributed entries"]);
     }
     if unchecked.budget_rejected > 0 {
         record(

@@ -262,7 +262,7 @@ pub fn drift(
     // never an absence of declarations: a covenant nobody can read is not a
     // covenant nobody made.
     let covenants = crate::covenant::load(root).map_err(crate::drift::Error::Covenants)?;
-    crate::drift::compute(
+    let mut report = crate::drift::compute(
         root,
         &crate::drift::Query {
             floor: params
@@ -273,7 +273,39 @@ pub fn drift(
             declined_refs: declined,
             ..crate::drift::Query::new(&params.base, &params.head)
         },
-    )
+    )?;
+    if params.tests == Some(true) {
+        // Head, because the question is whether a recorded verdict still
+        // applies *now* — the closure key is identity math over the current
+        // chart, not over the one the verdict was taken against.
+        let epoch = ChartDelta::open(root)
+            .map_err(crate::drift::Error::Chart)?
+            .epoch_of(&params.head)
+            .map_err(crate::drift::Error::Chart)?;
+        let chart = ChartDelta::open(root).map_err(crate::drift::Error::Chart)?;
+        let found = crate::stale::tests(root, epoch.segments(), |test| {
+            // The `grid.resolve` rule, so the name a user can resolve is the
+            // name a verdict can be attributed by. Ambiguity resolves to
+            // nothing: two definitions is not one closure.
+            let hits = chart.resolve(&grid_wire::Locator::Callsign {
+                callsign: grid_wire::Callsign(test.to_owned()),
+            });
+            match hits.as_slice() {
+                [one] => grid_chart::DatumId::parse(&one.datum.0),
+                _ => None,
+            }
+        })
+        .map_err(crate::drift::Error::Stale)?;
+        report.unchecked.unattributed_entries = Some(found.unattributed);
+        report.stale_tests = Some(found.stale);
+        if !found.warnings.is_empty() {
+            report
+                .warnings
+                .get_or_insert_with(Vec::new)
+                .extend(found.warnings);
+        }
+    }
+    Ok(report)
 }
 
 /// How many charted callsigns a pattern matches.
@@ -730,7 +762,7 @@ pub fn query_walk(
 
 /// Where the cache log and the chart store live under a repo root. Both are
 /// engine state, so both sit under `.grid/`.
-fn cache_path(root: &std::path::Path) -> std::path::PathBuf {
+pub(crate) fn cache_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join(".grid/cache/verdicts")
 }
 
@@ -856,6 +888,10 @@ pub fn cache_record(
                             },
                             recorded_at: recorded_at.clone(),
                             wake_id: params.wake_id.clone(),
+                            // Stored so the key can be recomputed later:
+                            // `grid drift --tests` asks whether this verdict
+                            // still applies, and a key is a hash.
+                            env_hash: Some(params.env_hash.clone()),
                         },
                     )
                     .map_err(|e| e.to_string())?;

@@ -87,6 +87,10 @@ pub enum Error {
     /// One or more inbound walks ran past [`FUEL`]. The answer is refused
     /// whole rather than served short.
     BudgetRejected(u32),
+    /// The test-staleness enumeration could not read the wake store or the
+    /// verdict log. Not an empty answer: a log that fails to open has
+    /// unknown contents.
+    Stale(String),
     /// The covenant declaration file exists but does not parse. A broken
     /// declaration must never read as an absence of declarations.
     Covenants(String),
@@ -101,7 +105,7 @@ impl std::fmt::Display for Error {
         match self {
             Self::Chart(e) => write!(f, "{e}"),
             Self::Wake(e) => write!(f, "{e}"),
-            Self::Covenants(msg) => f.write_str(msg),
+            Self::Covenants(msg) | Self::Stale(msg) => f.write_str(msg),
             Self::BudgetRejected(n) => write!(
                 f,
                 "{n} inbound walk(s) exceeded fuel ({FUEL}) — refused whole, \
@@ -276,22 +280,8 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
         head_epoch.segments(),
     );
 
-    let base_sigs = sigs_by_callsign(base_epoch.segments());
-    let head_sigs = sigs_by_callsign(head_epoch.segments());
     let touched = touched(&made_good);
-
-    let changed: Vec<Changed> = changed_set(&made_good)
-        .into_iter()
-        .filter_map(|d| {
-            let datum = DatumId::parse(&d.before.as_ref()?.0)?;
-            Some(Changed {
-                callsign: d.callsign.0.clone(),
-                datum,
-                sig_before: sig_datum(base_sigs.get(&d.callsign.0)),
-                sig_after: sig_datum(head_sigs.get(&d.callsign.0)),
-            })
-        })
-        .collect();
+    let changed = changed_set_of(&made_good, base_epoch.segments(), head_epoch.segments());
 
     // Observed coupling, graded against base. Loaded once: the store is a
     // directory read, and doing it per changed definition would make the
@@ -377,8 +367,12 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
         unchecked: DriftUnchecked {
             unresolved_refs: declined_refs,
             budget_rejected: u64::from(budget_rejected),
+            unattributed_entries: None,
         },
         warnings: (!warnings.is_empty()).then_some(warnings),
+        // Filled in by the caller when the report was asked for tests: the
+        // enumeration is a different question over a different store.
+        stale_tests: None,
     })
 }
 
@@ -516,6 +510,30 @@ fn inbound_of<B: AsRef<[u8]>>(
         });
     }
     Some(found)
+}
+
+/// The changed set, with each definition's base-side datum and the interface
+/// transition to report. Split out of [`compute`] so the one place that
+/// decides *what counts as changed* is readable on its own.
+fn changed_set_of<B: AsRef<[u8]>>(
+    made_good: &MadeGood,
+    base: &[Segment<B>],
+    head: &[Segment<B>],
+) -> Vec<Changed> {
+    let base_sigs = sigs_by_callsign(base);
+    let head_sigs = sigs_by_callsign(head);
+    changed_set(made_good)
+        .into_iter()
+        .filter_map(|d| {
+            let datum = DatumId::parse(&d.before.as_ref()?.0)?;
+            Some(Changed {
+                callsign: d.callsign.0.clone(),
+                datum,
+                sig_before: sig_datum(base_sigs.get(&d.callsign.0)),
+                sig_after: sig_datum(head_sigs.get(&d.callsign.0)),
+            })
+        })
+        .collect()
 }
 
 /// One inbound dependency found for a changed definition, whatever proved it.

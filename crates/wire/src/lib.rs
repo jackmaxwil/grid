@@ -776,6 +776,21 @@ pub struct Covenant {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct StaleTest {
+    pub test: String,
+    pub reason: StaleTestReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StaleTestReason {
+    #[serde(rename = "closure-changed")]
+    ClosureChanged,
+    #[serde(rename = "closure-rejected")]
+    ClosureRejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriftWarning {
     pub subject: String,
     pub message: String,
@@ -802,6 +817,8 @@ pub struct DriftUnchecked {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unresolved_refs: Option<u64>,
     pub budget_rejected: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unattributed_entries: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -813,6 +830,8 @@ pub struct DriftReport {
     pub unchecked: DriftUnchecked,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<DriftWarning>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_tests: Option<Vec<StaleTest>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
