@@ -6,9 +6,9 @@
 //! may be short". The first is usable — a bounded blast radius, a scope pack
 //! that admits its horizon — and the second is not.
 use grid_chart::{build, DatumId, Def, Edge, Segment};
-use grid_leadline::fuel::Budget;
-use grid_leadline::graph::{Direction, Ordinal};
-use grid_leadline::walk::{walk, Filter, Status, Walk};
+use grid_walk::fuel::Budget;
+use grid_walk::graph::{Direction, Ordinal};
+use grid_walk::walk::{walk, Filter, Status, Walk};
 use grid_wire::{Grade, Lang, Relation};
 use proptest::prelude::*;
 

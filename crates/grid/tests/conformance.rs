@@ -961,7 +961,7 @@ fn ingest_resolved_nothing_is_counts_not_silence() {
     assert_eq!(result["unresolved_symbols"], json!(["no.such", "nor.this"]));
 }
 
-/// Wave 9: the leadline walk, served. The fixture's proven edge is
+/// Wave 9: the budgeted walk, served. The fixture's proven edge is
 /// `pkg.main.sweep -> pkg.util.helper`, so an inbound walk from the callee
 /// must reach the caller and answer with a wire `WalkResult`.
 #[test]

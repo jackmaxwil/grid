@@ -277,12 +277,16 @@ pub enum StoreError {
     /// A retained trace does not parse or disagrees with the id it was filed
     /// under. The log is suspect, the way a corrupt segment is.
     Corrupt(String),
+    /// Two candidate store directories exist and nothing says which one is
+    /// current. Retained traces are user data; guessing could drop a run.
+    Ambiguous(String),
 }
 impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(e) => write!(f, "trace store: {e}"),
             Self::Corrupt(why) => write!(f, "trace store: corrupt record: {why}"),
+            Self::Ambiguous(why) => write!(f, "trace store: {why}"),
         }
     }
 }

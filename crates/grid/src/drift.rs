@@ -24,7 +24,7 @@
 //!
 //! Observed coupling joins the walk once the floor admits it. A trace's edges
 //! are not in the chart — the chart holds what the language proves — so they
-//! are read from the trace store and graded by [`grid_wake::grade`] against
+//! are read from the trace store and graded by [`grid_trace::grade`] against
 //! the *base* chart, the one the dependents were depending on. An edge whose
 //! endpoints are both still interned there is `observed`; one whose trace
 //! describes code that base no longer holds is `heuristic` with reason
@@ -96,7 +96,7 @@ pub enum Error {
     /// The retained traces could not be read. Not an empty observation set:
     /// a store that fails to open has unknown contents, and answering
     /// "nothing was observed" for it would be a fabricated all-clear.
-    Trace(grid_wake::StoreError),
+    Trace(grid_trace::StoreError),
 }
 
 impl std::fmt::Display for Error {
@@ -201,7 +201,7 @@ fn promised(plan: Option<&Plan>, callsign: &str) -> bool {
             matches!(
                 p.action,
                 PlanDefPromiseAction::Modify | PlanDefPromiseAction::Remove
-            ) && grid_xte::pattern::matches(&p.callsign.0, callsign)
+            ) && grid_gate::pattern::matches(&p.callsign.0, callsign)
         })
     })
 }
@@ -425,7 +425,7 @@ pub(crate) fn inbound_of<B: AsRef<[u8]>>(
     segments: &[Segment<B>],
     change: &Changed,
     floor: Grade,
-    observed: &HashMap<DatumId, Vec<grid_wake::Graded>>,
+    observed: &HashMap<DatumId, Vec<grid_trace::Graded>>,
     mut fuel: u32,
 ) -> Option<Vec<Inbound>> {
     let mut found = Vec::new();
@@ -584,12 +584,14 @@ impl Inbound {
 pub(crate) fn observed_inbound<B: AsRef<[u8]>>(
     root: &std::path::Path,
     segments: &[Segment<B>],
-) -> Result<HashMap<DatumId, Vec<grid_wake::Graded>>, Error> {
-    let store = grid_wake::Store::open(crate::rpc::trace_dir(root)).map_err(Error::Trace)?;
-    let mut out: HashMap<DatumId, Vec<grid_wake::Graded>> = HashMap::new();
+) -> Result<HashMap<DatumId, Vec<grid_trace::Graded>>, Error> {
+    let store = crate::rpc::trace_dir(root)
+        .and_then(grid_trace::Store::open)
+        .map_err(Error::Trace)?;
+    let mut out: HashMap<DatumId, Vec<grid_trace::Graded>> = HashMap::new();
     for stored in store.retained().map_err(Error::Trace)? {
         for edge in stored.edges() {
-            let graded = grid_wake::grade(segments, edge);
+            let graded = grid_trace::grade(segments, edge);
             out.entry(graded.edge.callee).or_default().push(graded);
         }
     }

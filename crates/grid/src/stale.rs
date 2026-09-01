@@ -51,7 +51,8 @@ pub fn tests<B: AsRef<[u8]>>(
     head: &[grid_chart::Segment<B>],
     resolve: impl Fn(&str) -> Option<grid_chart::DatumId>,
 ) -> Result<Report, String> {
-    let traces = grid_wake::Store::open(crate::rpc::trace_dir(root))
+    let traces = crate::rpc::trace_dir(root)
+        .and_then(grid_trace::Store::open)
         .and_then(|store| store.retained())
         .map_err(|e| e.to_string())?;
     // trace id -> the test that produced it. A trace with no command names no
@@ -155,10 +156,12 @@ mod tests {
             started_at: None,
             observations: Vec::new(),
         };
-        let store = grid_wake::Store::open(crate::rpc::trace_dir(dir.path())).expect("trace store");
+        let store = crate::rpc::trace_dir(dir.path())
+            .and_then(grid_trace::Store::open)
+            .expect("trace store");
         let empty: [Segment<Vec<u8>>; 0] = [];
         store
-            .put(&trace, &grid_wake::ingest(&empty, &trace))
+            .put(&trace, &grid_trace::ingest(&empty, &trace))
             .expect("retain");
 
         let mut cache = grid_cache::Cache::open(crate::rpc::cache_path(dir.path())).expect("cache");

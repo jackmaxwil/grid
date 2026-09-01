@@ -651,7 +651,7 @@ fn a_decayed_trace_falls_to_heuristic_with_a_named_reason_and_recovers() {
 }
 
 /// Declare a covenant through the verb, asserting it took.
-fn bind(dir: &Path, a: &str, b: &str, via: &str) -> Output {
+fn covenant(dir: &Path, a: &str, b: &str, via: &str) -> Output {
     grid(dir, &["covenant", a, b, "--via", via])
 }
 
@@ -680,7 +680,7 @@ fn a_covenant_implicates_the_side_that_held() {
         )],
     );
     assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
-    let bound = bind(
+    let bound = covenant(
         dir.path(),
         "pkg.writer.encode",
         "pkg.reader.decode",
@@ -742,7 +742,7 @@ fn a_covenant_both_sides_honoured_is_silent() {
     );
     assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
     assert_eq!(
-        code(&bind(
+        code(&covenant(
             dir.path(),
             "pkg.writer.encode",
             "pkg.reader.decode",
@@ -787,7 +787,7 @@ fn a_covenant_is_symmetric() {
         }
         commit(dir.path(), "after");
         assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
-        assert_eq!(code(&bind(dir.path(), a, b, "schema")), 0);
+        assert_eq!(code(&covenant(dir.path(), a, b, "schema")), 0);
         let out = grid(dir.path(), &["drift", "HEAD~1", "HEAD"]);
         (code(&out), suspects(&out))
     };
@@ -797,14 +797,14 @@ fn a_covenant_is_symmetric() {
     assert_eq!(forward.0, 3, "and the fixture must actually fire");
 }
 
-/// Conservatism: `bind` refuses a pattern that matches nothing. A
+/// Conservatism: `covenant` refuses a pattern that matches nothing. A
 /// declaration about code that does not exist is a rule that will never
 /// fire, and writing it down silently is worse than not writing it.
 #[test]
 fn bind_refuses_a_pattern_that_matches_nothing() {
     let dir = repo(&[("pkg/a.py", "def a():\n    pass\n")], &[]);
     assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
-    let out = bind(dir.path(), "pkg.a.a", "pkg.nothing.here", "schema");
+    let out = covenant(dir.path(), "pkg.a.a", "pkg.nothing.here", "schema");
     assert_eq!(code(&out), 2, "an unresolvable pattern is bad input");
     let hints = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -839,7 +839,7 @@ fn a_covenant_that_matches_nothing_at_drift_time_warns() {
     );
     assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
     assert_eq!(
-        code(&bind(
+        code(&covenant(
             dir.path(),
             "pkg.writer.encode",
             "pkg.reader.decode",
@@ -877,7 +877,7 @@ fn covenant_list_prints_the_declarations() {
     );
     assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
     assert_eq!(
-        code(&bind(
+        code(&covenant(
             dir.path(),
             "pkg.writer.encode",
             "pkg.reader.decode",

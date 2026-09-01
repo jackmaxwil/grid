@@ -64,7 +64,7 @@ struct Side {
 
 fn side<'a>(pattern: &str, callsigns: impl Iterator<Item = &'a str>, touched: &[&str]) -> Side {
     let matched: Vec<String> = callsigns
-        .filter(|c| grid_xte::pattern::matches(pattern, c))
+        .filter(|c| grid_gate::pattern::matches(pattern, c))
         .map(str::to_owned)
         .collect();
     let changed = matched.iter().any(|c| touched.contains(&c.as_str()));
@@ -107,7 +107,7 @@ pub fn fire(
         let a = side(&covenant.a.0, base.iter().copied(), touched);
         let b = side(&covenant.b.0, base.iter().copied(), touched);
         for pattern in [&covenant.a.0, &covenant.b.0] {
-            if !head.iter().any(|c| grid_xte::pattern::matches(pattern, c)) {
+            if !head.iter().any(|c| grid_gate::pattern::matches(pattern, c)) {
                 warnings.push(DriftWarning {
                     subject: pattern.clone(),
                     message: format!(

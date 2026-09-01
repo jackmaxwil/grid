@@ -5,12 +5,12 @@
 //! `grep '^edge  miss'` is the explanation and `awk` is the parser. Nothing
 //! here writes to stderr: hints are the caller's business.
 
+use grid_gate::lint::{relation_name, render_edge};
 use grid_wire::methods::{CacheRecordResult, TraceIngestResult};
 use grid_wire::{
     CacheCheckResult, CacheHitVerdict, DefChangeAction, EdgeChange, GateVerdict, GateVerdictGate,
     LintResult, PlanEdgePromise, TestComparisonActual, TestComparisonExpected,
 };
-use grid_xte::lint::{relation_name, render_edge};
 
 /// The porcelain grammar version this renderer implements.
 pub const VERSION: &str = "2.0.0";
@@ -117,7 +117,7 @@ const fn actual_name(a: TestComparisonActual) -> &'static str {
 #[must_use]
 pub fn verdict(v: &GateVerdict, name: &NameOf) -> String {
     let mut out = String::new();
-    let head = grid_xte::snapshot_display(&v.head);
+    let head = grid_gate::snapshot_display(&v.head);
     let tag = match v.gate {
         GateVerdictGate::Pass => "pass",
         GateVerdictGate::Hold => "hold",
@@ -175,7 +175,7 @@ pub fn plan(t: &grid_wire::Plan) -> String {
     let mut out = String::new();
     let base = match &t.base {
         grid_wire::SnapshotOrRev::GitRev { git_rev } => git_rev.0.clone(),
-        grid_wire::SnapshotOrRev::Snapshot { snapshot } => grid_xte::snapshot_display(snapshot),
+        grid_wire::SnapshotOrRev::Snapshot { snapshot } => grid_gate::snapshot_display(snapshot),
     };
     record(&mut out, "todo", &[&t.plan_id, &base]);
     for d in &t.delta.defs {

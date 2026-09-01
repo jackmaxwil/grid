@@ -7,7 +7,7 @@
 //! into false positives within weeks — which is why the grade is recomputed
 //! per question and the retained log is never rewritten.
 use grid_chart::{build, DatumId, Def, DefFacts, Segment};
-use grid_wake::{grade, ObservedEdge, Store, STALE_TRACE};
+use grid_trace::{grade, ObservedEdge, Store, STALE_TRACE};
 use grid_wire::{Grade, Trace, TraceEndpoint, TraceObservation};
 
 fn def(callsign: &str, fill: u8) -> Def {
@@ -119,7 +119,7 @@ fn retained_wakes_come_back_in_a_deterministic_order() {
 
     for id in ["trace:b", "trace:a"] {
         let w = trace(id, &[("m.caller", "m.callee")]);
-        let ingested = grid_wake::ingest(&segments, &w);
+        let ingested = grid_trace::ingest(&segments, &w);
         assert_eq!(ingested.resolved, 1, "the fixture's hop must resolve");
         store.put(&w, &ingested).expect("retain");
     }

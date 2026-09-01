@@ -14,7 +14,7 @@ fn datum(n: u8) -> DatumId {
 fn no_chart() -> Vec<grid_chart::Segment<Vec<u8>>> {
     Vec::new()
 }
-fn stored(id: &str, hops: &[(u8, u8)]) -> grid_wake::Stored {
+fn stored(id: &str, hops: &[(u8, u8)]) -> grid_trace::Stored {
     let observations = hops
         .iter()
         .map(|(caller, callee)| TraceObservation {
@@ -34,8 +34,8 @@ fn stored(id: &str, hops: &[(u8, u8)]) -> grid_wake::Stored {
         started_at: None,
         observations,
     };
-    let ingested = grid_wake::ingest(&no_chart(), &trace);
-    grid_wake::Stored {
+    let ingested = grid_trace::ingest(&no_chart(), &trace);
+    grid_trace::Stored {
         trace,
         hops: ingested.hops().to_vec(),
     }
@@ -44,7 +44,7 @@ fn stored(id: &str, hops: &[(u8, u8)]) -> grid_wake::Stored {
 fn identical_traces_have_no_divergence_and_no_edge_changes() {
     let green = stored("trace:g", &[(1, 2), (2, 3)]);
     let red = stored("trace:r", &[(1, 2), (2, 3)]);
-    let diff = grid_wake::diff(&green, &red);
+    let diff = grid_trace::diff(&green, &red);
     assert_eq!(diff.first_divergence, None);
     assert!(diff.added.is_empty());
     assert!(diff.removed.is_empty());
@@ -54,7 +54,7 @@ fn the_first_divergence_is_where_the_traces_part() {
     // Same first hop, then green calls 3 where red calls 4.
     let green = stored("trace:g", &[(1, 2), (1, 3), (1, 2)]);
     let red = stored("trace:r", &[(1, 2), (1, 4), (1, 5)]);
-    let diff = grid_wake::diff(&green, &red);
+    let diff = grid_trace::diff(&green, &red);
     let fork = diff.first_divergence.expect("the traces part at hop 1");
     assert_eq!(fork.caller.0, datum(1).to_string());
     assert_eq!(
@@ -70,7 +70,7 @@ fn the_first_divergence_is_where_the_traces_part() {
 fn a_trace_that_runs_long_forks_at_the_exhausted_hop() {
     let green = stored("trace:g", &[(1, 2)]);
     let red = stored("trace:r", &[(1, 2), (2, 3)]);
-    let diff = grid_wake::diff(&green, &red);
+    let diff = grid_trace::diff(&green, &red);
     let fork = diff.first_divergence.expect("red kept going");
     assert_eq!(fork.caller.0, datum(2).to_string());
     assert_eq!(fork.green_callee, None, "green had no hop there");
@@ -82,7 +82,7 @@ fn a_trace_that_runs_long_forks_at_the_exhausted_hop() {
 fn edge_sets_are_observed_calls_sorted_by_endpoints() {
     let green = stored("trace:g", &[(3, 1), (1, 2)]);
     let red = stored("trace:r", &[(1, 2), (2, 3)]);
-    let diff = grid_wake::diff(&green, &red);
+    let diff = grid_trace::diff(&green, &red);
     assert_eq!(diff.added.len(), 1);
     let added = &diff.added[0];
     assert_eq!(added.src.0, datum(2).to_string());
@@ -97,6 +97,6 @@ fn repeated_hops_do_not_multiply_edge_sets() {
     // A loop red runs twice is still one edge green lacks.
     let green = stored("trace:g", &[(1, 2)]);
     let red = stored("trace:r", &[(1, 2), (2, 1), (2, 1)]);
-    let diff = grid_wake::diff(&green, &red);
+    let diff = grid_trace::diff(&green, &red);
     assert_eq!(diff.added.len(), 1, "got {:?}", diff.added);
 }

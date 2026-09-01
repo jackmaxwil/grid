@@ -1271,3 +1271,50 @@ fn a_fresh_checkout_seeds_churn_from_git_history() {
         "the churn source is named:\n{err}"
     );
 }
+
+/// Wire epoch 1 renamed the retained-trace directory. The rename happens once,
+/// on the first grid invocation, and it is a `rename(2)`: what was retained is
+/// what is there afterwards, byte for byte. Retained traces are user data.
+#[test]
+fn the_former_trace_directory_is_renamed_once_and_nothing_is_rewritten() {
+    let dir = repo();
+    let former = dir.path().join(".grid/wakes");
+    std::fs::create_dir_all(&former).expect("mkdir");
+    let body =
+        br#"{"trace":{"trace_id":"trace:kept","git_rev":"4f2c9e1","observations":[]},"hops":[]}"#;
+    std::fs::write(former.join("kept.json"), body).expect("write");
+
+    assert_eq!(code(&grid(dir.path(), &["version"])), 0);
+
+    let current = dir.path().join(".grid/traces");
+    assert!(current.is_dir(), "the store moved to its epoch-1 name");
+    assert!(!former.exists(), "the epoch-0 name is gone, not copied");
+    assert_eq!(
+        std::fs::read(current.join("kept.json")).expect("read"),
+        body,
+        "a retained trace is byte-identical across the rename"
+    );
+
+    // Idempotent: a second run has nothing to move and says nothing about it.
+    assert_eq!(code(&grid(dir.path(), &["version"])), 0);
+    assert!(current.join("kept.json").is_file());
+}
+
+/// Both names present is an ambiguous store, and grid never guesses about
+/// user data: bad input, naming both directories so the operator can decide.
+#[test]
+fn two_trace_directories_are_refused_by_name_not_merged() {
+    let dir = repo();
+    std::fs::create_dir_all(dir.path().join(".grid/wakes")).expect("mkdir");
+    std::fs::create_dir_all(dir.path().join(".grid/traces")).expect("mkdir");
+
+    let out = grid(dir.path(), &["version"]);
+    assert_eq!(code(&out), 2, "an ambiguous store is bad input");
+    let hint = String::from_utf8(out.stderr).expect("utf-8");
+    assert!(hint.contains(".grid/wakes"), "hint was: {hint}");
+    assert!(hint.contains(".grid/traces"), "hint was: {hint}");
+    assert!(
+        dir.path().join(".grid/wakes").is_dir() && dir.path().join(".grid/traces").is_dir(),
+        "a refusal changes nothing on disk"
+    );
+}

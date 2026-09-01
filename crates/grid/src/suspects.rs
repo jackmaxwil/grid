@@ -3,9 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use grid_gate::DeltaProvider as _;
 use grid_wire::methods::SuspectsParams;
 use grid_wire::{Datum, GitRev, SnapshotOrRev, Suspects, SuspectsRankedItem};
-use grid_xte::DeltaProvider as _;
 
 use crate::chart_provider::{self, ChartDelta};
 
@@ -169,7 +169,8 @@ fn spectrum(record: &Retained) -> BTreeSet<String> {
 }
 
 fn retained(root: &Path) -> Result<Vec<Retained>, Error> {
-    let dir = root.join(".grid/wakes");
+    let dir = crate::rpc::trace_dir(root)
+        .map_err(|e| Error::Chart(chart_provider::Error::Config(e.to_string())))?;
     let entries = std::fs::read_dir(&dir).map_err(|error| {
         Error::InsufficientHistory(format!("cannot read {}: {error}", dir.display()))
     })?;

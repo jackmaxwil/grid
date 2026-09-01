@@ -11,25 +11,21 @@
 //! one — an item here means "this is why the gate said match", and an item
 //! with nothing behind it would be a claim with no evidence.
 //!
-//! Traversal is [`grid_leadline::query`], the same engine `grid.query.walk`
+//! Traversal is [`grid_walk::query`], the same engine `grid.query.walk`
 //! serves, so a path a reviewer sees is a path the query verb would produce.
 //! Nothing here re-implements a walk, and nothing here upgrades evidence: a
 //! hop renders with the [`grid_wire::Grade`] the chart stored for it.
 use std::path::Path;
 
+use grid_gate::DeltaProvider as _;
 use grid_wire::methods::CheckParams;
 use grid_wire::{
     Callsign, CheckResult, CheckWhy, CheckWhyFulfillingItem, Datum, DefChangeAction, Fuel, Grade,
     Locator, PlanEdgePromise, SnapshotOrRev, WalkQuery, WalkQueryDirection,
 };
-use grid_xte::DeltaProvider as _;
 
 use crate::chart_provider::{self, ChartDelta};
 use crate::{rpc, standing};
-
-/// Where traces live, relative to the repo root. The same directory
-/// `grid.trace.ingest` writes: a review reads the log, never a second one.
-const WAKE_STORE: &str = ".grid/wakes";
 
 /// Budget for one promise's path search.
 ///
@@ -62,7 +58,7 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Chart(e) => write!(f, "{e}"),
-            Self::UnknownTrace(id) => write!(f, "no trace `{id}` in {WAKE_STORE}"),
+            Self::UnknownTrace(id) => write!(f, "no retained trace `{id}`"),
         }
     }
 }
@@ -157,7 +153,7 @@ fn callsigns(provider: &ChartDelta) -> Vec<String> {
 fn endpoints(names: &[String], pattern: &str) -> Vec<Locator> {
     names
         .iter()
-        .filter(|name| grid_xte::pattern::matches(pattern, name))
+        .filter(|name| grid_gate::pattern::matches(pattern, name))
         .take(MAX_ENDPOINTS)
         .map(|name| Locator::Callsign {
             callsign: Callsign(name.clone()),
@@ -200,7 +196,7 @@ fn hops_for(
         // this promise; the walk engine would call the unresolved root an
         // error,
         // and across segments it is simply an absence.
-        let Ok(result) = grid_leadline::query(segment, &query, snapshot.clone()) else {
+        let Ok(result) = grid_walk::query(segment, &query, snapshot.clone()) else {
             continue;
         };
         paths.extend(result.paths.into_iter().flatten());
@@ -225,7 +221,8 @@ fn coverage(
     let Some(trace_id) = trace else {
         return Ok(Vec::new());
     };
-    let store = grid_wake::Store::open(root.join(WAKE_STORE))
+    let store = rpc::trace_dir(root)
+        .and_then(grid_trace::Store::open)
         .map_err(|e| Error::Chart(chart_provider::Error::Config(e.to_string())))?;
     let stored = store
         .get(&trace_id.0)
@@ -277,7 +274,7 @@ pub fn porcelain(answer: &CheckResult, name: &crate::porcelain::NameOf) -> Strin
                     &mut out,
                     "hop",
                     &[
-                        grid_xte::lint::relation_name(edge.relation),
+                        grid_gate::lint::relation_name(edge.relation),
                         &show(&edge.dst),
                         grade(edge.grade),
                     ],

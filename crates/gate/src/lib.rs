@@ -1,4 +1,4 @@
-//! grid-xte — spec gate: `Plan` (promised, name-space) vs `Diff`
+//! grid-gate — spec gate: `Plan` (promised, name-space) vs `Diff`
 //! (actual, datum-space) -> `GateVerdict`.
 //!
 //! Two spaces meet here. A plan is authored before the code exists, so it

@@ -11,7 +11,7 @@ use grid_wire::{
     SnapshotId, SnapshotOrRev, SnapshotStats, WalkResult, WalkResultStatus, WalkStats,
 };
 
-use grid_xte::DeltaProvider as _;
+use grid_gate::DeltaProvider as _;
 
 use crate::chart_provider::{self, ChartDelta};
 use crate::{standing, ENGINE_VERSION, WIRE_VERSION};
@@ -42,7 +42,7 @@ pub fn plan_lint(
     root: &std::path::Path,
 ) -> Result<PlanLintResult, String> {
     let plan = standing::fold(&params.plan, standing::load(root)?);
-    Ok(grid_xte::lint::lint(&plan))
+    Ok(grid_gate::lint::lint(&plan))
 }
 
 /// `grid.gate.check` — the plan against the delta at head.
@@ -66,7 +66,7 @@ pub fn gate_check(
     let mut chart = Chart::new(root);
     chart.ensure(&plan.base)?;
     chart.ensure(&params.head)?;
-    grid_xte::check(&plan, &params.head, &ChartDelta::open(root)?)
+    grid_gate::check(&plan, &params.head, &ChartDelta::open(root)?)
 }
 
 /// What one survey *run* did, as opposed to what the snapshot *is*. Neither
@@ -335,7 +335,7 @@ pub fn drift(
 
 /// How many charted callsigns a pattern matches.
 ///
-/// Zero is the answer `grid bind` refuses on: a declaration about code that
+/// Zero is the answer `grid covenant` refuses on: a declaration about code that
 /// does not exist is a rule that will never fire.
 ///
 /// # Errors
@@ -344,7 +344,7 @@ pub fn matching(root: &std::path::Path, pattern: &str) -> Result<usize, chart_pr
     let chart = ChartDelta::open(root)?;
     Ok(live_defs(&chart)
         .into_iter()
-        .filter(|(_, callsign, _, _)| grid_xte::pattern::matches(pattern, callsign))
+        .filter(|(_, callsign, _, _)| grid_gate::pattern::matches(pattern, callsign))
         .count())
 }
 
@@ -715,7 +715,7 @@ pub fn resolve(
 
 /// `grid.query.walk` — the walk engine over the live chart.
 ///
-/// The chart is a set of segments and [`grid_leadline::query`] walks one
+/// The chart is a set of segments and [`grid_walk::query`] walks one
 /// graph, so the walk runs per segment and the answers are merged. A segment
 /// that holds none of the roots answers `Unresolved`; that is an absence
 /// here, not an error, the same reading `grid.review.pack` takes.
@@ -763,7 +763,7 @@ pub fn query_walk(
     let mut certified: Option<u64> = None;
     let mut contributed = false;
     for segment in chart.head().segments() {
-        let Ok(part) = grid_leadline::query(segment, &params.query, snapshot.clone()) else {
+        let Ok(part) = grid_walk::query(segment, &params.query, snapshot.clone()) else {
             continue;
         };
         if part.status == WalkResultStatus::Aground {
@@ -904,7 +904,8 @@ pub fn cache_record(
     // log: that pairing — this test, this datum version, this verdict — is
     // what bisect searches. Best effort, like every history writer.
     let outcome_test = params.trace_id.as_deref().and_then(|id| {
-        grid_wake::Store::open(trace_dir(root))
+        trace_dir(root)
+            .and_then(grid_trace::Store::open)
             .ok()
             .and_then(|s| s.get(id).ok().flatten())
             .and_then(|stored| stored.trace.command)
@@ -1008,7 +1009,7 @@ pub fn scope(
             params
                 .callsigns
                 .iter()
-                .any(|p| grid_xte::pattern::matches(&p.0, callsign))
+                .any(|p| grid_gate::pattern::matches(&p.0, callsign))
         })
         .map(|(datum, _, _, _)| datum.clone())
         .collect();
@@ -1047,7 +1048,7 @@ pub fn scope(
             [&rule.src, &rule.dst].into_iter().any(|pattern| {
                 callsigns
                     .iter()
-                    .any(|c| grid_xte::pattern::matches(&pattern.0, c))
+                    .any(|c| grid_gate::pattern::matches(&pattern.0, c))
             })
         })
         .collect();
@@ -1216,8 +1217,8 @@ pub fn todo(
     }
     let provider = ChartDelta::open(root)?;
     let diff = provider.diff(&plan.base, &head)?;
-    let verdict = grid_xte::verdict(&plan, &diff, &provider);
-    let (defs_done, defs_pending) = grid_xte::def_progress(&plan, &diff);
+    let verdict = grid_gate::verdict(&plan, &diff, &provider);
+    let (defs_done, defs_pending) = grid_gate::def_progress(&plan, &diff);
     // A test is done when its comparison came back ok; anything else —
     // failed, skipped, never run — is still work.
     let mut tests_done = Vec::new();
@@ -1309,8 +1310,10 @@ pub fn trace_ingest(
     root: &std::path::Path,
 ) -> Result<TraceIngestResult, String> {
     let epoch = epoch(root)?;
-    let ingested = grid_wake::ingest(epoch.segments(), &params.trace);
-    let store = grid_wake::Store::open(trace_dir(root)).map_err(|e| e.to_string())?;
+    let ingested = grid_trace::ingest(epoch.segments(), &params.trace);
+    let store = trace_dir(root)
+        .and_then(grid_trace::Store::open)
+        .map_err(|e| e.to_string())?;
     store
         .put(&params.trace, &ingested)
         .map_err(|e| e.to_string())?;
@@ -1348,7 +1351,8 @@ pub fn trace_diff(
     params: &TraceDiffParams,
     root: &std::path::Path,
 ) -> Result<grid_wire::TraceDiff, TraceDiffError> {
-    let store = grid_wake::Store::open(trace_dir(root))
+    let store = trace_dir(root)
+        .and_then(grid_trace::Store::open)
         .map_err(|e| TraceDiffError::Store(e.to_string()))?;
     let load = |id: &grid_wire::TraceId| {
         store
@@ -1357,8 +1361,35 @@ pub fn trace_diff(
             .ok_or_else(|| TraceDiffError::UnknownTrace(id.0.clone()))
     };
     let (green, red) = (load(&params.green)?, load(&params.red)?);
-    Ok(grid_wake::diff(&green, &red))
+    Ok(grid_trace::diff(&green, &red))
 }
-pub(crate) fn trace_dir(root: &std::path::Path) -> std::path::PathBuf {
-    root.join(".grid/wakes")
+/// The retained-trace directory, migrating the epoch-0 name once.
+///
+/// Wire epoch 0 called it `.grid/wakes`; epoch 1 calls it `.grid/traces`
+/// (`docs/plans/2026-09-01-naming.md`). When only the old directory is there,
+/// it is renamed — one `rename(2)`, so retained traces move whole and are
+/// never rewritten. When both are there, grid refuses: retained traces are
+/// user data, and picking one would quietly discard the other's runs.
+///
+/// # Errors
+/// [`grid_trace::StoreError::Io`] if the rename fails;
+/// [`grid_trace::StoreError::Ambiguous`] if both directories exist.
+pub(crate) fn trace_dir(
+    root: &std::path::Path,
+) -> Result<std::path::PathBuf, grid_trace::StoreError> {
+    let current = root.join(".grid/traces");
+    let former = root.join(".grid/wakes");
+    match (former.is_dir(), current.is_dir()) {
+        (true, false) => std::fs::rename(&former, &current)?,
+        (true, true) => {
+            let (former, current) = (former.display(), current.display());
+            return Err(grid_trace::StoreError::Ambiguous(format!(
+                "both {former} and {current} exist; grid will not guess which holds the \
+                 retained traces — move what you want to keep into {current} and remove \
+                 {former}"
+            )));
+        }
+        _ => {}
+    }
+    Ok(current)
 }

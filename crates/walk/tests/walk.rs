@@ -7,9 +7,9 @@
 //! cyclic and densely connected ones where an unguarded BFS would not return.
 
 use grid_chart::{build, DatumId, Def, Edge, Segment};
-use grid_leadline::fuel::{Budget, DEFAULT_MAX_HOPS, DEFAULT_MAX_NODES};
-use grid_leadline::graph::{Direction, Ordinal};
-use grid_leadline::walk::{walk, Filter, Status};
+use grid_walk::fuel::{Budget, DEFAULT_MAX_HOPS, DEFAULT_MAX_NODES};
+use grid_walk::graph::{Direction, Ordinal};
+use grid_walk::walk::{walk, Filter, Status};
 use grid_wire::{Grade, Lang, Relation};
 use proptest::prelude::*;
 

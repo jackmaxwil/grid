@@ -8,7 +8,7 @@
 /// Does `callsign` match `pattern`?
 ///
 /// ```
-/// # use grid_xte::pattern::matches;
+/// # use grid_gate::pattern::matches;
 /// assert!(matches("cortana.reaper.**", "cortana.reaper.Reaper.sweep"));
 /// assert!(matches("cortana.*.sweep", "cortana.reaper.sweep"));
 /// assert!(!matches("cortana.*.sweep", "cortana.reaper.Reaper.sweep"));
@@ -42,7 +42,7 @@ fn seg_match(pat: &[&str], name: &[&str]) -> bool {
 /// impossible.
 ///
 /// ```
-/// # use grid_xte::pattern::subsumes;
+/// # use grid_gate::pattern::subsumes;
 /// assert!(subsumes("cortana.**", "cortana.boards.*"));
 /// assert!(!subsumes("cortana.boards.*", "cortana.**"));
 /// ```
