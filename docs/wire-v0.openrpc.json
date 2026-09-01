@@ -1184,6 +1184,16 @@
         "additionalProperties": false,
         "description": "A declared, symmetric coupling between two callsign patterns that no language's binding rules establish — a serde boundary, a JSON contract, a Python dict a Rust struct deserializes. A human knows the pair; this is where it is written down. Declared coupling is the one modeled evidence that gates, because a human declared it."
       },
+      "WeakTest": {
+        "type": "object",
+        "required": ["test", "def"],
+        "properties": {
+          "test": { "type": "string", "minLength": 1 },
+          "def": { "$ref": "#/components/schemas/DefRef", "description": "The definition whose behaviour moved while this test kept passing, as it was at base." }
+        },
+        "additionalProperties": false,
+        "description": "A test that covered a definition, kept passing while that definition's body changed, and was not itself touched — so it proved nothing about the change. Heuristic: a ranking, never a gate."
+      },
       "StaleTest": {
         "type": "object",
         "required": ["test", "reason"],
@@ -1223,7 +1233,8 @@
         "properties": {
           "unresolved_refs": { "type": "integer", "minimum": 0, "description": "References the head survey declined to bind, so no edge exists for them and no dependent could be found through them. Absent means head was a published snapshot nobody re-surveyed in this run, so the count is unknown — never reported as zero." },
           "budget_rejected": { "type": "integer", "minimum": 0, "description": "Definitions whose inbound walk ran past its budget. The walk is rejected whole, never truncated: a truncated walk is indistinguishable from a smaller one." },
-          "unattributed_entries": { "type": "integer", "minimum": 0, "description": "Recorded verdicts no retained wake claims, so no test owns them and no test-staleness check covered them. Present when the report was asked for tests." }
+          "unattributed_entries": { "type": "integer", "minimum": 0, "description": "Recorded verdicts no retained wake claims, so no test owns them and no test-staleness check covered them. Present when the report was asked for tests." },
+          "weak_skipped": { "type": "integer", "minimum": 0, "description": "Weak-test checks declined because their coverage came from a decayed trace. A heuristic built on a demoted heuristic is noise, so grid declines it and says how often." }
         },
         "additionalProperties": false,
         "description": "What drift could not check. A drift report claiming no suspects where it could not see callers is dishonest silence, so the counts ride with every answer."
@@ -1237,7 +1248,8 @@
           "suspects": { "type": "array", "items": { "$ref": "#/components/schemas/DriftSuspect" } },
           "unchecked": { "$ref": "#/components/schemas/DriftUnchecked" },
           "warnings": { "type": "array", "items": { "$ref": "#/components/schemas/DriftWarning" }, "description": "Reported rather than refused: a declared covenant whose pattern matches nothing at drift time, and anything else drift wants a human to see without holding on it." },
-          "stale_tests": { "type": "array", "items": { "$ref": "#/components/schemas/StaleTest" }, "description": "Present when the report was asked for tests: every known test whose recorded verdict no longer applies." }
+          "stale_tests": { "type": "array", "items": { "$ref": "#/components/schemas/StaleTest" }, "description": "Present when the report was asked for tests: every known test whose recorded verdict no longer applies." },
+          "weak": { "type": "array", "items": { "$ref": "#/components/schemas/WeakTest" }, "description": "Present when the report was asked for tests: tests that covered a changed definition, stayed green, and were never touched. Ranked, never gated." }
         },
         "additionalProperties": false
       },

@@ -69,6 +69,14 @@ identity math over the closure, so it exits `3` like any other divergence. A
 test the head chart cannot resolve is a `warn`, not a gate: the test being
 gone is not a divergence in the code.
 
+It also emits `warn <test>  weak-for <def>` for a test that covered a
+definition, kept passing while that definition's body changed, and was never
+itself touched — it proved nothing about the change. Heuristic, so a ranking
+and never a gate: the exit code does not move for it. Coverage carried by a
+decayed trace produces no such record at all and is counted as
+`miss <n>  weak-checks skipped (stale coverage)`, because a heuristic built
+on a demoted heuristic is noise.
+
 ## Glyphs
 
 `+` added · `-` removed · `~` modified · `>` moved

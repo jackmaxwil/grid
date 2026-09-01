@@ -38,6 +38,7 @@ mod stale;
 mod standing;
 mod suspects;
 mod track;
+mod weak;
 
 use std::io::Write as _;
 use std::process::ExitCode;
