@@ -25,6 +25,28 @@ fn an_epoch1_image_parses_and_its_new_columns_answer_none() -> Result<(), Box<dy
     assert_eq!(seg.location(ord), None);
     assert_eq!(seg.shape(ord), None);
     assert_eq!(seg.complexity(ord), None);
+    assert_eq!(seg.sig(ord), None);
+    Ok(())
+}
+
+#[test]
+fn a_freshly_built_image_carries_every_column() -> Result<(), Box<dyn Error>> {
+    let defs = [grid_chart::Def {
+        datum: grid_chart::DatumId([7; 32]),
+        callsign: "m.f".into(),
+        lang: Some(grid_wire::Lang::Rs),
+        facts: Some(grid_chart::DefFacts {
+            path: "src/lib.rs".into(),
+            line: 1,
+            line_end: 2,
+            span: (0, 9),
+            shape: [8; 32],
+            complexity: 3,
+            sig: [9; 32],
+        }),
+    }];
+    let seg = Segment::parse(grid_chart::build(&defs, &[])?)?;
+    assert_eq!(seg.sig(Ordinal(0)), Some([9; 32]));
     Ok(())
 }
 
@@ -40,5 +62,8 @@ fn an_epoch2_image_parses_and_answers_its_own_columns() -> Result<(), Box<dyn Er
     assert!(seg.location(ord).is_some());
     assert!(seg.shape(ord).is_some());
     assert!(seg.complexity(ord).is_some());
+    // The epoch-3 column declines, honestly: unknown, never a fabricated
+    // interface hash that would answer "unchanged" for a whole snapshot.
+    assert_eq!(seg.sig(ord), None);
     Ok(())
 }

@@ -373,6 +373,75 @@ fn diff_records_the_definition_that_changed() {
     );
 }
 
+/// A repo whose second commit edits one definition's *body* and another's
+/// *signature*, so a diff has both kinds of `def ~` row to tell apart.
+fn repo_with_a_body_and_a_signature_edit() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let git = |args: &[&str]| {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .env("GIT_AUTHOR_NAME", "grid")
+            .env("GIT_AUTHOR_EMAIL", "grid@example.invalid")
+            .env("GIT_COMMITTER_NAME", "grid")
+            .env("GIT_COMMITTER_EMAIL", "grid@example.invalid")
+            .output()
+            .expect("run git")
+            .status
+            .success();
+        assert!(ok, "git {args:?} failed");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(
+        dir.path().join("m.py"),
+        "def body(x):\n    return x + 1\n\n\ndef iface(x):\n    return x\n",
+    )
+    .expect("write");
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "one"]);
+    std::fs::write(
+        dir.path().join("m.py"),
+        "def body(x):\n    return x + 2\n\n\ndef iface(x, y=1):\n    return x\n",
+    )
+    .expect("write");
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "two"]);
+    dir
+}
+
+/// The `def` record's trailing `sig` column: present exactly when a caller
+/// could see the change. A body-only edit must not carry it — otherwise the
+/// column would mark every edit and mean nothing.
+#[test]
+fn diff_marks_only_the_definition_whose_interface_moved() {
+    let dir = repo_with_a_body_and_a_signature_edit();
+    let out = grid(dir.path(), &["diff", "HEAD~1", "HEAD"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = stdout(&out);
+    let row = |name: &str| {
+        text.lines()
+            .map(columns)
+            .find(|c| c[0] == "def" && c[1] == "~" && c[2] == name)
+            .unwrap_or_else(|| panic!("a `def ~ {name}` record:\n{text}"))
+    };
+    assert_eq!(
+        row("m.iface").len(),
+        5,
+        "a signature edit carries the sig column:\n{text}"
+    );
+    assert_eq!(row("m.iface")[4], "sig");
+    assert_eq!(
+        row("m.body").len(),
+        4,
+        "a body-only edit carries no sig column:\n{text}"
+    );
+}
+
 /// Publish a chart with a caller and its proven callee, so the cache verbs
 /// have real closures to key over.
 fn seed_chart(dir: &Path, callee_byte: u8) -> (String, String) {

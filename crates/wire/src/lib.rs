@@ -192,10 +192,10 @@ pub struct DefChange {
     pub before: Option<Datum>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<Datum>,
-    /// For [`DefChangeAction::Moved`]: the callsign the datum answered to
-    /// before. A rename rebinds the callsign; the datum does not change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moved_from: Option<Callsign>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig_changed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

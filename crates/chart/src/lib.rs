@@ -26,15 +26,17 @@ pub use manifest::{Manifest, SegmentEntry, SnapshotId};
 pub const MAGIC: &[u8; 8] = b"GRIDSEG\x00";
 /// Segment format epoch. A change here is a declared re-survey, never a silent
 /// reinterpretation of bytes on disk (see ASSURANCE.md, normalization
-/// stability). Epoch 1 images parse forever; their epoch-2 sections answer
-/// `None`.
-pub const FORMAT_EPOCH: u32 = 2;
+/// stability). Every epoch ever shipped parses forever; a section an older
+/// image does not declare answers `None`, never a fabricated value.
+pub const FORMAT_EPOCH: u32 = 3;
 /// Sections an epoch-1 image declares — the first ten of [`Section`].
 pub const V1_SECTION_COUNT: usize = 10;
+/// Sections an epoch-2 image declares — the first fifteen of [`Section`].
+pub const V2_SECTION_COUNT: usize = 15;
 /// Fixed-size header: magic, counts, and the checksum of everything after it.
 pub const HEADER_LEN: usize = 64;
-/// Number of sections a v2 image declares, in the order of [`Section`].
-pub const SECTION_COUNT: usize = 15;
+/// Number of sections a v3 image declares, in the order of [`Section`].
+pub const SECTION_COUNT: usize = 16;
 /// Bytes per section-table entry: `(offset: u64, len: u64)`.
 pub const SECTION_ENTRY_LEN: usize = 16;
 
@@ -75,6 +77,11 @@ pub enum Section {
     DefShapes = 13,
     /// Per def: `(complexity: u16, reserved: u16)` (epoch 2).
     DefMetrics = 14,
+    /// Per def: 32-byte interface identity — blake3 of the frontend's
+    /// canonical sig bytes, everything a caller can observe without the
+    /// body. All-zero = absent, which is what an epoch-1 or epoch-2 image
+    /// answers (epoch 3).
+    DefSigs = 15,
 }
 
 /// Why an image was rejected. Every variant is a refusal, never a panic: the
@@ -340,7 +347,8 @@ impl<B: AsRef<[u8]>> Segment<B> {
         let epoch = read_u32(header, 8).ok_or(ChartError::Truncated)?;
         let expected_sections = match epoch {
             1 => V1_SECTION_COUNT,
-            2 => SECTION_COUNT,
+            2 => V2_SECTION_COUNT,
+            3 => SECTION_COUNT,
             other => return Err(ChartError::BadEpoch(other)),
         };
         let sections = read_u32(header, 12).ok_or(ChartError::Truncated)?;
@@ -455,6 +463,12 @@ impl<B: AsRef<[u8]>> Segment<B> {
             self.check_csr(Section::PathOffsets, Section::PathBytes, paths_len)?;
             std::str::from_utf8(self.section(Section::PathBytes))
                 .map_err(|_| ChartError::BadUtf8)?;
+        }
+        if self.epoch >= 3 {
+            sized(
+                Section::DefSigs,
+                defs.checked_mul(32).ok_or(ChartError::TooLarge)?,
+            )?;
         }
 
         // Ordinals are a binary search over the digests, which is only a
@@ -625,6 +639,18 @@ impl<B: AsRef<[u8]>> Segment<B> {
         let raw = self.section(Section::DefShapes).get(at..at + 32)?;
         let shape: [u8; 32] = raw.try_into().ok()?;
         (shape != [0u8; 32]).then_some(shape)
+    }
+
+    /// The interface identity of the definition at `ord` — what a caller can
+    /// observe without the body. `None` on epoch-1 and epoch-2 images and
+    /// for the all-zero absent sentinel: an image that predates the column
+    /// answers *unknown*, never a fabricated hash.
+    #[must_use]
+    pub fn sig(&self, ord: Ordinal) -> Option<[u8; 32]> {
+        let at = (ord.0 as usize).checked_mul(32)?;
+        let raw = self.section(Section::DefSigs).get(at..at + 32)?;
+        let sig: [u8; 32] = raw.try_into().ok()?;
+        (sig != [0u8; 32]).then_some(sig)
     }
 
     /// Cyclomatic complexity of the definition at `ord`, if surveyed. A

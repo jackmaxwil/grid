@@ -9,7 +9,7 @@ use quote::ToTokens;
 use syn::spanned::Spanned;
 use syn::{ImplItem, Item, Stmt, TraitItem};
 
-use crate::canon;
+use crate::{canon, sig};
 
 /// Extract every definition in a Rust source file, outermost first, each
 /// nested definition following its parent.
@@ -42,25 +42,29 @@ fn anon() -> proc_macro2::Ident {
     proc_macro2::Ident::new("__shape", proc_macro2::Span::call_site())
 }
 
-fn push<T: ToTokens + Spanned>(
+/// The three identities of one definition and what each is built from. They
+/// always travel together: the node itself is the datum, the name-erased
+/// clone is the shape, and the interface tokens are the sig.
+struct Facts<'a> {
     kind: DefKind,
     callsign: String,
-    node: &T,
-    shaped: &dyn ToTokens,
+    shaped: &'a dyn ToTokens,
+    interface: proc_macro2::TokenStream,
     complexity: u16,
-    source: &str,
-    out: &mut Vec<Definition>,
-) {
+}
+
+fn push<T: ToTokens + Spanned>(node: &T, facts: Facts, source: &str, out: &mut Vec<Definition>) {
     let span = node.span().byte_range();
     let text = source.get(span.clone()).unwrap_or_default();
     out.push(Definition {
-        kind,
-        callsign,
+        kind: facts.kind,
+        callsign: facts.callsign,
         datum: Datum::of_canonical_bytes(&canon::canonical_bytes(node)),
         span_hash: span_hash(text),
+        sig: Datum::of_canonical_bytes(&canon::sig_bytes(&facts.interface)),
         span,
-        shape: Datum::of_canonical_bytes(&canon::canonical_bytes(&shaped)),
-        complexity,
+        shape: Datum::of_canonical_bytes(&canon::canonical_bytes(&facts.shaped)),
+        complexity: facts.complexity,
     });
 }
 
@@ -118,13 +122,15 @@ fn walk(items: &[Item], source: &str, prefix: &str, out: &mut Vec<Definition>) {
                 let callsign = join(prefix, &f.sig.ident.to_string());
                 let mut shaped = f.clone();
                 shaped.sig.ident = anon();
-                let cx = complexity_of(&f.block);
                 push(
-                    DefKind::Function,
-                    callsign.clone(),
                     f,
-                    &shaped,
-                    cx,
+                    Facts {
+                        kind: DefKind::Function,
+                        callsign: callsign.clone(),
+                        shaped: &shaped,
+                        interface: sig::of_fn(&f.vis, &f.sig),
+                        complexity: complexity_of(&f.block),
+                    },
                     source,
                     out,
                 );
@@ -133,61 +139,53 @@ fn walk(items: &[Item], source: &str, prefix: &str, out: &mut Vec<Definition>) {
             Item::Struct(s) => {
                 let mut shaped = s.clone();
                 shaped.ident = anon();
-                let callsign = join(prefix, &s.ident.to_string());
-                push(DefKind::Class, callsign, s, &shaped, 1, source, out);
+                push(
+                    s,
+                    Facts {
+                        kind: DefKind::Class,
+                        callsign: join(prefix, &s.ident.to_string()),
+                        shaped: &shaped,
+                        interface: sig::of_type(s, sig::keep_struct),
+                        complexity: 1,
+                    },
+                    source,
+                    out,
+                );
             }
             Item::Enum(e) => {
                 let mut shaped = e.clone();
                 shaped.ident = anon();
-                let callsign = join(prefix, &e.ident.to_string());
-                push(DefKind::Class, callsign, e, &shaped, 1, source, out);
+                push(
+                    e,
+                    Facts {
+                        kind: DefKind::Class,
+                        callsign: join(prefix, &e.ident.to_string()),
+                        shaped: &shaped,
+                        interface: sig::of_type(e, sig::keep_enum),
+                        complexity: 1,
+                    },
+                    source,
+                    out,
+                );
             }
             Item::Union(u) => {
                 let mut shaped = u.clone();
                 shaped.ident = anon();
-                let callsign = join(prefix, &u.ident.to_string());
-                push(DefKind::Class, callsign, u, &shaped, 1, source, out);
+                push(
+                    u,
+                    Facts {
+                        kind: DefKind::Class,
+                        callsign: join(prefix, &u.ident.to_string()),
+                        shaped: &shaped,
+                        interface: sig::of_type(u, sig::keep_union),
+                        complexity: 1,
+                    },
+                    source,
+                    out,
+                );
             }
-            Item::Trait(t) => {
-                let callsign = join(prefix, &t.ident.to_string());
-                let mut shaped = t.clone();
-                shaped.ident = anon();
-                push(DefKind::Class, callsign.clone(), t, &shaped, 1, source, out);
-                for ti in &t.items {
-                    // Only default-bodied methods carry code; a required
-                    // signature has no behavior to identify.
-                    if let TraitItem::Fn(m) = ti {
-                        if let Some(block) = &m.default {
-                            let mc = format!("{callsign}.{}", m.sig.ident);
-                            let mut shaped = m.clone();
-                            shaped.sig.ident = anon();
-                            let cx = complexity_of(block);
-                            push(DefKind::Function, mc.clone(), m, &shaped, cx, source, out);
-                            walk_stmts(&block.stmts, source, &mc, out);
-                        }
-                    }
-                }
-            }
-            Item::Impl(i) => {
-                let Some(ty) = type_callsign(&i.self_ty) else {
-                    continue;
-                };
-                let receiver = match &i.trait_ {
-                    Some((_, path, _)) => format!("{ty}@{}", path_dots(path)),
-                    None => ty,
-                };
-                let receiver = join(prefix, &receiver);
-                for ii in &i.items {
-                    if let ImplItem::Fn(m) = ii {
-                        let mc = format!("{receiver}.{}", m.sig.ident);
-                        let mut shaped = m.clone();
-                        shaped.sig.ident = anon();
-                        let cx = complexity_of(&m.block);
-                        push(DefKind::Function, mc.clone(), m, &shaped, cx, source, out);
-                        walk_stmts(&m.block.stmts, source, &mc, out);
-                    }
-                }
-            }
+            Item::Trait(t) => walk_trait(t, source, prefix, out),
+            Item::Impl(i) => walk_impl(i, source, prefix, out),
             Item::Mod(m) => {
                 if let Some((_, items)) = &m.content {
                     walk(items, source, &join(prefix, &m.ident.to_string()), out);
@@ -195,6 +193,81 @@ fn walk(items: &[Item], source: &str, prefix: &str, out: &mut Vec<Definition>) {
             }
             _ => {}
         }
+    }
+}
+
+/// A trait and its default-bodied methods. A required signature has no
+/// behavior to identify, so only defaults become definitions — but every
+/// method's signature is part of the *trait's* sig, which `sig::of_trait`
+/// owns.
+fn walk_trait(t: &syn::ItemTrait, source: &str, prefix: &str, out: &mut Vec<Definition>) {
+    let callsign = join(prefix, &t.ident.to_string());
+    let mut shaped = t.clone();
+    shaped.ident = anon();
+    push(
+        t,
+        Facts {
+            kind: DefKind::Class,
+            callsign: callsign.clone(),
+            shaped: &shaped,
+            interface: sig::of_trait(t),
+            complexity: 1,
+        },
+        source,
+        out,
+    );
+    for ti in &t.items {
+        let TraitItem::Fn(m) = ti else { continue };
+        let Some(block) = &m.default else { continue };
+        let mc = format!("{callsign}.{}", m.sig.ident);
+        let mut shaped = m.clone();
+        shaped.sig.ident = anon();
+        push(
+            m,
+            Facts {
+                kind: DefKind::Function,
+                callsign: mc.clone(),
+                shaped: &shaped,
+                // A trait method has no visibility of its own: it is as
+                // public as the trait.
+                interface: sig::of_fn(&syn::Visibility::Inherited, &m.sig),
+                complexity: complexity_of(block),
+            },
+            source,
+            out,
+        );
+        walk_stmts(&block.stmts, source, &mc, out);
+    }
+}
+
+/// An impl block's methods, under `Type` or `Type@Trait`.
+fn walk_impl(i: &syn::ItemImpl, source: &str, prefix: &str, out: &mut Vec<Definition>) {
+    let Some(ty) = type_callsign(&i.self_ty) else {
+        return;
+    };
+    let receiver = match &i.trait_ {
+        Some((_, path, _)) => format!("{ty}@{}", path_dots(path)),
+        None => ty,
+    };
+    let receiver = join(prefix, &receiver);
+    for ii in &i.items {
+        let ImplItem::Fn(m) = ii else { continue };
+        let mc = format!("{receiver}.{}", m.sig.ident);
+        let mut shaped = m.clone();
+        shaped.sig.ident = anon();
+        push(
+            m,
+            Facts {
+                kind: DefKind::Function,
+                callsign: mc.clone(),
+                shaped: &shaped,
+                interface: sig::of_fn(&m.vis, &m.sig),
+                complexity: complexity_of(&m.block),
+            },
+            source,
+            out,
+        );
+        walk_stmts(&m.block.stmts, source, &mc, out);
     }
 }
 

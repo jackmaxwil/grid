@@ -35,6 +35,9 @@ pub struct DefFacts {
     pub shape: [u8; 32],
     /// Cyclomatic complexity.
     pub complexity: u16,
+    /// Epoch-3 interface identity — the frontend's canonical sig hash.
+    /// All-zero writes the absent sentinel, which reads back as `None`.
+    pub sig: [u8; 32],
 }
 
 /// An edge to store. Edges naming an unknown datum are dropped by [`build`]:
@@ -60,9 +63,6 @@ pub struct Edge {
 /// # Errors
 /// [`ChartError::TooLarge`] if the graph exceeds what u32 ordinals address.
 pub fn build(defs: &[Def], edges: &[Edge]) -> Result<Vec<u8>, ChartError> {
-    fn path_of(d: &Def) -> &str {
-        d.facts.as_ref().map_or("", |f| f.path.as_str())
-    }
     let mut defs: Vec<&Def> = defs.iter().collect();
     defs.sort_unstable_by(|a, b| {
         a.datum
@@ -95,7 +95,50 @@ pub fn build(defs: &[Def], edges: &[Edge]) -> Result<Vec<u8>, ChartError> {
     let mut inc: Vec<(u32, u32, u16)> = rows.iter().map(|&(s, d, a)| (d, s, a)).collect();
     inc.sort_unstable();
 
-    let sections: [Vec<u8>; SECTION_COUNT] = [
+    let sections = sections(&defs, out, &inc, def_count)?;
+
+    let table_len = SECTION_COUNT * SECTION_ENTRY_LEN;
+    let mut image = Vec::with_capacity(HEADER_LEN + table_len);
+    image.extend_from_slice(MAGIC);
+    image.extend_from_slice(&FORMAT_EPOCH.to_le_bytes());
+    let count = u32::try_from(SECTION_COUNT).map_err(|_| ChartError::TooLarge)?;
+    image.extend_from_slice(&count.to_le_bytes());
+    image.extend_from_slice(&def_count.to_le_bytes());
+    image.extend_from_slice(&edge_count.to_le_bytes());
+    image.resize(HEADER_LEN, 0); // reserved + checksum, filled in below
+
+    let mut offset = HEADER_LEN + table_len;
+    for s in &sections {
+        let at = u64::try_from(offset).map_err(|_| ChartError::TooLarge)?;
+        let len = u64::try_from(s.len()).map_err(|_| ChartError::TooLarge)?;
+        image.extend_from_slice(&at.to_le_bytes());
+        image.extend_from_slice(&len.to_le_bytes());
+        offset += s.len();
+    }
+    for s in &sections {
+        image.extend_from_slice(s);
+    }
+    let sum = checksum(&image);
+    image
+        .get_mut(32..64)
+        .ok_or(ChartError::Truncated)?
+        .copy_from_slice(&sum);
+    Ok(image)
+}
+
+/// The section payloads, in table order. Split out of [`build`] so the one
+/// place that decides what a section *contains* is one screen long: adding a
+/// column is an entry here and an arm in [`Section`], nothing else.
+fn sections(
+    defs: &[&Def],
+    out: &[(u32, u32, u16)],
+    inc: &[(u32, u32, u16)],
+    def_count: u32,
+) -> Result<[Vec<u8>; SECTION_COUNT], ChartError> {
+    fn path_of(d: &Def) -> &str {
+        d.facts.as_ref().map_or("", |f| f.path.as_str())
+    }
+    Ok([
         defs.iter().flat_map(|d| d.datum.0).collect(),
         csr_offsets(def_count, out.iter().map(|r| r.0)),
         out.iter().flat_map(|r| r.1.to_le_bytes()).collect(),
@@ -138,35 +181,10 @@ pub fn build(defs: &[Def], edges: &[Edge]) -> Result<Vec<u8>, ChartError> {
                 m
             })
             .collect(),
-    ];
-
-    let table_len = SECTION_COUNT * SECTION_ENTRY_LEN;
-    let mut image = Vec::with_capacity(HEADER_LEN + table_len);
-    image.extend_from_slice(MAGIC);
-    image.extend_from_slice(&FORMAT_EPOCH.to_le_bytes());
-    let count = u32::try_from(SECTION_COUNT).map_err(|_| ChartError::TooLarge)?;
-    image.extend_from_slice(&count.to_le_bytes());
-    image.extend_from_slice(&def_count.to_le_bytes());
-    image.extend_from_slice(&edge_count.to_le_bytes());
-    image.resize(HEADER_LEN, 0); // reserved + checksum, filled in below
-
-    let mut offset = HEADER_LEN + table_len;
-    for s in &sections {
-        let at = u64::try_from(offset).map_err(|_| ChartError::TooLarge)?;
-        let len = u64::try_from(s.len()).map_err(|_| ChartError::TooLarge)?;
-        image.extend_from_slice(&at.to_le_bytes());
-        image.extend_from_slice(&len.to_le_bytes());
-        offset += s.len();
-    }
-    for s in &sections {
-        image.extend_from_slice(s);
-    }
-    let sum = checksum(&image);
-    image
-        .get_mut(32..64)
-        .ok_or(ChartError::Truncated)?
-        .copy_from_slice(&sum);
-    Ok(image)
+        defs.iter()
+            .flat_map(|d| d.facts.as_ref().map_or([0u8; 32], |f| f.sig))
+            .collect(),
+    ])
 }
 
 /// Row starts for `count` rows over an ascending stream of row indexes.
@@ -221,6 +239,7 @@ impl Section {
             Self::DefLocs => "def_locs",
             Self::DefShapes => "def_shapes",
             Self::DefMetrics => "def_metrics",
+            Self::DefSigs => "def_sigs",
         }
     }
 }

@@ -9,6 +9,7 @@
 mod canon;
 mod extract;
 mod refs;
+mod sig;
 
 pub use extract::definitions;
 pub use refs::references;

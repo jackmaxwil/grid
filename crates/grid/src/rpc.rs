@@ -69,6 +69,20 @@ pub fn gate_check(
     grid_xte::check(&track, &params.head, &ChartDelta::open(root)?)
 }
 
+/// What one survey *run* did, as opposed to what the snapshot *is*. Neither
+/// field is a wire field: they describe this execution, which is why they are
+/// returned beside the snapshot rather than inside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ran {
+    /// Files whose facts came from the cache rather than the parser.
+    pub reread: u64,
+    /// Format epoch of a store this run superseded, if it found one. A store
+    /// written by an older epoch is dropped, not reinterpreted, and this is
+    /// how the caller gets to say so instead of the re-survey looking
+    /// unexplained.
+    pub superseded: Option<u32>,
+}
+
 /// The repo's segment store, plus the survey cache that lives beside it.
 ///
 /// The cache is in-process and per-call for the CLI (one survey per process,
@@ -125,7 +139,7 @@ impl Chart {
     pub fn survey_run(
         &mut self,
         params: &SurveyRunParams,
-    ) -> Result<(SurveyRunResult, u64), chart_provider::Error> {
+    ) -> Result<(SurveyRunResult, Ran), chart_provider::Error> {
         // Surveying "at a rev" means the tree at that rev, read out of the
         // object store; with no rev it is the working tree, labelled with the
         // rev it was checked out from. Resolving the label is a git
@@ -149,6 +163,7 @@ impl Chart {
         // which is that rule in the type system.
         let mut store = grid_chart_io::Store::open(chart_provider::store_dir(&self.root))
             .map_err(chart_provider::Error::Store)?;
+        let superseded = store.superseded();
         let prev = store.load();
         let id = store
             .publish(&rev, None, &[survey.image])
@@ -197,10 +212,10 @@ impl Chart {
                     langs: Some(survey.langs),
                 },
             },
-            // How many files came from the cache rather than the parser. Not
-            // a wire field — it describes this *run*, not the snapshot, which
-            // is why it is returned beside the snapshot instead of inside it.
-            survey.reread,
+            Ran {
+                reread: survey.reread,
+                superseded,
+            },
         ))
     }
 }

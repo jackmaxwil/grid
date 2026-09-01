@@ -32,6 +32,7 @@ fn shaped(name: &str, datum_fill: u8, shape_fill: u8) -> Def {
             span: (0, 1),
             shape: [shape_fill; 32],
             complexity: 1,
+            sig: [shape_fill; 32],
         }),
     }
 }
