@@ -5,8 +5,8 @@
 //! `TestComparison`, or an invariant violation is non-empty". These tests hold
 //! that sentence to its word from both sides.
 
+use grid_gate::{verdict, DeltaProvider};
 use grid_wire::*;
-use grid_xte::{verdict, DeltaProvider};
 use proptest::prelude::*;
 use std::collections::BTreeMap;
 

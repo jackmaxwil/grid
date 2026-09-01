@@ -86,7 +86,8 @@ pub fn join<B: AsRef<[u8]>>(
         .index_of(inputs.head)
         .ok_or_else(|| format!("snapshot {} is not in the retained chain", inputs.head))?;
 
-    let traces = grid_wake::Store::open(crate::rpc::trace_dir(root))
+    let traces = crate::rpc::trace_dir(root)
+        .and_then(grid_trace::Store::open)
         .and_then(|store| store.retained())
         .map_err(|e| e.to_string())?;
     let cache = grid_cache::Cache::open(crate::rpc::cache_path(root)).map_err(|e| e.to_string())?;
@@ -126,7 +127,7 @@ pub fn join<B: AsRef<[u8]>>(
             // Conservatism: coverage carried by a decayed trace is a
             // heuristic on top of a demoted heuristic, which is noise. Grid
             // declines it and counts the declining.
-            if grid_wake::grade(inputs.base_segments, edge).grade != grid_wire::Grade::Observed {
+            if grid_trace::grade(inputs.base_segments, edge).grade != grid_wire::Grade::Observed {
                 skipped = skipped.saturating_add(1);
                 continue;
             }

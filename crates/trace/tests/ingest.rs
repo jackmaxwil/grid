@@ -6,7 +6,7 @@
 //! the unresolved bucket must mean "this is everything we could not point
 //! at". One direction without the other is a trace that lies by omission.
 use grid_chart::{build, DatumId, Def, Segment};
-use grid_wake::{ingest, Store};
+use grid_trace::{ingest, Store};
 use grid_wire::{Lang, Trace, TraceEndpoint, TraceObservation};
 /// Digest `n`: distinct datums that are cheap to talk about in a failure.
 fn datum(n: u8) -> DatumId {
@@ -185,7 +185,7 @@ fn a_wake_id_is_never_a_path() {
     store.put(&w, &ingest(&no_chart(), &w)).expect("put");
     assert_eq!(
         store.get("../../etc/passwd").expect("get"),
-        Some(grid_wake::Stored {
+        Some(grid_trace::Stored {
             trace: w,
             hops: vec![(datum(1), datum(2))],
         })
@@ -209,7 +209,7 @@ fn a_corrupt_record_is_an_error_not_a_silent_miss() {
     std::fs::write(files.first().expect("one trace file"), b"{ not json").expect("corrupt");
     let err = store.get("trace:test").expect_err("corrupt is not a trace");
     assert!(
-        matches!(err, grid_wake::StoreError::Corrupt(_)),
+        matches!(err, grid_trace::StoreError::Corrupt(_)),
         "got {err}"
     );
 }

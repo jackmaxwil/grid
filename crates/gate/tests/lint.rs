@@ -1,7 +1,7 @@
 //! `plan.lint`: everything checkable about a promise before code exists.
 
+use grid_gate::lint::lint;
 use grid_wire::*;
-use grid_xte::lint::lint;
 
 fn plan(edges: Vec<PlanEdgePromise>, invariants: Vec<Invariant>) -> Plan {
     Plan {

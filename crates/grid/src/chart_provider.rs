@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use grid_chart_io::{Epoch, Store};
+use grid_gate::DeltaProvider;
 use grid_wire::{Callsign, Datum, Diff, SnapshotId, SnapshotOrRev};
-use grid_xte::DeltaProvider;
 
 /// Why a chart-backed delta could not be produced.
 #[derive(Debug)]

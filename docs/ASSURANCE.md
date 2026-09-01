@@ -110,17 +110,17 @@ Every dependency in `Cargo.lock` gets a line here saying why it is in the TCB.
   `serde_json` becomes a *build* dependency of `grid` (the explain corpus is
   generated from the wire contract at build time); it has been in the TCB
   since Wave 1, so the lockfile gains no package.
-- Wave 8 (`wake`): no new dependencies. A wake is ingested through
+- Wave 8 (`trace`): no new dependencies. A trace is ingested through
   `grid-chart`'s own resolver (the `grid.resolve` rule, so a trace names
   datums the same way every other verb does), retention is one `std::fs`
-  file per wake keyed by `blake3` — already in the TCB, and hashing the id
-  means no wake id is also a path — and the diff is `BTreeMap`/`BTreeSet`
+  file per trace keyed by `blake3` — already in the TCB, and hashing the id
+  means no trace id is also a path — and the diff is `BTreeMap`/`BTreeSet`
   ordering, not a graph library.
-- Wave 9 (`leadline` in `grid`): no new packages. `grid` gains a path
-  dependency on the workspace's existing `grid-leadline` crate so the daemon
+- Wave 9 (`walk` in `grid`): no new packages. `grid` gains a path
+  dependency on the workspace's existing `grid-walk` crate so the daemon
   runs the *same* traversal the engine is proven on (C3) rather than a second
   implementation the proofs would not cover; `Cargo.lock` gains nothing.
-  Modeled bridge hops are static tables in `grid-leadline`, not an inference
+  Modeled bridge hops are static tables in `grid-walk`, not an inference
   engine: a table is auditable and deterministic, and it is why C18 can say
   a modeled hop never becomes proven.
 
@@ -150,7 +150,7 @@ and is caught anyway by the manifest checksum before any byte is interpreted.
 Interpretation happens in `grid-chart`, which is safe code, so hostile bytes
 reach validation and nothing else (C1).
 
-- Wave 3 (`xte`, `grid`): `serde_json` — already in the TCB from Wave 1; the
+- Wave 3 (`gate`, `grid`): `serde_json` — already in the TCB from Wave 1; the
   daemon speaks JSON-RPC, which is the wire's own format, so no second codec
   enters. `proptest` (dev-only) — the property harness C8/C9 are evidenced by.
   `tempfile` (dev-only) — the CLI and socket tests need a throwaway git repo;

@@ -1,4 +1,4 @@
-//! grid-leadline — query engine: budgeted multi-hop traversal, evidence-labeled.
+//! grid-walk — query engine: budgeted multi-hop traversal, evidence-labeled.
 //!
 //! One entry point, [`query`]: a wire [`grid_wire::WalkQuery`] against a
 //! graph, answering a wire [`grid_wire::WalkResult`]. Two shapes, chosen by
@@ -36,7 +36,7 @@ pub enum Error {
     /// A locator named nothing in this snapshot.
     Unresolved(String),
     /// A locator names something this crate cannot resolve without a survey
-    /// index (a fix or a `file:line` coordinate).
+    /// index (a position or a `file:line` coordinate).
     Unsupported(&'static str),
 }
 
@@ -69,7 +69,7 @@ pub fn resolve<G: Graph + ?Sized>(graph: &G, locator: &Locator) -> Result<Ordina
         Locator::Handle { handle } => {
             by_name(graph, handle.0.split('@').next().unwrap_or(&handle.0))
         }
-        Locator::Position { .. } => Err(Error::Unsupported("fix")),
+        Locator::Position { .. } => Err(Error::Unsupported("position")),
         Locator::FileLine { .. } => Err(Error::Unsupported("file:line")),
     }
 }

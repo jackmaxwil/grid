@@ -5,7 +5,7 @@
 //! path names real edges in their real direction.
 
 use grid_chart::{build, DatumId, Def, Edge, Segment};
-use grid_leadline::{query, resolve, Error};
+use grid_walk::{query, resolve, Error};
 use grid_wire::{
     Callsign, Datum, Fuel, Grade, Handle, Lang, Locator, Relation, SnapshotId, WalkQuery,
     WalkQueryDirection, WalkResultStatus,

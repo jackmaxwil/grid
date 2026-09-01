@@ -1,6 +1,6 @@
 //! Kani harnesses for claim C3: every walk terminates within fuel.
 //!
-//! Run with `just verify` (`cargo kani -p grid-leadline`). Termination is not
+//! Run with `just verify` (`cargo kani -p grid-walk`). Termination is not
 //! something a test can show — a hanging test is indistinguishable from a slow
 //! one — so the property is stated as a decrease argument and proved.
 //!

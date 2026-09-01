@@ -8,9 +8,9 @@ members = [
     "crates/chart",
     "crates/chart-io",
     "crates/cache",
-    "crates/wake",
-    "crates/leadline",
-    "crates/xte",
+    "crates/trace",
+    "crates/walk",
+    "crates/gate",
     "crates/wire",
     "crates/grid",
 ]

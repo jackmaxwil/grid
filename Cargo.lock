@@ -191,11 +191,11 @@ dependencies = [
  "grid-cache",
  "grid-chart",
  "grid-chart-io",
- "grid-leadline",
+ "grid-gate",
  "grid-survey",
- "grid-wake",
+ "grid-trace",
+ "grid-walk",
  "grid-wire",
- "grid-xte",
  "serde",
  "serde_json",
  "tempfile",
@@ -240,6 +240,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "grid-gate"
+version = "0.1.0"
+dependencies = [
+ "grid-wire",
+ "proptest",
+ "serde_json",
+]
+
+[[package]]
 name = "grid-lang-py"
 version = "0.1.0"
 dependencies = [
@@ -260,16 +269,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "grid-leadline"
-version = "0.1.0"
-dependencies = [
- "grid-chart",
- "grid-wire",
- "proptest",
- "serde_json",
-]
-
-[[package]]
 name = "grid-survey"
 version = "0.1.0"
 dependencies = [
@@ -283,7 +282,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "grid-wake"
+name = "grid-trace"
 version = "0.1.0"
 dependencies = [
  "blake3",
@@ -295,19 +294,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "grid-wire"
+name = "grid-walk"
 version = "0.1.0"
 dependencies = [
- "serde",
+ "grid-chart",
+ "grid-wire",
+ "proptest",
  "serde_json",
 ]
 
 [[package]]
-name = "grid-xte"
+name = "grid-wire"
 version = "0.1.0"
 dependencies = [
- "grid-wire",
- "proptest",
+ "serde",
  "serde_json",
 ]
 

@@ -140,6 +140,15 @@ fn main() -> ExitCode {
         .filter(|a| *a != "--json")
         .collect();
 
+    // Engine state is settled before any verb runs: wire epoch 1 renamed the
+    // retained-trace directory, and the one-time rename happens here so every
+    // verb sees one store. Two candidate directories is an ambiguous state,
+    // and an ambiguous state is bad input (exit 2), not a guess.
+    if let Err(e) = rpc::trace_dir(root()) {
+        hint(&format!("grid: {e}"));
+        return ExitCode::from(exit::BAD_INPUT);
+    }
+
     let code = match rest.split_first() {
         // Bare `grid` is the everyday verb: what changed (CLI plan §4). It
         // still teaches — the banner goes to stderr, so a machine reading
@@ -423,7 +432,7 @@ fn namer() -> impl Fn(&grid_wire::Datum) -> Option<String> {
     move |d: &grid_wire::Datum| {
         chart
             .as_ref()
-            .and_then(|c| grid_xte::DeltaProvider::callsign(c, d))
+            .and_then(|c| grid_gate::DeltaProvider::callsign(c, d))
             .map(|c| c.0)
     }
 }
