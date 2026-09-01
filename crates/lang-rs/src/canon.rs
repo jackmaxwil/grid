@@ -11,8 +11,24 @@ use quote::ToTokens;
 /// so the prefix moves deliberately or not at all (same rule as lang-py).
 const EPOCH: &[u8] = b"grid-lang-rs/v1\n";
 
+/// The sig's own epoch. Sig bytes and datum bytes are different claims about
+/// the same node, so they are domain-separated: a signature-shaped token
+/// stream and a whole item that happen to print alike must not hash alike.
+const SIG_EPOCH: &[u8] = b"grid-lang-rs-sig/v1\n";
+
 pub(crate) fn canonical_bytes<T: ToTokens>(node: &T) -> Vec<u8> {
-    let mut out = EPOCH.to_vec();
+    prefixed(EPOCH, node)
+}
+
+/// Canonical bytes for an *interface* token stream, built by [`crate::sig`].
+/// Same normalization — formatting and doc comments are as irrelevant to a
+/// sig as they are to a datum.
+pub(crate) fn sig_bytes<T: ToTokens>(node: &T) -> Vec<u8> {
+    prefixed(SIG_EPOCH, node)
+}
+
+fn prefixed<T: ToTokens>(epoch: &[u8], node: &T) -> Vec<u8> {
+    let mut out = epoch.to_vec();
     out.extend_from_slice(normalize(node.to_token_stream()).to_string().as_bytes());
     out
 }

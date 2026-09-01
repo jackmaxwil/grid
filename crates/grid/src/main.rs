@@ -438,13 +438,19 @@ fn survey(args: &[&str], json: bool) -> u8 {
             hint(&format!("grid: {e}"));
             exit::INTERNAL
         }
-        Ok((snapshot, reread)) => {
+        Ok((snapshot, ran)) => {
+            if let Some(epoch) = ran.superseded {
+                hint(&format!(
+                    "grid: dropped a chart written by segment format epoch {epoch} — \
+                     re-surveyed from cold, nothing was reinterpreted"
+                ));
+            }
             if json {
                 return emit_json(&snapshot);
             }
             print!(
                 "{}",
-                porcelain::snapshot(&snapshot, Some((reread, started.elapsed())))
+                porcelain::snapshot(&snapshot, Some((ran.reread, started.elapsed())))
             );
             exit::OK
         }

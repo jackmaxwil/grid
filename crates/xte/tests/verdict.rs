@@ -272,6 +272,7 @@ fn def_promises_cover_def_changes_by_pattern() {
     }];
     let covered = DefChange {
         moved_from: None,
+        sig_changed: None,
         action: DefChangeAction::Added,
         callsign: Callsign("cortana.reaper.TagContract.validate".into()),
         before: None,
@@ -279,6 +280,7 @@ fn def_promises_cover_def_changes_by_pattern() {
     };
     let stray = DefChange {
         moved_from: None,
+        sig_changed: None,
         action: DefChangeAction::Added,
         callsign: Callsign("cortana.boards.render".into()),
         before: None,

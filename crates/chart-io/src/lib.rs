@@ -149,6 +149,8 @@ impl Epoch {
 pub struct Store {
     dir: PathBuf,
     epoch: ArcSwap<Epoch>,
+    /// Set when `open` dropped a manifest written by a past format epoch.
+    superseded: Option<u32>,
 }
 
 impl Store {
@@ -160,8 +162,22 @@ impl Store {
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, StoreError> {
         let dir = dir.as_ref().to_path_buf();
         fs::create_dir_all(&dir)?;
+        let mut superseded = None;
         let manifest = match fs::read(dir.join(MANIFEST)) {
-            Ok(bytes) => Manifest::parse(&bytes)?,
+            Ok(bytes) => match Manifest::parse(&bytes) {
+                Ok(manifest) => manifest,
+                // A manifest from a past format epoch is refused, exactly as
+                // ASSURANCE.md declares — but the recovery it declares is a
+                // re-survey, and a hard error here would take `grid survey`
+                // down with everything else. So: the empty store, plus the
+                // epoch that was dropped, so the caller can say so rather
+                // than pretend the store was always empty.
+                Err(grid_chart::ChartError::BadEpoch(e)) => {
+                    superseded = Some(e);
+                    Manifest::default()
+                }
+                Err(e) => return Err(e.into()),
+            },
             // No manifest is the empty store, not an error: this is what a
             // fresh checkout and a crash before the first publish look like.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Manifest::default(),
@@ -171,7 +187,16 @@ impl Store {
         Ok(Self {
             dir,
             epoch: ArcSwap::from(Arc::new(epoch)),
+            superseded,
         })
+    }
+
+    /// The format epoch of a manifest this store refused to load, if it
+    /// refused one. A store that answers `Some` is empty because its contents
+    /// predate the current format, and the recovery is a re-survey.
+    #[must_use]
+    pub const fn superseded(&self) -> Option<u32> {
+        self.superseded
     }
 
     /// The current epoch. Lock-free: readers never block a writer, and a

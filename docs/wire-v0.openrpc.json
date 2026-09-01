@@ -14,7 +14,7 @@
   },
   "x-porcelain": {
     "doc": "packages/grid/docs/PORCELAIN.md",
-    "version": "1.3.0",
+    "version": "1.4.0",
     "description": "Normative grammar for human-facing stdout records. --json emits wire results verbatim; the porcelain version is reported by grid.version."
   },
   "methods": [
@@ -27,7 +27,7 @@
         {
           "name": "current versions",
           "params": [],
-          "result": { "name": "version", "value": { "wire": "0.1.0", "engine": "grid 0.1.0", "porcelain": "1.3.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
+          "result": { "name": "version", "value": { "wire": "0.1.0", "engine": "grid 0.1.0", "porcelain": "1.4.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
         }
       ],
       "result": {
@@ -632,7 +632,9 @@
           "action": { "type": "string", "enum": ["added", "removed", "modified", "moved"] },
           "callsign": { "$ref": "#/components/schemas/Callsign" },
           "before": { "$ref": "#/components/schemas/Datum" },
-          "after": { "$ref": "#/components/schemas/Datum" }
+          "after": { "$ref": "#/components/schemas/Datum" },
+          "moved_from": { "$ref": "#/components/schemas/Callsign", "description": "For action 'moved': the callsign the datum answered to before. A rename rebinds the callsign; the datum does not change." },
+          "sig_changed": { "type": "boolean", "description": "Whether the interface identity changed, when both snapshots carry sigs. Absent means at least one side predates segment epoch 3, and a consumer treats unknown as changed." }
         },
         "additionalProperties": false,
         "description": "added: 'after' only. removed: 'before' only. modified: both (this pair is a Leg)."
@@ -672,7 +674,7 @@
         "type": "object",
         "required": ["action", "callsign"],
         "properties": {
-          "action": { "type": "string", "enum": ["add", "remove", "modify"] },
+          "action": { "type": "string", "enum": ["add", "remove", "modify", "move"] },
           "callsign": { "$ref": "#/components/schemas/CallsignPattern" }
         },
         "additionalProperties": false

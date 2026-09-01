@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 1.3.0
+version: 1.4.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -13,7 +13,7 @@ document.
 | tag | columns |
 |---|---|
 | `snapshot` | id, stats (`defs N  edges N  reread N  <duration>`) |
-| `def` | glyph, callsign, hash transition (`old→new` or new hash) |
+| `def` | glyph, callsign, hash transition (`old→new` or new hash), `sig` when the interface identity also moved (absent when it held, and absent when a pre-epoch-3 snapshot means nobody can say) |
 | `ref` | callsign, datum prefix, `file:line` when the snapshot carries locations (`grid resolve` — a definition that exists, not one that changed) |
 | `orphan` | callsign, datum prefix, `file:line` — a definition with no *proven* caller (`grid orphans`); not the same as dead |
 | `leg` | `@from -> @to`, rev — one patch edge in the datum's history, newest first (`grid log`) |

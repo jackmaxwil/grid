@@ -1,6 +1,6 @@
 //! The porcelain renderer: typed records on stdout, one per line.
 //!
-//! Normative grammar in `docs/PORCELAIN.md` (version 1.0.0). Fields are
+//! Normative grammar in `docs/PORCELAIN.md`. Fields are
 //! separated by runs of spaces and column order is stable per record type, so
 //! `grep '^edge  miss'` is the explanation and `awk` is the parser. Nothing
 //! here writes to stderr: hints are the caller's business.
@@ -13,7 +13,7 @@ use grid_wire::{
 use grid_xte::lint::{relation_name, render_edge};
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "1.3.0";
+pub const VERSION: &str = "1.4.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -285,11 +285,15 @@ pub fn diff(made_good: &grid_wire::MadeGood, name: &NameOf) -> String {
                 (None, None) => String::new(),
             }
         };
-        record(
-            &mut out,
-            "def",
-            &[def_glyph(d.action), &d.callsign.0, &transition],
-        );
+        // A trailing `sig` marks a change a caller can see: body-only edits
+        // and interface edits are different events, and a reviewer reads the
+        // difference off the row. Absent when the interface held, and absent
+        // when a pre-epoch-3 snapshot means nobody can say.
+        let mut columns = vec![def_glyph(d.action), d.callsign.0.as_str(), &transition];
+        if d.sig_changed == Some(true) {
+            columns.push("sig");
+        }
+        record(&mut out, "def", &columns);
     }
     for e in &made_good.edges {
         let glyph = match e.action {

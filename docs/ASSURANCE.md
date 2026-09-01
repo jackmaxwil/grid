@@ -35,6 +35,8 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 | C22 | seeded revision history finds the injected culprit deterministically and reports measured cache hits above one half of probes | bisect.rs | 10 |
 | C23 | suspect ranking and bisect both refuse when retained production history is absent; fixture evidence is never presented as accumulated production evidence | wave10.rs conformance.rs bisect.rs | 10 |
 
+| C24 | a definition's `sig` moves when and only when a caller could see the change; a snapshot that predates the sig column answers *unknown*, never *unchanged* | sig.rs sig_delta.rs epochs.rs | 10+ |
+
 
 ## Dependency justification
 
@@ -106,7 +108,14 @@ The segment format is the other compatibility surface: images are prefixed
 `GRIDSEG\0` and carry a `FORMAT_EPOCH`, and the manifest carries the same
 epoch. A format change is a refusal to load old bytes (`BadEpoch`) and a
 re-survey, never a reinterpretation — the same declared-epoch discipline the
-normalizer follows.
+normalizer follows. The two halves of that rule differ by design:
+`Segment::parse` keeps reading *every* epoch ever shipped, answering the
+columns an older image does not declare with `None` (never a fabricated
+value), pinned by a committed fixture per epoch; a manifest from a past epoch
+is instead dropped, so `Store::open` yields the empty store and names the
+epoch it superseded (`Store::superseded`) — the recovery the rule prescribes
+is a re-survey, and a hard error there would take the re-survey down with
+everything else.
 
 ## The one unsafe block
 
