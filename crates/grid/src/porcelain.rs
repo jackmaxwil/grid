@@ -371,6 +371,21 @@ pub fn drift(report: &grid_wire::DriftReport) -> String {
         };
         record(&mut out, "miss", &[&stale.test, reason]);
     }
+    for weak in report.weak.iter().flatten() {
+        // `warn`, not `drift`: this is reported rather than refused, and it
+        // never moves the exit code. A test that proved nothing is a
+        // ranking, and grid ranks — it does not gate on a heuristic.
+        let named = weak
+            .def
+            .callsign
+            .as_ref()
+            .map_or_else(|| format!("@{}", short(&weak.def.datum)), |c| c.0.clone());
+        record(
+            &mut out,
+            "warn",
+            &[&weak.test, &format!("weak-for {named}")],
+        );
+    }
     for warning in report.warnings.iter().flatten() {
         record(&mut out, "warn", &[&warning.subject, &warning.message]);
     }
@@ -416,6 +431,14 @@ fn drift_unchecked(unchecked: &grid_wire::DriftUnchecked) -> String {
             .unwrap_or_default()
             .to_string();
         record(&mut out, "miss", &[&count, "unattributed entries"]);
+    }
+    if unchecked.weak_skipped.is_some_and(|n| n > 0) {
+        let count = unchecked.weak_skipped.unwrap_or_default().to_string();
+        record(
+            &mut out,
+            "miss",
+            &[&count, "weak-checks skipped (stale coverage)"],
+        );
     }
     if unchecked.budget_rejected > 0 {
         record(

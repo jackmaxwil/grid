@@ -1116,3 +1116,167 @@ fn without_the_flag_no_test_claim_is_made() {
         "and no count either: {json}"
     );
 }
+
+/// `warn` rows from a drift report: `(subject, message)`.
+fn warns(out: &Output) -> Vec<(String, String)> {
+    stdout(out)
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>())
+        .filter(|c| c.first() == Some(&"warn"))
+        .filter_map(|c| Some((c.get(1)?.to_string(), c[2..].join(" "))))
+        .collect()
+}
+
+/// A repo where a test covers `pkg.lib.covered`, a wake records the
+/// coverage, and a `pass` is recorded — with the whole thing surveyed and
+/// retained so both endpoints of the later patch are in the chain.
+fn repo_with_a_green_test() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(
+        dir.path(),
+        &[
+            ("pkg/__init__.py", ""),
+            ("pkg/lib.py", "def covered(x):\n    return x + 1\n"),
+            (
+                "pkg/test_lib.py",
+                // Assertion-free on purpose: it executes `covered` and can
+                // never fail because of it. That is what "weak" means.
+                "from pkg.lib import covered\n\n\ndef test_covered():\n    covered(1)\n",
+            ),
+        ],
+    );
+    commit(dir.path(), "before");
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    ingest_wake(dir.path(), "wake:t", "test_lib.test_covered", "lib.covered");
+    record_pass(
+        dir.path(),
+        "env-1",
+        &datum_of(dir.path(), "pkg.test_lib.test_covered"),
+        "wake:t",
+    );
+    dir
+}
+
+/// Re-survey, re-record the same green verdict at head, and return the
+/// report `grid drift --tests` gives for the patch.
+fn after_head_pass(dir: &Path) -> Output {
+    assert_eq!(code(&grid(dir, &["survey"])), 0);
+    record_pass(
+        dir,
+        "env-1",
+        &datum_of(dir, "pkg.test_lib.test_covered"),
+        "wake:t",
+    );
+    grid(dir, &["drift", "HEAD~1", "HEAD", "--tests"])
+}
+
+/// Ground truth for step 7: the covered definition's arithmetic flips, the
+/// assertion-free test stays green, and nobody touched the test — so the
+/// test proved nothing about the change, and grid says so.
+#[test]
+fn a_green_test_over_a_changed_definition_is_flagged_weak() {
+    let dir = repo_with_a_green_test();
+    write(
+        dir.path(),
+        &[("pkg/lib.py", "def covered(x):\n    return x - 1\n")],
+    );
+    commit(dir.path(), "flip the arithmetic");
+    let out = after_head_pass(dir.path());
+    assert!(
+        warns(&out).contains(&(
+            "test_lib.test_covered".to_owned(),
+            "weak-for pkg.lib.covered".to_owned()
+        )),
+        "the weak test is named:\n{}",
+        stdout(&out)
+    );
+    // Heuristic: a ranking, never a gate. The exit code must not move for it.
+    assert_ne!(
+        code(&out),
+        3,
+        "a weak-test finding must not gate:\n{}",
+        stdout(&out)
+    );
+}
+
+/// A test edited alongside the change is not weak: somebody looked at it.
+#[test]
+fn a_test_edited_alongside_the_change_is_not_weak() {
+    let dir = repo_with_a_green_test();
+    write(
+        dir.path(),
+        &[
+            ("pkg/lib.py", "def covered(x):\n    return x - 1\n"),
+            (
+                "pkg/test_lib.py",
+                "from pkg.lib import covered\n\n\ndef test_covered():\n    assert covered(1) == 0\n",
+            ),
+        ],
+    );
+    commit(dir.path(), "change both");
+    let out = after_head_pass(dir.path());
+    assert!(
+        !warns(&out).iter().any(|(_, m)| m.starts_with("weak-for")),
+        "an edited test is not weak:\n{}",
+        stdout(&out)
+    );
+}
+
+/// A test with no recorded pass at head is not weak either: the finding is
+/// "it passed before, it passes now, and the thing it covers is different".
+/// Without the second pass there is no claim to make.
+#[test]
+fn a_test_with_no_verdict_at_head_is_not_weak() {
+    let dir = repo_with_a_green_test();
+    write(
+        dir.path(),
+        &[("pkg/lib.py", "def covered(x):\n    return x - 1\n")],
+    );
+    commit(dir.path(), "flip the arithmetic");
+    // Survey, but record nothing at head.
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let out = grid(dir.path(), &["drift", "HEAD~1", "HEAD", "--tests"]);
+    assert!(
+        !warns(&out).iter().any(|(_, m)| m.starts_with("weak-for")),
+        "no pass at head, no claim:\n{}",
+        stdout(&out)
+    );
+}
+
+/// Conservatism: coverage carried by a decayed trace produces no `weak`
+/// record at all — a heuristic built on a demoted heuristic is noise — and
+/// the declining is counted rather than silent.
+#[test]
+fn coverage_from_a_decayed_trace_is_declined_and_counted() {
+    let dir = repo_with_a_green_test();
+    // Rewriting the test moves its datum, so the retained trace now names a
+    // caller base does not hold: the coverage fact has decayed.
+    write(
+        dir.path(),
+        &[(
+            "pkg/test_lib.py",
+            "from pkg.lib import covered\n\n\ndef test_covered():\n    covered(2)\n",
+        )],
+    );
+    commit(dir.path(), "rewrite the test");
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    write(
+        dir.path(),
+        &[("pkg/lib.py", "def covered(x):\n    return x - 1\n")],
+    );
+    commit(dir.path(), "flip the arithmetic");
+    let out = after_head_pass(dir.path());
+    assert!(
+        !warns(&out).iter().any(|(_, m)| m.starts_with("weak-for")),
+        "a decayed coverage fact proves nothing:\n{}",
+        stdout(&out)
+    );
+    assert!(
+        misses(&out)
+            .iter()
+            .any(|(n, reason)| n != "0" && reason.contains("weak-checks skipped")),
+        "the declining is counted:\n{}",
+        stdout(&out)
+    );
+}

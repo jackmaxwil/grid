@@ -368,11 +368,13 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
             unresolved_refs: declined_refs,
             budget_rejected: u64::from(budget_rejected),
             unattributed_entries: None,
+            weak_skipped: None,
         },
         warnings: (!warnings.is_empty()).then_some(warnings),
-        // Filled in by the caller when the report was asked for tests: the
-        // enumeration is a different question over a different store.
+        // Filled in by the caller when the report was asked for tests: both
+        // are different questions over different stores.
         stale_tests: None,
+        weak: None,
     })
 }
 

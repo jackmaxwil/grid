@@ -776,6 +776,13 @@ pub struct Covenant {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct WeakTest {
+    pub test: String,
+    pub def: DefRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StaleTest {
     pub test: String,
     pub reason: StaleTestReason,
@@ -819,6 +826,8 @@ pub struct DriftUnchecked {
     pub budget_rejected: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unattributed_entries: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weak_skipped: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -832,6 +841,8 @@ pub struct DriftReport {
     pub warnings: Option<Vec<DriftWarning>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stale_tests: Option<Vec<StaleTest>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weak: Option<Vec<WeakTest>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

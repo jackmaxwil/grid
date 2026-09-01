@@ -275,14 +275,16 @@ pub fn drift(
         },
     )?;
     if params.tests == Some(true) {
+        let chart = ChartDelta::open(root).map_err(crate::drift::Error::Chart)?;
         // Head, because the question is whether a recorded verdict still
         // applies *now* — the closure key is identity math over the current
         // chart, not over the one the verdict was taken against.
-        let epoch = ChartDelta::open(root)
-            .map_err(crate::drift::Error::Chart)?
+        let epoch = chart
             .epoch_of(&params.head)
             .map_err(crate::drift::Error::Chart)?;
-        let chart = ChartDelta::open(root).map_err(crate::drift::Error::Chart)?;
+        let base_epoch = chart
+            .epoch_of(&params.base)
+            .map_err(crate::drift::Error::Chart)?;
         let found = crate::stale::tests(root, epoch.segments(), |test| {
             // The `grid.resolve` rule, so the name a user can resolve is the
             // name a verdict can be attributed by. Ambiguity resolves to
@@ -303,6 +305,29 @@ pub fn drift(
                 .warnings
                 .get_or_insert_with(Vec::new)
                 .extend(found.warnings);
+        }
+        // Green-but-stale, over step 6's membership. Absent membership is an
+        // absence of derived data, not a claim that nothing is weak — the
+        // report simply does not answer a question it could not ask.
+        let store = grid_chart_io::Store::open(chart_provider::store_dir(root))
+            .map_err(|e| crate::drift::Error::Stale(e.to_string()))?;
+        if let Some(membership) = store
+            .membership()
+            .map_err(|e| crate::drift::Error::Stale(e.to_string()))?
+        {
+            let weak = crate::weak::join(
+                root,
+                &crate::weak::Inputs {
+                    membership: &membership,
+                    base: base_epoch.snapshot_id().as_str(),
+                    head: epoch.snapshot_id().as_str(),
+                    base_segments: base_epoch.segments(),
+                    head_segments: epoch.segments(),
+                },
+            )
+            .map_err(crate::drift::Error::Stale)?;
+            report.unchecked.weak_skipped = Some(weak.skipped);
+            report.weak = Some(weak.weak);
         }
     }
     Ok(report)
