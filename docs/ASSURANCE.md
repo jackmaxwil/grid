@@ -42,6 +42,7 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 | C28 | a test's recorded verdict is reported fresh only when its closure key, recomputed at head, is one the cache holds; a closure that cannot be established is stale, and a verdict no retained wake claims is counted rather than checked | stale.rs drift.rs | 10+ |
 | C29 | a membership diff of two snapshots names exactly the definitions the delta path does; an image extended one snapshot at a time is byte-identical to one rebuilt from the whole chain; a snapshot the chain never held is a typed refusal, never an empty diff | membership.rs | 10+ |
 | C30 | a weak-test finding requires all four facts — the definition's datum moved, a live trace covers it, the test's own datum held, and a pass is on record at both endpoints — is graded heuristic, and never moves the exit code; coverage from a decayed trace yields no finding and is counted | weak.rs | 10+ |
+| C31 | an aground walk's `complete_within` is a layer it fully expanded, so the answer truncated to that depth equals the unbudgeted walk's under the same filter; a walk whose first layer did not finish certifies nothing | certificate.rs walk.rs | 10+ |
 
 
 ## Dependency justification

@@ -753,9 +753,15 @@ pub fn query_walk(
             visited: 0,
             hops: 0,
             ms: 0,
+            // Merged below: an answer merged from several segments is
+            // complete only to the shallowest radius any of them certified,
+            // and to nothing at all if one of them certified nothing.
+            complete_within: None,
         },
     };
     let mut frontier: Vec<grid_wire::Datum> = Vec::new();
+    let mut certified: Option<u64> = None;
+    let mut contributed = false;
     for segment in chart.head().segments() {
         let Ok(part) = grid_leadline::query(segment, &params.query, snapshot.clone()) else {
             continue;
@@ -766,6 +772,17 @@ pub fn query_walk(
         merged.stats.visited += part.stats.visited;
         merged.stats.hops = merged.stats.hops.max(part.stats.hops);
         merged.stats.ms += part.stats.ms;
+        // The weakest certificate wins: the union of several answers is
+        // complete only as far as every contributing walk finished.
+        // The weakest certificate wins, and `None` from any contributor
+        // poisons the merge: one walk that certified nothing means the union
+        // certifies nothing.
+        certified = match (contributed, certified, part.stats.complete_within) {
+            (false, _, first) => first,
+            (true, Some(a), Some(b)) => Some(a.min(b)),
+            (true, _, _) => None,
+        };
+        contributed = true;
         frontier.extend(part.frontier.into_iter().flatten());
         if let Some(reached) = &mut merged.reached {
             reached.extend(part.reached.into_iter().flatten());
@@ -778,6 +795,7 @@ pub fn query_walk(
     frontier.sort_by(|a, b| a.0.cmp(&b.0));
     frontier.dedup();
     merged.frontier = (!frontier.is_empty()).then_some(frontier);
+    merged.stats.complete_within = certified;
     if let Some(reached) = &mut merged.reached {
         reached.sort_by(|a, b| a.datum.0.cmp(&b.datum.0));
         reached.dedup_by(|a, b| a.datum == b.datum);

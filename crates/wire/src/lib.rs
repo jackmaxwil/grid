@@ -491,6 +491,8 @@ pub struct LeadlineResultStats {
     pub visited: u64,
     pub hops: u64,
     pub ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complete_within: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
