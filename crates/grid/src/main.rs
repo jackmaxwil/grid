@@ -34,6 +34,7 @@ mod porcelain;
 mod review;
 mod rpc;
 mod serve;
+mod stale;
 mod standing;
 mod suspects;
 mod track;
@@ -78,6 +79,7 @@ fn help() {
          survey                       chart the worktree; idempotent\n  \
          diff [base] [head]           what changed, in defs and edges\n  \
          drift [base] [head]          dependents of changed interfaces; exit 3 on suspects\n  \
+         drift --tests                known tests whose recorded verdict no longer applies\n  \
          bind <A> <B> --via <word>    declare a coupling no language establishes\n  \
          resolve <name|file|f:line>   where it is; a bare file lists its defs\n  \
          uses <name> [--relation r]   proven inbound edges\n  \
@@ -502,6 +504,7 @@ fn diff(args: &[&str], json: bool) -> u8 {
 fn drift_verb(args: &[&str], json: bool) -> u8 {
     let mut floor = None;
     let mut track = None;
+    let mut tests = false;
     let mut positional = Vec::new();
     let mut rest = args;
     while let Some((arg, tail)) = rest.split_first() {
@@ -533,6 +536,7 @@ fn drift_verb(args: &[&str], json: bool) -> u8 {
                 }
                 rest = tail;
             }
+            "--tests" => tests = true,
             other if other.starts_with("--") => {
                 hint(&format!("grid: unknown flag `{other}`\n{DRIFT_USAGE}"));
                 return exit::BAD_INPUT;
@@ -549,9 +553,12 @@ fn drift_verb(args: &[&str], json: bool) -> u8 {
         head: snapshot_or_rev(positional.get(1).unwrap_or(&"HEAD")),
         floor,
         track,
+        tests: tests.then_some(true),
     };
     match rpc::drift(&params, root()) {
-        Err(e @ (drift::Error::BudgetRejected(_) | drift::Error::Wake(_))) => {
+        Err(
+            e @ (drift::Error::BudgetRejected(_) | drift::Error::Wake(_) | drift::Error::Stale(_)),
+        ) => {
             hint(&format!("grid: {e}"));
             exit::INTERNAL
         }
@@ -560,7 +567,11 @@ fn drift_verb(args: &[&str], json: bool) -> u8 {
             exit::BAD_INPUT
         }
         Ok(report) => {
-            let code = if report.suspects.is_empty() {
+            // A stale verdict is proven-grade staleness — the closure key is
+            // identity math — so it diverges exactly as a suspect does.
+            let code = if report.suspects.is_empty()
+                && report.stale_tests.iter().flatten().next().is_none()
+            {
                 exit::OK
             } else {
                 exit::DIVERGENCE
@@ -585,8 +596,8 @@ fn drift_verb(args: &[&str], json: bool) -> u8 {
     }
 }
 
-const DRIFT_USAGE: &str =
-    "usage: grid drift [<base>] [<head>] [--floor <proven|observed|modeled|heuristic>] [--track <file>]";
+const DRIFT_USAGE: &str = "usage: grid drift [<base>] [<head>] \
+     [--floor <proven|observed|modeled|heuristic>] [--track <file>] [--tests]";
 
 /// The wire spelling of an evidence grade, for `--floor` arguments. The serde
 /// names are the vocabulary, so the flag cannot drift from the contract.

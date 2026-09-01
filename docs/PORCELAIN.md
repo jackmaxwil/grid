@@ -60,6 +60,15 @@ stderr — never served as a shorter list. A declared covenant whose pattern
 matches nothing at drift time closes the output as a `warn` record: a rule
 that quietly stopped being checked is worse than no rule.
 
+`grid drift --tests` adds one `miss` record per test whose recorded verdict
+no longer applies — `miss <test>  closure-changed` when the closure key moved,
+`miss <test>  closure-rejected` when the closure could not be established at
+all (a rejection is a miss, never a hit) — plus `miss <n>  unattributed
+entries` for recorded verdicts no retained wake claims. Verdict-staleness is
+identity math over the closure, so it exits `3` like any other divergence. A
+test the head chart cannot resolve is a `warn`, not a gate: the test being
+gone is not a divergence in the code.
+
 ## Glyphs
 
 `+` added · `-` removed · `~` modified · `>` moved

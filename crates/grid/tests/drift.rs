@@ -480,6 +480,10 @@ fn ingest_wake(dir: &Path, id: &str, from: &str, to: &str) {
     let wake = serde_json::json!({
         "wake_id": id,
         "git_rev": "HEAD",
+        // `command` is the test the trace came from — the same field
+        // `grid wake ingest --lcov ... --test <name>` fills in, and the one
+        // that makes a retained wake a test-registry entry.
+        "command": from,
         "observations": [{
             "caller": { "symbol": from },
             "callee": { "symbol": to }
@@ -896,5 +900,219 @@ fn bind_list_prints_the_declarations() {
             "pkg.reader.decode",
             "schema"
         ]]
+    );
+}
+
+/// `miss` rows from a drift report: `(subject, reason)`.
+fn misses(out: &Output) -> Vec<(String, String)> {
+    stdout(out)
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>())
+        .filter(|c| c.first() == Some(&"miss"))
+        .filter_map(|c| Some((c.get(1)?.to_string(), c[2..].join(" "))))
+        .collect()
+}
+
+/// Record a `pass` for `datum` in environment `env`, tied to `wake` — which
+/// is how the verdict is attributed to the test that produced it.
+fn record_pass(dir: &Path, env: &str, datum: &str, wake: &str) {
+    let out = grid(
+        dir,
+        &[
+            "cache",
+            "record",
+            "test",
+            env,
+            &format!("{datum}=pass"),
+            "--wake",
+            wake,
+        ],
+    );
+    assert_eq!(
+        code(&out),
+        0,
+        "record failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout(&out).contains("1/1"),
+        "the verdict must be stored, or the fixture proves nothing: {}",
+        stdout(&out)
+    );
+}
+
+/// The datum a callsign currently answers to.
+fn datum_of(dir: &Path, callsign: &str) -> String {
+    let out = grid(dir, &["resolve", callsign, "--json"]);
+    let refs: Vec<serde_json::Value> = serde_json::from_str(&stdout(&out)).expect("resolve --json");
+    refs.first().expect("one definition")["datum"]
+        .as_str()
+        .expect("a datum")
+        .to_owned()
+}
+
+/// A repo with a test that covers `pkg.lib.covered`, a wake recording that
+/// coverage, and a recorded pass. Returns the directory.
+fn repo_with_a_recorded_verdict() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(
+        dir.path(),
+        &[
+            ("pkg/__init__.py", ""),
+            (
+                "pkg/lib.py",
+                "def covered():\n    return 1\n\n\ndef elsewhere():\n    return 1\n",
+            ),
+            (
+                "pkg/test_lib.py",
+                "from pkg.lib import covered\n\n\ndef test_covered():\n    assert covered() == 1\n",
+            ),
+        ],
+    );
+    commit(dir.path(), "before");
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    ingest_wake(dir.path(), "wake:t", "test_lib.test_covered", "lib.covered");
+    let test_datum = datum_of(dir.path(), "pkg.test_lib.test_covered");
+    record_pass(dir.path(), "env-1", &test_datum, "wake:t");
+    dir
+}
+
+/// Ground truth for step 5: editing a definition inside the test's closure
+/// invalidates the recorded verdict, and `drift --tests` names it.
+#[test]
+fn a_change_inside_a_test_closure_stales_its_verdict() {
+    let dir = repo_with_a_recorded_verdict();
+    write(
+        dir.path(),
+        &[(
+            "pkg/lib.py",
+            "def covered():\n    return 2\n\n\ndef elsewhere():\n    return 1\n",
+        )],
+    );
+    commit(dir.path(), "edit inside the closure");
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+
+    let out = grid(dir.path(), &["drift", "HEAD~1", "HEAD", "--tests"]);
+    assert_eq!(
+        code(&out),
+        3,
+        "verdict-staleness is identity math, so it gates:\n{}",
+        stdout(&out)
+    );
+    assert!(
+        misses(&out).contains(&(
+            "test_lib.test_covered".to_owned(),
+            "closure-changed".to_owned()
+        )),
+        "the stale test is named:\n{}",
+        stdout(&out)
+    );
+}
+
+/// The property the plan states: an edit outside every test closure stales
+/// no test. A verb that flagged everything would be as useless as one that
+/// flagged nothing.
+#[test]
+fn a_change_outside_every_closure_stales_nothing() {
+    let dir = repo_with_a_recorded_verdict();
+    write(
+        dir.path(),
+        &[(
+            "pkg/lib.py",
+            "def covered():\n    return 1\n\n\ndef elsewhere():\n    return 99\n",
+        )],
+    );
+    commit(dir.path(), "edit outside the closure");
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+
+    let out = grid(dir.path(), &["drift", "HEAD~1", "HEAD", "--tests"]);
+    let stale: Vec<_> = misses(&out)
+        .into_iter()
+        .filter(|(_, reason)| reason.starts_with("closure-"))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "nothing in the closure moved:\n{}",
+        stdout(&out)
+    );
+}
+
+/// Conservatism: a verdict no retained wake claims cannot be attributed to a
+/// test, so it is *counted*, not quietly treated as covering something.
+#[test]
+fn an_unattributed_verdict_is_counted_not_assumed() {
+    let dir = repo_with_a_recorded_verdict();
+    // A second verdict with no wake behind it: nobody can say which test it
+    // belongs to.
+    let datum = datum_of(dir.path(), "pkg.lib.covered");
+    let out = grid(
+        dir.path(),
+        &["cache", "record", "test", "env-1", &format!("{datum}=pass")],
+    );
+    assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
+    // A base to diff against; the fixture's own commit is the only one.
+    commit(dir.path(), "second");
+
+    let out = grid(dir.path(), &["drift", "HEAD~1", "HEAD", "--tests"]);
+    assert_ne!(
+        code(&out),
+        2,
+        "drift must answer: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        misses(&out)
+            .iter()
+            .any(|(n, reason)| n == "1" && reason == "unattributed entries"),
+        "the unattributable verdict is counted:\n{}",
+        stdout(&out)
+    );
+}
+
+/// Conservatism: a test the head chart cannot resolve has verdicts nobody
+/// can re-key. Reported as a `warn`, never counted as fresh — and never as a
+/// gate, because the test being gone is not a divergence in the code.
+#[test]
+fn a_test_that_no_longer_resolves_warns_rather_than_passing_silently() {
+    let dir = repo_with_a_recorded_verdict();
+    std::fs::remove_file(dir.path().join("pkg/test_lib.py")).expect("remove");
+    commit(dir.path(), "drop the test");
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+
+    let out = grid(dir.path(), &["drift", "HEAD~1", "HEAD", "--tests"]);
+    let text = stdout(&out);
+    assert!(
+        text.lines().any(|l| {
+            let c: Vec<&str> = l.split_whitespace().collect();
+            c.first() == Some(&"warn")
+                && c.get(1) == Some(&"test_lib.test_covered")
+                && l.contains("cannot be re-keyed")
+        }),
+        "a test that vanished is said out loud:\n{text}"
+    );
+}
+
+/// Without `--tests` the report says nothing about tests at all — including
+/// nothing that could be read as "all fresh".
+#[test]
+fn without_the_flag_no_test_claim_is_made() {
+    let dir = repo_with_a_recorded_verdict();
+    write(
+        dir.path(),
+        &[(
+            "pkg/lib.py",
+            "def covered():\n    return 2\n\n\ndef elsewhere():\n    return 1\n",
+        )],
+    );
+    commit(dir.path(), "edit inside the closure");
+    let json = report(&grid(dir.path(), &["drift", "HEAD~1", "HEAD", "--json"]));
+    assert!(
+        json.get("stale_tests").is_none(),
+        "an unasked question has no answer: {json}"
+    );
+    assert!(
+        json["unchecked"].get("unattributed_entries").is_none(),
+        "and no count either: {json}"
     );
 }

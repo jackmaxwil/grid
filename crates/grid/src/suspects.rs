@@ -198,7 +198,9 @@ fn outcomes(root: &Path) -> Result<BTreeMap<String, bool>, Error> {
     let mut outcomes = BTreeMap::new();
     for line in text.lines() {
         let fields: Vec<_> = line.split_whitespace().collect();
-        if fields.len() == 4 && fields[3] != "-" {
+        // `>= 4`: the verdict log grows at the end, and a line from a newer
+        // engine still carries its wake id in the same column.
+        if fields.len() >= 4 && fields[3] != "-" {
             match fields[1] {
                 "pass" => {
                     outcomes.insert(fields[3].to_owned(), true);
