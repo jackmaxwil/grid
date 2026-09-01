@@ -1,4 +1,4 @@
-//! `grid.review.pack` — the reviewer's bundle in one call.
+//! `grid check` — the gate verdict and, on request, why it says so.
 //!
 //! A reviewer asks four questions about a change: did it do what it promised,
 //! what did it do that it did not promise, what changed without being run,
@@ -85,7 +85,7 @@ impl From<chart_provider::Error> for Error {
 /// [`Error::Chart`] when the track, the base or the head cannot be resolved;
 /// [`Error::UnknownWake`] when a supplied wake id names nothing retained.
 pub fn pack(params: &ReviewPackParams, root: &Path) -> Result<ReviewPackResult, Error> {
-    let track = crate::track::load(&params.track.0).map_err(chart_provider::Error::Track)?;
+    let track = crate::plan::load(&params.track.0).map_err(chart_provider::Error::Track)?;
     let track = standing::fold(
         &track,
         standing::load(root).map_err(chart_provider::Error::Config)?,

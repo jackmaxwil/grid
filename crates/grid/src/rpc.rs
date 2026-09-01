@@ -506,7 +506,7 @@ pub struct Hotspot {
     pub callsign: String,
     pub datum: String,
     pub complexity: u16,
-    pub legs: u64,
+    pub edits: u64,
     pub score: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub materialization: Option<grid_wire::DefRefMaterialization>,
@@ -618,7 +618,7 @@ pub fn hotspots(
                 callsign: callsign.to_owned(),
                 datum,
                 complexity,
-                legs: churn,
+                edits: churn,
                 score: u64::from(complexity).saturating_mul(1 + churn),
                 materialization: segment.location(ord).map(|loc| {
                     grid_wire::DefRefMaterialization {
@@ -1196,7 +1196,7 @@ pub fn todo(
     params: &TodoParams,
     root: &std::path::Path,
 ) -> Result<TodoResult, chart_provider::Error> {
-    let track = crate::track::load(&params.track.0).map_err(chart_provider::Error::Track)?;
+    let track = crate::plan::load(&params.track.0).map_err(chart_provider::Error::Track)?;
     let track = standing::fold(
         &track,
         standing::load(root).map_err(chart_provider::Error::Config)?,

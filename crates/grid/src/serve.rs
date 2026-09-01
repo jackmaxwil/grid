@@ -356,11 +356,11 @@ fn dispatch_query_review(
                 Ok(p) => p,
                 Err(e) => return Some(Err(e)),
             };
-            crate::review::pack(&params, root)
+            crate::check::pack(&params, root)
                 .map(|v| encode(&v))
                 .map_err(|e| match &e {
-                    crate::review::Error::Chart(chart) => chart_error(chart),
-                    crate::review::Error::UnknownWake(_) => {
+                    crate::check::Error::Chart(chart) => chart_error(chart),
+                    crate::check::Error::UnknownWake(_) => {
                         (WireError::UnknownWake.code(), e.to_string())
                     }
                 })

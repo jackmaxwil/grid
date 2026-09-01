@@ -11,7 +11,7 @@ localization all run over that chart, in identity space, not text space.
 Languages: Rust and Python today. TS/JS next (`swc`-based frontend planned).
 One binary, no daemon required, no build integration, no config. Discovery
 is `git ls-files` minus your ignore rules — vendored code behind a
-`.gitignore` line is never charted, tracked or not. Survey of this repo
+`.gitignore` line is never charted, committed or not. Survey of this repo
 (~1000 defs): ~38ms.
 
 ## Why a developer wants it
@@ -28,14 +28,14 @@ is `git ls-files` minus your ignore rules — vendored code behind a
   first. A ranking, never a gate; clippy owns lints.
 - `grid log X` — a definition's history in identity space. Renames do not
   break the chain.
-- `grid gate <track>` — CI checks the diff against a promised delta. Exit 3
+- `grid gate <plan>` — CI checks the diff against a promised delta. Exit 3
   when unpromised work appeared or promised work is missing.
-- `grid bisect <test>` — first failing patch in the retained chain, from
-  recorded test outcomes. `grid suspects <test>` ranks likely culprits.
+- `grid suspects <test>` — likely culprits, ranked from recorded test
+  outcomes over the retained chain.
 
 Every claim carries its evidence grade (`proven > observed > modeled >
-heuristic`). Grid never guesses: a name it cannot bind by the language's
-own rules resolves to nothing, and the refusal is counted and visible.
+heuristic`). Grid never guesses: a name the language's own binding rules
+do not establish resolves to nothing, and the refusal is counted and visible.
 
 ## Why an agent wants it
 
@@ -75,7 +75,7 @@ cargo install --path crates/grid
 
 Or copy `target/release/grid` onto PATH. Single static binary. Per-repo
 state lives in `.grid/`: a content-addressed segment store, the patch log,
-retained wakes, the verdict cache. All caches — safe to delete, rebuilt by
+retained traces, the verdict cache. All caches — safe to delete, rebuilt by
 the next survey — so gitignore the directory, with two exceptions:
 
 ```gitignore
@@ -96,7 +96,7 @@ grid survey                 # chart the worktree; idempotent
 grid                        # what changed vs the promise (the everyday verb)
 grid uses TagContract       # proven inbound edges, cross-language
 grid resolve validate       # unique-suffix lookup -> callsign, datum, file:line
-grid explain zoc            # any word or id in grid output, explained
+grid explain grade          # any word or id in grid output, explained
 ```
 
 A dozen more verbs behind those; `grid help` lists every one, `grid
@@ -118,10 +118,10 @@ The intended loop:
 
 ```bash
 grid survey                                  # once per turn; ~38ms
-grid track lint plan.json                    # promise the delta up front
+grid plan lint plan.json                     # promise the delta up front
 grid scope Reaper.sweep --depth 2            # context pack before editing
 grid edit apply edits.json                   # CAS by datum; conflicts are typed
-grid cache check test $ENV $(grid ...)       # what actually needs rerunning
+grid cache lookup test $ENV $(grid ...)      # what actually needs rerunning
 grid gate plan.json                          # did the change match the promise
 ```
 
@@ -129,7 +129,7 @@ Rules of the road: trust the refusals — an empty answer means "cannot
 prove", not "does not exist"; use `name@datumprefix` handles to pin
 identity across turns; on `conflict`, re-read the `now` coordinate and
 retry the whole request. Coverage closes the loop with no tracer:
-`grid wake ingest --lcov cov.lcov --test <name>`, then `grid suspects`.
+`grid trace ingest --lcov cov.lcov --test <name>`, then `grid suspects`.
 
 ## Architecture
 
@@ -147,9 +147,9 @@ frontend's design and its paid-for lessons.
 | `grid-chart` | the segment: a validated, mmap-able CSR graph image; delta with rename detection |
 | `grid-chart-io` | the store: atomic publish, crash-safe by kill-9 soak, content-addressed |
 | `grid-cache` | verdicts keyed by identity closure |
-| `grid-wake` | runtime traces → observed edges |
-| `grid-leadline` | budgeted multi-hop query walks |
-| `grid-xte` | track vs made-good: the gate verdict |
+| `grid-trace` | runtime traces → observed edges |
+| `grid-walk` | budgeted multi-hop query walks |
+| `grid-gate` | plan vs diff: the gate verdict |
 | `grid` | CLI + daemon; the only composition root |
 
 Load-bearing invariants:
@@ -160,7 +160,8 @@ Load-bearing invariants:
   chart's primary key must not collapse same-body defs); the *shape*
   erases the name and is the rename-join key. Normalization changes are
   declared epoch bumps, never silent re-hashes.
-- Honesty: an edge exists only where the language's binding rules fix it.
+- Honesty: an edge exists only where the language's binding rules establish
+  it.
   Glob imports, macro bodies, typed receivers: omissions, never guesses.
   Everything declined is counted and reported.
 - Formats: segment epoch 2 is current; epoch-1 images parse forever,
@@ -171,7 +172,7 @@ Load-bearing invariants:
 - Read `docs/ONTOLOGY.md` first; a word means one thing everywhere.
 - Every test defends one externally observable contract, and conservatism
   tests (the feature *declines* what it cannot prove) ship with the
-  feature. A regression test is seen red before the fix is claimed.
+  feature. A regression test is seen red before the repair is claimed.
 - No new dependencies without an ASSURANCE.md ledger entry; parsers for
   config-shaped inputs are line scans with named ceilings, not new crates.
 - `#![forbid(unsafe_code)]` everywhere except the one audited mmap block;
