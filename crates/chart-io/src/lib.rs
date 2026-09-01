@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use grid_chart::{ChartError, Manifest, Segment, SegmentEntry, SnapshotId};
+use grid_chart::{ChartError, Manifest, Member, Membership, Segment, SegmentEntry, SnapshotId};
 use memmap2::Mmap;
 
 /// Bytes of a segment, however they are held.
@@ -104,6 +104,9 @@ impl From<ChartError> for StoreError {
 
 /// File name of the live manifest. Publication is `rename(MANIFEST_TMP, MANIFEST)`.
 pub const MANIFEST: &str = "manifest";
+/// The membership image: identity once, snapshots as reference sets. Derived
+/// data — deletable, and rebuilt from the retained chain by the next publish.
+pub const MEMBERSHIP: &str = "membership";
 const MANIFEST_TMP: &str = "manifest.tmp";
 
 /// One immutable epoch of the chart: a manifest and the segments it names.
@@ -270,8 +273,114 @@ impl Store {
         }
         let epoch = load_epoch(&self.dir, manifest)?;
         let id = epoch.snapshot_id().clone();
+        // Membership is derived: extending it is best effort, because losing
+        // it costs a rebuild and never costs the snapshot that just landed.
+        let _derived = self.extend_membership(&epoch);
         self.epoch.store(Arc::new(epoch));
         Ok(id)
+    }
+
+    /// The membership image, if one has been built.
+    ///
+    /// Mapped like a segment, and validated the same way: a caller only ever
+    /// sees bytes that passed [`grid_chart::Membership::parse`].
+    ///
+    /// # Errors
+    /// [`StoreError`] if the file exists but does not map or does not parse.
+    /// A missing file is `Ok(None)` — derived data that has not been built
+    /// yet is an absence, not a fault.
+    pub fn membership(&self) -> Result<Option<Membership<Bytes>>, StoreError> {
+        let path = self.dir.join(MEMBERSHIP);
+        if !path.exists() {
+            return Ok(None);
+        }
+        Ok(Some(Membership::parse(map_file(&path)?)?))
+    }
+
+    /// Fold one epoch into the membership image, writing the result.
+    ///
+    /// Cheap by construction: the snapshots already in the image are read
+    /// back out of it rather than out of their segments, so the only segment
+    /// work is this epoch's. The bytes are produced by the same builder a
+    /// full rebuild uses, so the two cannot disagree.
+    ///
+    /// ponytail: rewrites the whole image, O(chain), because a global sorted
+    /// datum table makes a new datum shift every later ordinal — a true
+    /// append needs a table that grows without renumbering (an id assigned at
+    /// first sight, with the sort kept as a separate index). Worth doing when
+    /// a chain is long enough for the rewrite to show up in a survey.
+    ///
+    /// # Errors
+    /// [`StoreError`] on I/O failure or an image that does not build.
+    pub fn extend_membership(&self, epoch: &Epoch) -> Result<(), StoreError> {
+        let mut chain = match self.membership()? {
+            Some(existing) => existing.chain(),
+            None => Vec::new(),
+        };
+        let id = epoch.snapshot_id().as_str().to_owned();
+        chain.retain(|(known, _)| known != &id);
+        chain.push((id, members_of(epoch)));
+        self.write_membership(&chain)
+    }
+
+    /// Rebuild the membership image from every retained snapshot.
+    ///
+    /// The recovery path, and the reference the incremental one is checked
+    /// against: same builder, same inputs, therefore the same bytes.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store cannot be read or the image cannot build.
+    pub fn rebuild_membership(&self) -> Result<(), StoreError> {
+        let mut chain = Vec::new();
+        for id in self.retained_snapshots()? {
+            let epoch = self.epoch_of(&id)?;
+            chain.push((id.as_str().to_owned(), members_of(&epoch)));
+        }
+        self.write_membership(&chain)
+    }
+
+    fn write_membership(&self, chain: &[(String, Vec<Member>)]) -> Result<(), StoreError> {
+        let image = grid_chart::build_membership(chain)?;
+        write_atomic(
+            &self.dir,
+            &self.dir.join(MEMBERSHIP),
+            &image,
+            "membership.tmp",
+        )?;
+        Ok(())
+    }
+
+    /// Every snapshot id the store retains, ascending — the chain, as a set.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the directory cannot be read.
+    pub fn retained_snapshots(&self) -> Result<Vec<SnapshotId>, StoreError> {
+        let mut out = Vec::new();
+        for entry in fs::read_dir(&self.dir)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let Some(body) = name
+                .strip_prefix("snap-")
+                .and_then(|n| n.strip_suffix(".manifest"))
+            else {
+                continue;
+            };
+            // The retained file name is the snapshot id with its separators
+            // flattened; the manifest inside is the authority, so read it
+            // rather than un-flattening a name.
+            let _ = body;
+            let Ok(bytes) = fs::read(entry.path()) else {
+                continue;
+            };
+            let Ok(manifest) = Manifest::parse(&bytes) else {
+                continue;
+            };
+            out.push(manifest.snapshot_id());
+        }
+        out.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        out.dedup_by(|a, b| a.as_str() == b.as_str());
+        Ok(out)
     }
 
     /// Reopen a previously published snapshot by id.
@@ -340,6 +449,29 @@ impl Store {
 
 /// File name a snapshot's manifest is retained under. The id is
 /// `snap:b3:<hex>`, and `:` is not a portable path character.
+/// One epoch's definitions, as membership records them: identity plus the
+/// cheap metadata the segment already carries.
+fn members_of(epoch: &Epoch) -> Vec<Member> {
+    let mut out = Vec::new();
+    for segment in epoch.segments() {
+        for ord in 0..segment.def_count() {
+            let ord = grid_chart::Ordinal(ord);
+            let Some(datum) = segment.datum(ord) else {
+                continue;
+            };
+            let size = segment.location(ord).map_or(0, |loc| {
+                u16::try_from(loc.span.end.saturating_sub(loc.span.start)).unwrap_or(u16::MAX)
+            });
+            out.push(Member {
+                datum,
+                complexity: segment.complexity(ord).unwrap_or(0),
+                size,
+            });
+        }
+    }
+    out
+}
+
 fn retained_name(id: &SnapshotId) -> String {
     format!("{}.manifest", id.as_str().replace(':', "-"))
 }

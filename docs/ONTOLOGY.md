@@ -19,6 +19,7 @@ rows are `| \`token\` | one answer, at most three lines when printed |`.
 | `handle` | `callsign@datum-prefix` — a name with its identity pinned, e.g. `Reaper.sweep@e03f`. Typed anywhere a name is accepted; the prefix auto-lengthens like a git short SHA. |
 | `leg` | one edit edge in the patch DAG: a definition's predecessor and successor identities. |
 | `log` | the whole patch DAG: every leg the repo has sailed. |
+| `membership` | derived data beside the chart: every datum the retained chain ever held, stored once, plus one sorted reference list per snapshot. Makes "changed between two snapshots" a merge-diff and "unchanged" an id comparison. Safe to delete; the next survey rebuilds it. |
 | `chart` | the semantic graph: every definition and proven edge, drawn in one place. |
 | `survey` | an indexing pass producing chart segments. Idempotent by construction: an unchanged tree is the same snapshot, so it cannot be run too often. |
 | `snapshot` | one published survey, identified by the hash of its own manifest (`snap:b3:...`); displayed as `@rev`. Content, not a counter. |

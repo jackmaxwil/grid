@@ -17,10 +17,15 @@
 mod build;
 mod delta;
 mod manifest;
+mod membership;
 
 pub use build::{build, Def, DefFacts, Edge};
 pub use delta::made_good;
 pub use manifest::{Manifest, SegmentEntry, SnapshotId};
+pub use membership::{
+    build as build_membership, Change, Member, Membership, MembershipError, MEMBERSHIP_EPOCH,
+    MEMBERSHIP_MAGIC, MEMBERSHIP_SECTIONS,
+};
 
 /// Bytes prefixing every segment image.
 pub const MAGIC: &[u8; 8] = b"GRIDSEG\x00";
