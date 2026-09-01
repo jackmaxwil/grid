@@ -932,9 +932,8 @@ grid check [base] [head] [--plan <file>] [--quick] [--why] [--json]
   the shape column; exact match only, `warn <new>  clone-of <existing>`),
   undeclared compat findings.
 - **`--why`**: with `--plan`, embeds each fulfilled promise's paths
-  (`ReviewPackFulfillingItem`'s content under a new name) and the open
-  anchors — the reviewer's pack, now a flag on the verb the reviewer
-  already runs.
+  (`CheckWhyFulfillingItem`) and the open anchors — the reviewer's pack,
+  now a flag on the verb the reviewer already runs.
 - **Refactor certificate**: one `done` record when no gate fired —
   `done  refactor  interfaces held · <n> covering tests replayed pass ·
   <m> changed defs uncovered`; the phrase "behavior-preserving" appears
