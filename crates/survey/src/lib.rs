@@ -35,7 +35,7 @@ use grid_wire::Lang;
 
 pub use files::SourceFile;
 pub use index::{DefIndex, Symbol};
-pub use resolve::ResolvedEdge;
+pub use resolve::{Resolved, ResolvedEdge};
 
 /// Why a survey could not be produced.
 #[derive(Debug)]
@@ -102,6 +102,12 @@ pub struct Survey {
     /// Names defined in more than one place, and therefore not resolved
     /// against. Surfaced so a survey can say what it declined to prove.
     pub ambiguous: u64,
+    /// References whose source definition resolved and whose target did not:
+    /// a glob import's supply, a name from outside the tree, an ambiguous
+    /// callsign. No edge was recorded for any of them, so every consumer
+    /// that reads the edge set as "everything that reaches this" is wrong by
+    /// at most this much — and can say so.
+    pub declined_refs: u64,
 }
 
 /// The definitions the frontend `lang` names finds in `source`. This is the
@@ -297,13 +303,16 @@ fn run_sources(
     // rules: what "this name binds to" means is per-language, so the
     // resolver dispatches exactly where extraction does.
     let mut edges = Vec::new();
+    let mut declined_refs = 0u64;
     for (file, facts) in &per_file {
         let module = module_for(file);
-        edges.extend(match file.lang {
+        let resolved = match file.lang {
             Lang::Py => resolve::resolve(&index, &module, &facts.refs.imports, &facts.refs.refs),
             Lang::Rs => resolve_rs::resolve(&index, &module, &facts.refs.imports, &facts.refs.refs),
-            Lang::Ts | Lang::Js => Vec::new(),
-        });
+            Lang::Ts | Lang::Js => Resolved::default(),
+        };
+        declined_refs = declined_refs.saturating_add(u64::from(resolved.declined));
+        edges.extend(resolved.edges);
     }
 
     let chart_defs: Vec<grid_chart::Def> = index
@@ -348,5 +357,6 @@ fn run_sources(
         reread,
         langs,
         ambiguous: index.ambiguous_count() as u64,
+        declined_refs,
     })
 }

@@ -312,6 +312,92 @@ pub fn diff(made_good: &grid_wire::MadeGood, name: &NameOf) -> String {
     out
 }
 
+/// Render a drift report: one `drift` record per suspect, then the `miss`
+/// records that say what was not checked.
+///
+/// The evidence grade leads, as it does on every query-result `edge` record,
+/// because a reader's first question about a suspect is how much to believe
+/// it. The arrow points backwards (`dependent <-calls- changed`) because that
+/// is the direction the implication runs: the changed definition is the
+/// cause, the dependent is what may now be wrong.
+///
+/// A report with no suspects and nothing unchecked prints nothing at all,
+/// which is the grammar's "empty result set" — exit 0, no records.
+#[must_use]
+pub fn drift(report: &grid_wire::DriftReport) -> String {
+    let mut out = String::new();
+    for s in &report.suspects {
+        let name = |d: &grid_wire::DefRef| {
+            d.callsign
+                .as_ref()
+                .map_or_else(|| format!("@{}", short(&d.datum)), |c| c.0.clone())
+        };
+        let arrow = format!("<-{}-", relation_name(s.relation));
+        let transition = match (&s.sig_before, &s.sig_after) {
+            (Some(before), Some(after)) => format!("{}→{}", short(before), short(after)),
+            // No sig on one side is the honest unknown that put this suspect
+            // in the list at all; the row says so rather than showing half a
+            // transition as if it were whole.
+            _ => "sig?".to_owned(),
+        };
+        let at = s
+            .dependent
+            .materialization
+            .as_ref()
+            .map(|m| format!("{}:{}", m.file, m.line))
+            .unwrap_or_default();
+        let mut columns = vec![
+            role(zoc_name(s.zoc)),
+            name(&s.dependent),
+            arrow,
+            name(&s.changed),
+            transition,
+        ];
+        if let Some(reason) = &s.reason {
+            columns.push(reason.clone());
+        }
+        columns.push(at);
+        let refs: Vec<&str> = columns.iter().map(String::as_str).collect();
+        record(&mut out, "drift", &refs);
+    }
+    out.push_str(&drift_unchecked(&report.unchecked));
+    out
+}
+
+/// The `miss` records that close a drift report. Both are refusals, and a
+/// refusal that does not print is the dishonest silence the verb exists to
+/// avoid — so an unknown count prints too, as unknown.
+fn drift_unchecked(unchecked: &grid_wire::DriftUnchecked) -> String {
+    let mut out = String::new();
+    match unchecked.unresolved_refs {
+        Some(0) => {}
+        Some(n) => record(
+            &mut out,
+            "miss",
+            &[&n.to_string(), "unresolved references unchecked"],
+        ),
+        None => record(
+            &mut out,
+            "miss",
+            &[
+                "?",
+                "unresolved references uncounted (head was not surveyed)",
+            ],
+        ),
+    }
+    if unchecked.budget_rejected > 0 {
+        record(
+            &mut out,
+            "miss",
+            &[
+                &unchecked.budget_rejected.to_string(),
+                "inbound walks rejected over budget",
+            ],
+        );
+    }
+    out
+}
+
 /// `hit` / `miss` records for a cache check (PORCELAIN.md): callsign column
 /// carries the datum handle, because a cache check is addressed by identity
 /// and a callsign would be ambiguous across time.

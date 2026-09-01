@@ -456,6 +456,46 @@
       ],
       "result": { "name": "bisect", "schema": { "$ref": "#/components/schemas/BisectResult" } },
       "errors": [{ "$ref": "#/components/errors/UnknownSnapshot" }]
+    },
+    {
+      "name": "grid.drift",
+      "summary": "Dependents of changed interfaces: definitions that depend on something whose sig moved, and that did not themselves change. The set the compiler cannot enumerate across languages, re-exports and processes.",
+      "paramStructure": "by-name",
+      "params": [
+        { "name": "base", "required": true, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } },
+        { "name": "head", "required": true, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } },
+        { "name": "floor", "required": false, "schema": { "$ref": "#/components/schemas/Zoc" } },
+        { "name": "track", "required": false, "schema": { "$ref": "#/components/schemas/Track" } }
+      ],
+      "examples": [
+        {
+          "name": "dependents of a changed interface",
+          "params": [
+            { "name": "base", "value": { "git_rev": "bc21972" } },
+            { "name": "head", "value": { "git_rev": "HEAD" } }
+          ],
+          "result": {
+            "name": "drift",
+            "value": {
+              "base": "snap:b3:a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4",
+              "head": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1",
+              "suspects": [
+                {
+                  "dependent": { "datum": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "callsign": "cortana.reaper.Reaper.sweep" },
+                  "changed": { "datum": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "callsign": "cortana.reaper.TagContract.validate" },
+                  "relation": "calls",
+                  "zoc": "proven",
+                  "sig_before": "b3:897d897d897d897d897d897d897d897d897d897d897d897d897d897d897d897d",
+                  "sig_after": "b3:1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b"
+                }
+              ],
+              "unchecked": { "unresolved_refs": 3, "budget_rejected": 0 }
+            }
+          }
+        }
+      ],
+      "result": { "name": "drift", "schema": { "$ref": "#/components/schemas/DriftReport" } },
+      "errors": [{ "$ref": "#/components/errors/UnknownSnapshot" }]
     }
   ],
   "components": {
@@ -1128,6 +1168,41 @@
               "additionalProperties": false
             }
           }
+        },
+        "additionalProperties": false
+      },
+      "DriftSuspect": {
+        "type": "object",
+        "required": ["dependent", "changed", "relation", "zoc"],
+        "properties": {
+          "dependent": { "$ref": "#/components/schemas/DefRef", "description": "The definition that depends on the changed one and did not itself change." },
+          "changed": { "$ref": "#/components/schemas/DefRef", "description": "The definition whose interface moved, as it was at base." },
+          "relation": { "$ref": "#/components/schemas/Relation" },
+          "zoc": { "$ref": "#/components/schemas/Zoc", "description": "Evidence grade of the edge that made this a suspect." },
+          "sig_before": { "$ref": "#/components/schemas/Datum", "description": "The changed definition's interface identity at base, when the snapshot carries one." },
+          "sig_after": { "$ref": "#/components/schemas/Datum", "description": "Its interface identity at head, when the snapshot carries one. Absent on both sides means the sig was unknown and the change was treated as visible." },
+          "reason": { "type": "string", "description": "Why this edge implicated the dependent beyond the edge itself: 'stale-trace' for a decayed observation, 'covenant:<via>' for a declared coupling." }
+        },
+        "additionalProperties": false
+      },
+      "DriftUnchecked": {
+        "type": "object",
+        "required": ["budget_rejected"],
+        "properties": {
+          "unresolved_refs": { "type": "integer", "minimum": 0, "description": "References the head survey declined to bind, so no edge exists for them and no dependent could be found through them. Absent means head was a published snapshot nobody re-surveyed in this run, so the count is unknown — never reported as zero." },
+          "budget_rejected": { "type": "integer", "minimum": 0, "description": "Definitions whose inbound walk ran past its budget. The walk is rejected whole, never truncated: a truncated walk is indistinguishable from a smaller one." }
+        },
+        "additionalProperties": false,
+        "description": "What drift could not check. A drift report claiming no suspects where it could not see callers is dishonest silence, so the counts ride with every answer."
+      },
+      "DriftReport": {
+        "type": "object",
+        "required": ["base", "head", "suspects", "unchecked"],
+        "properties": {
+          "base": { "$ref": "#/components/schemas/SnapshotId" },
+          "head": { "$ref": "#/components/schemas/SnapshotId" },
+          "suspects": { "type": "array", "items": { "$ref": "#/components/schemas/DriftSuspect" } },
+          "unchecked": { "$ref": "#/components/schemas/DriftUnchecked" }
         },
         "additionalProperties": false
       },

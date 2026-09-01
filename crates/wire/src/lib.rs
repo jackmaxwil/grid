@@ -766,6 +766,38 @@ pub struct SuspectsRankedItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct DriftSuspect {
+    pub dependent: DefRef,
+    pub changed: DefRef,
+    pub relation: Relation,
+    pub zoc: Zoc,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig_before: Option<Datum>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig_after: Option<Datum>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DriftUnchecked {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unresolved_refs: Option<u64>,
+    pub budget_rejected: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DriftReport {
+    pub base: SnapshotId,
+    pub head: SnapshotId,
+    pub suspects: Vec<DriftSuspect>,
+    pub unchecked: DriftUnchecked,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BisectResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub culprit: Option<Datum>,
