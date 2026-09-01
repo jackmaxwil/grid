@@ -35,6 +35,28 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 | C22 | seeded revision history finds the injected culprit deterministically and reports measured cache hits above one half of probes | bisect.rs | 10 |
 | C23 | suspect ranking and bisect both refuse when retained production history is absent; fixture evidence is never presented as accumulated production evidence | wave10.rs conformance.rs bisect.rs | 10 |
 
+| C24 | a definition's `sig` moves when and only when a caller could see the change; a snapshot that predates the sig column answers *unknown*, never *unchanged* | sig.rs sig_delta.rs epochs.rs | 10+ |
+| C25 | a drift suspect is a dependent whose own datum did not move, reached by an edge at or above the query's floor; an inbound walk over budget refuses the whole answer, and every reference the survey declined is counted in the report, never silently absent | drift.rs conformance.rs | 10+ |
+| C26 | an observed edge is graded `observed` only while both its endpoints are interned in the chart asked about; any endpoint that cannot be verified demotes it to `heuristic` with reason `stale-trace`, and the retained wake is never rewritten | decay.rs drift.rs | 10+ |
+| C27 | a covenant fires only where one declared side changed and the other held, is symmetric in the two patterns, gates at `modeled` because a human declared it, and warns rather than silently passing when a pattern matches nothing at drift time | drift.rs covenant.rs | 10+ |
+| C28 | a test's recorded verdict is reported fresh only when its closure key, recomputed at head, is one the cache holds; a closure that cannot be established is stale, and a verdict no retained wake claims is counted rather than checked | stale.rs drift.rs | 10+ |
+| C29 | a membership diff of two snapshots names exactly the definitions the delta path does; an image extended one snapshot at a time is byte-identical to one rebuilt from the whole chain; a snapshot the chain never held is a typed refusal, never an empty diff | membership.rs | 10+ |
+| C30 | a weak-test finding requires all four facts — the definition's datum moved, a live trace covers it, the test's own datum held, and a pass is on record at both endpoints — is graded heuristic, and never moves the exit code; coverage from a decayed trace yields no finding and is counted | weak.rs | 10+ |
+| C31 | an aground walk's `complete_within` is a layer it fully expanded, so the answer truncated to that depth equals the unbudgeted walk's under the same filter; a walk whose first layer did not finish certifies nothing | certificate.rs walk.rs | 10+ |
+| C32 | a watch session's summed deltas equal a fresh `grid drift` after every prefix of an event sequence; an edit and its revert net to zero; an unparseable file event emits no deltas and is counted | watch.rs | 10+ |
+
+
+## Maintained views
+
+Every view a watch session maintains declares its class before it lands. The
+classification is DBSP's and it is a cost model, not a taxonomy: it says what
+state maintenance needs, and therefore what a session must hold.
+
+| view | class | state it must hold | why |
+|---|---|---|---|
+| sig re-hash (a file's interface identities) | linear | none | a linear operator *is* its own incremental form: delta in, delta out. |
+| drift suspects | bilinear | the edge table (the base snapshot's resident segments — already the integral of every edge delta) and the changed-sig set since base | a join needs the integrals of both inputs: `Δ(a⋈b) = Δa⋈Δb + a⋈Δb + Δa⋈b`. Nothing else is needed, and nothing else is held. |
+| verdict closures | recursive | **declared not maintained** | the nested-stream case: correct to incrementalise and expensive to. The budgeted invalidate-and-rewalk in `grid cache` stays the call. |
 
 ## Dependency justification
 
@@ -106,7 +128,14 @@ The segment format is the other compatibility surface: images are prefixed
 `GRIDSEG\0` and carry a `FORMAT_EPOCH`, and the manifest carries the same
 epoch. A format change is a refusal to load old bytes (`BadEpoch`) and a
 re-survey, never a reinterpretation — the same declared-epoch discipline the
-normalizer follows.
+normalizer follows. The two halves of that rule differ by design:
+`Segment::parse` keeps reading *every* epoch ever shipped, answering the
+columns an older image does not declare with `None` (never a fabricated
+value), pinned by a committed fixture per epoch; a manifest from a past epoch
+is instead dropped, so `Store::open` yields the empty store and names the
+epoch it superseded (`Store::superseded`) — the recovery the rule prescribes
+is a re-survey, and a hard error there would take the re-survey down with
+everything else.
 
 ## The one unsafe block
 

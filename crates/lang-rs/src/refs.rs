@@ -222,6 +222,29 @@ impl<'ast> Visit<'ast> for Scan {
                     s.visit_item(item);
                 }
             });
+            return;
+        }
+        // `#[path = "..."] mod x;` relocates the module's file. Top-level
+        // declarations only: inside an inline mod the path is relative to
+        // the mod's own directory, a rule this frontend does not model.
+        if !self.scope.is_empty() {
+            return;
+        }
+        for attr in &node.attrs {
+            if !attr.path().is_ident("path") {
+                continue;
+            }
+            if let syn::Meta::NameValue(nv) = &attr.meta {
+                if let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(lit),
+                    ..
+                }) = &nv.value
+                {
+                    self.out
+                        .path_mods
+                        .push((node.ident.to_string(), lit.value()));
+                }
+            }
         }
     }
 

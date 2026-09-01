@@ -252,3 +252,35 @@ fn republishing_an_identical_state_is_idempotent_including_retention() {
     assert_eq!(first, again);
     assert_eq!(store.epoch_of(&first).unwrap().snapshot_id(), &first);
 }
+
+#[test]
+fn a_manifest_from_a_past_epoch_is_dropped_and_named_not_reinterpreted() {
+    // ASSURANCE.md's declared epoch discipline: old bytes are refused and the
+    // recovery is a re-survey. The refusal must not take the re-survey down
+    // with it, so the store opens empty — and says which epoch it dropped, so
+    // the emptiness is explained rather than mysterious.
+    let dir = tempfile::tempdir().unwrap();
+    let mut stale = b"grid-manifest/v1\n".to_vec();
+    stale.extend_from_slice(&2u32.to_le_bytes());
+    std::fs::write(dir.path().join("manifest"), stale).unwrap();
+
+    let store = Store::open(dir.path()).unwrap();
+    assert_eq!(store.superseded(), Some(2));
+    assert!(store.load().segments().is_empty());
+
+    // A fresh store over a current manifest supersedes nothing.
+    let mut store = Store::open(dir.path()).unwrap();
+    store.publish("rev1", None, &[image(3)]).unwrap();
+    let reopened = Store::open(dir.path()).unwrap();
+    assert_eq!(reopened.superseded(), None);
+    assert_eq!(reopened.load().segments().len(), 1);
+}
+
+#[test]
+fn a_corrupt_manifest_is_still_an_error() {
+    // Only a *past epoch* is recoverable. Garbage is the store being wrong
+    // about itself, and that must not read as "empty".
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("manifest"), b"not a manifest at all").unwrap();
+    assert!(Store::open(dir.path()).is_err());
+}

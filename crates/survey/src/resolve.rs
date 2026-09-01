@@ -66,19 +66,38 @@ pub(crate) fn scope_contains(outer: &str, inner: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('.'))
 }
 
+/// A file's resolved edges, plus what the resolver declined to resolve.
+///
+/// The count is the honest half. A reference whose name the language's own
+/// rules cannot bind to exactly one definition — a name a glob import would
+/// have supplied, a name from outside the tree, an ambiguous callsign —
+/// yields no edge, and an unreported omission is indistinguishable from an
+/// absence of coupling. Every consumer that answers "nothing reaches this"
+/// has to be able to say how much it could not see.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Resolved {
+    /// Edges the language's binding rules establish.
+    pub edges: Vec<ResolvedEdge>,
+    /// References whose source definition resolved and whose *target* did
+    /// not. Module-level references are not counted: they have no source
+    /// definition, so they were never candidates for an edge.
+    pub declined: u32,
+}
+
+impl Resolved {
+    fn decline(&mut self) {
+        self.declined = self.declined.saturating_add(1);
+    }
+}
+
 /// Resolve one file's references against the whole-tree index.
 ///
 /// `module` is the dotted module path of the file being resolved, used to
 /// anchor relative imports and to look up names defined in the file itself.
 #[must_use]
-pub fn resolve(
-    index: &DefIndex,
-    module: &str,
-    imports: &[Import],
-    refs: &[Reference],
-) -> Vec<ResolvedEdge> {
+pub fn resolve(index: &DefIndex, module: &str, imports: &[Import], refs: &[Reference]) -> Resolved {
     let bindings = Bindings { imports };
-    let mut out = Vec::new();
+    let mut out = Resolved::default();
     for r in refs {
         // A reference from module level has no source definition, so it has
         // no edge: an edge is a relationship between two definitions.
@@ -86,6 +105,7 @@ pub fn resolve(
             continue;
         };
         let Some(target) = target_of(index, &bindings, module, r) else {
+            out.decline();
             continue;
         };
         // A definition referencing itself is a fact about recursion, not a
@@ -93,7 +113,7 @@ pub fn resolve(
         if src == target.datum {
             continue;
         }
-        out.push(ResolvedEdge {
+        out.edges.push(ResolvedEdge {
             src,
             dst: target.datum,
             relation: relation_of(r.kind, target.is_class),

@@ -155,6 +155,9 @@ pub fn query<G: Graph + ?Sized>(
         visited: walk.visited,
         hops: walk.hops,
         ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        // Not a diagnostic: a claim about the answer, and a pure function of
+        // the graph and the query. See `Walk::complete_within`.
+        complete_within: walk.complete_within,
     };
     let frontier = (!walk.frontier.is_empty()).then(|| {
         walk.frontier

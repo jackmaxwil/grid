@@ -49,7 +49,9 @@ def rust_type(prop, parent, pname, extra):
             return name
         return "String"
     if t == "integer":
-        return "u64"
+        # A schema that admits negatives needs a signed Rust type; the
+        # contract's `minimum` is what says so.
+        return "i64" if prop.get("minimum", 0) < 0 else "u64"
     if t == "number":
         return "f64"
     if t == "boolean":

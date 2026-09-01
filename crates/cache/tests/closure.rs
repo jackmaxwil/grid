@@ -207,6 +207,7 @@ fn a_recorded_verdict_survives_reopening() {
                 verdict: Verdict::Fail,
                 recorded_at: "2026-08-07T18:05:40Z".into(),
                 wake_id: None,
+                env_hash: Some("env".into()),
             },
         )
         .expect("put");
@@ -233,6 +234,7 @@ fn a_torn_tail_line_is_dropped_not_guessed_at() {
                 verdict: Verdict::Pass,
                 recorded_at: "2026-08-07T18:05:40Z".into(),
                 wake_id: Some("wake:1".into()),
+                env_hash: Some("env".into()),
             },
         )
         .expect("put");

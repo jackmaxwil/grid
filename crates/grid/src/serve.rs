@@ -202,6 +202,23 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
                 .map(|d| encode(&d))
                 .map_err(|e| chart_error(&e))
         }
+        "grid.drift" => {
+            let params = serde_json::from_value(params).map_err(bad_params)?;
+            rpc::drift(&params, root)
+                .map(|d| encode(&d))
+                .map_err(|e| match &e {
+                    crate::drift::Error::Chart(chart) => chart_error(chart),
+                    // A refused walk and an unreadable wake store are both
+                    // the engine declining to serve an answer it cannot
+                    // stand behind — internal conditions, not bad input.
+                    crate::drift::Error::BudgetRejected(_)
+                    | crate::drift::Error::Wake(_)
+                    | crate::drift::Error::Stale(_) => (-32603, e.to_string()),
+                    // An unreadable declaration file is repo configuration,
+                    // which is the caller's to fix.
+                    crate::drift::Error::Covenants(_) => (-32602, e.to_string()),
+                })
+        }
         "grid.resolve" => {
             let params = serde_json::from_value(params).map_err(bad_params)?;
             rpc::resolve(&params, root)

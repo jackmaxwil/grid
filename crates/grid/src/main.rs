@@ -24,6 +24,8 @@
 
 mod bisect;
 mod chart_provider;
+mod covenant;
+mod drift;
 mod edit;
 mod explain;
 mod lcov;
@@ -32,11 +34,14 @@ mod porcelain;
 mod review;
 mod rpc;
 mod serve;
+mod stale;
 mod standing;
 mod suspects;
 mod track;
+mod watch;
+mod weak;
 
-use std::io::Write as _;
+use std::io::{BufRead as _, Write as _};
 use std::process::ExitCode;
 
 /// Exit codes, uniform across verbs (`docs/PORCELAIN.md`).
@@ -69,6 +74,64 @@ fn banner() {
     ));
 }
 
+/// One line per verb — the banner sells three, this lists them all.
+fn help() {
+    hint(
+        "\nverbs:\n  \
+         survey                       chart the worktree; idempotent\n  \
+         diff [base] [head]           what changed, in defs and edges\n  \
+         drift [base] [head]          dependents of changed interfaces; exit 3 on suspects\n  \
+         drift --tests                known tests whose recorded verdict no longer applies\n  \
+         bind <A> <B> --via <word>    declare a coupling no language establishes\n  \
+         watch [base]                 signed drift deltas, one file event per stdin line\n  \
+         resolve <name|file|f:line>   where it is; a bare file lists its defs\n  \
+         uses <name> [--relation r]   proven inbound edges\n  \
+         scope <pattern> [--depth N]  context pack around an edit\n  \
+         orphans [--under p]          no proven caller (not the same as dead)\n  \
+         hotspots [--under p]         complexity x churn, descending\n  \
+         roots                        import name -> directory map\n  \
+         log <name>                   a definition's history in identity space\n  \
+         bisect <test>                first failing patch in the chain\n  \
+         suspects <test>              likely culprits, ranked\n  \
+         gate <track> [head]          promise vs delta; exit 3 on hold\n  \
+         track lint <file>            validate a promise file\n  \
+         todo <track>                 the promise as a worklist\n  \
+         review <track> [head]        gate verdict with its why\n  \
+         cache check|record ...       test verdicts keyed by identity closure\n  \
+         edit apply <file>            compare-and-swap edits by datum\n  \
+         wake ingest|diff ...         runtime traces -> observed edges\n  \
+         explain <anything>           define any word or id in grid output\n  \
+         serve                        the same contract on a socket\n\n\
+         every verb takes --json; hints live on stderr (GRID_HINTS=0)",
+    );
+}
+
+/// `grid roots` — the import-name -> directory map the callsigns are rooted
+/// in. This is discovery output: the roots come from manifests, not the
+/// chart, so it works before the first survey.
+fn roots(_args: &[&str], json: bool) -> u8 {
+    match grid_survey::files::crate_roots(root()) {
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            exit::BAD_INPUT
+        }
+        Ok(roots) => {
+            let rows: Vec<(String, String)> = roots
+                .entries()
+                .map(|(dir, name)| {
+                    let dir = if dir.is_empty() { "." } else { dir };
+                    (name.to_owned(), dir.to_owned())
+                })
+                .collect();
+            if json {
+                return emit_json(&rows);
+            }
+            print!("{}", porcelain::roots(&rows));
+            exit::OK
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let json = args.iter().any(|a| a == "--json");
@@ -88,11 +151,15 @@ fn main() -> ExitCode {
         }
         Some((&"help" | &"--help" | &"-h", _)) => {
             banner();
+            help();
             exit::OK
         }
         Some((&"version", _)) => version(json),
         Some((&"survey", args)) => survey(args, json),
         Some((&"diff", args)) => diff(args, json),
+        Some((&"drift", args)) => drift_verb(args, json),
+        Some((&"bind", args)) => bind(args, json),
+        Some((&"watch", args)) => watch_verb(args, json),
         Some((&"resolve", args)) => resolve(args, json),
         Some((&"gate", args)) => gate(args, json),
         Some((&"track", args)) => track::main(args, json),
@@ -102,6 +169,7 @@ fn main() -> ExitCode {
         Some((&"edit", args)) => edit(args, json),
         Some((&"uses", args)) => uses(args, json),
         Some((&"orphans", args)) => orphans(args, json),
+        Some((&"roots", args)) => roots(args, json),
         Some((&"log", args)) => log(args, json),
         Some((&"bisect", args)) => bisect_verb(args, json),
         Some((&"hotspots", args)) => hotspots(args, json),
@@ -112,7 +180,7 @@ fn main() -> ExitCode {
         Some((&"serve", args)) => serve::main(args),
         Some((other, _)) => {
             hint(&format!(
-                "grid: unknown verb `{other}`\nhint: run `grid` for the three commands"
+                "grid: unknown verb `{other}`\nhint: `grid help` lists every verb"
             ));
             exit::BAD_INPUT
         }
@@ -382,13 +450,19 @@ fn survey(args: &[&str], json: bool) -> u8 {
             hint(&format!("grid: {e}"));
             exit::INTERNAL
         }
-        Ok((snapshot, reread)) => {
+        Ok((snapshot, ran)) => {
+            if let Some(epoch) = ran.superseded {
+                hint(&format!(
+                    "grid: dropped a chart written by segment format epoch {epoch} — \
+                     re-surveyed from cold, nothing was reinterpreted"
+                ));
+            }
             if json {
                 return emit_json(&snapshot);
             }
             print!(
                 "{}",
-                porcelain::snapshot(&snapshot, Some((reread, started.elapsed())))
+                porcelain::snapshot(&snapshot, Some((ran.reread, started.elapsed())))
             );
             exit::OK
         }
@@ -424,6 +498,380 @@ fn diff(args: &[&str], json: bool) -> u8 {
     }
 }
 
+/// `grid drift [<base>] [<head>] [--floor <zoc>] [--track <file>]` — the
+/// dependents of every changed interface that did not themselves change.
+///
+/// Exit 3 when suspects exist: an unaddressed dependent of a changed
+/// interface is a divergence, and CI needs no output parsing to see it. Exit
+/// 1 when an inbound walk ran past its fuel — the answer is refused whole,
+/// because a truncated walk reports fewer suspects and looks cleaner for it.
+fn drift_verb(args: &[&str], json: bool) -> u8 {
+    let mut floor = None;
+    let mut track = None;
+    let mut tests = false;
+    let mut positional = Vec::new();
+    let mut rest = args;
+    while let Some((arg, tail)) = rest.split_first() {
+        rest = tail;
+        match *arg {
+            "--floor" => {
+                let (Some(spec), Some(tail)) = (rest.first(), rest.get(1..)) else {
+                    hint(DRIFT_USAGE);
+                    return exit::BAD_INPUT;
+                };
+                let Some(want) = zoc_named(spec) else {
+                    hint(DRIFT_USAGE);
+                    return exit::BAD_INPUT;
+                };
+                floor = Some(want);
+                rest = tail;
+            }
+            "--track" => {
+                let (Some(spec), Some(tail)) = (rest.first(), rest.get(1..)) else {
+                    hint(DRIFT_USAGE);
+                    return exit::BAD_INPUT;
+                };
+                match track::load(spec) {
+                    Ok(t) => track = Some(t),
+                    Err(e) => {
+                        hint(&format!("grid: {e}"));
+                        return exit::BAD_INPUT;
+                    }
+                }
+                rest = tail;
+            }
+            "--tests" => tests = true,
+            other if other.starts_with("--") => {
+                hint(&format!("grid: unknown flag `{other}`\n{DRIFT_USAGE}"));
+                return exit::BAD_INPUT;
+            }
+            other => positional.push(other),
+        }
+    }
+    if positional.len() > 2 {
+        hint(DRIFT_USAGE);
+        return exit::BAD_INPUT;
+    }
+    let params = grid_wire::methods::DriftParams {
+        base: snapshot_or_rev(positional.first().unwrap_or(&"HEAD~1")),
+        head: snapshot_or_rev(positional.get(1).unwrap_or(&"HEAD")),
+        floor,
+        track,
+        tests: tests.then_some(true),
+    };
+    match rpc::drift(&params, root()) {
+        Err(
+            e @ (drift::Error::BudgetRejected(_) | drift::Error::Wake(_) | drift::Error::Stale(_)),
+        ) => {
+            hint(&format!("grid: {e}"));
+            exit::INTERNAL
+        }
+        Err(e @ (drift::Error::Chart(_) | drift::Error::Covenants(_))) => {
+            hint(&format!("grid: {e}"));
+            exit::BAD_INPUT
+        }
+        Ok(report) => {
+            // A stale verdict is proven-grade staleness — the closure key is
+            // identity math — so it diverges exactly as a suspect does.
+            let code = if report.suspects.is_empty()
+                && report.stale_tests.iter().flatten().next().is_none()
+            {
+                exit::OK
+            } else {
+                exit::DIVERGENCE
+            };
+            if json {
+                // A serialization failure is internal (1) and outranks the
+                // verdict, exactly as `grid gate` treats it.
+                return match emit_json(&report) {
+                    exit::OK => code,
+                    failure => failure,
+                };
+            }
+            print!("{}", porcelain::drift(&report));
+            if code == exit::DIVERGENCE {
+                hint(
+                    "grid: these depend on an interface that moved and were not touched — \
+                     update them, or promise them in a track and re-run with --track",
+                );
+            }
+            code
+        }
+    }
+}
+
+const DRIFT_USAGE: &str = "usage: grid drift [<base>] [<head>] \
+     [--floor <proven|observed|modeled|heuristic>] [--track <file>] [--tests]";
+
+/// The wire spelling of an evidence grade, for `--floor` arguments. The serde
+/// names are the vocabulary, so the flag cannot drift from the contract.
+fn zoc_named(name: &str) -> Option<grid_wire::Zoc> {
+    serde_json::from_value(serde_json::Value::String(name.to_owned())).ok()
+}
+
+const BIND_USAGE: &str = "usage: grid bind <A> <B> --via <word> [--note <text>] | grid bind --list";
+
+/// `grid bind <A> <B> --via <word> [--note <text>]` — declare a coupling no
+/// language's binding rules establish, so drift can see it.
+///
+/// Both patterns are resolved against the current snapshot and a pattern
+/// matching nothing is refused: a declaration about code that does not exist
+/// is a rule that will never fire, and writing it down silently is worse than
+/// not writing it. Removing a covenant is editing the file — it is a
+/// declaration, like a track.
+fn bind(args: &[&str], json: bool) -> u8 {
+    if args.first() == Some(&"--list") {
+        return match covenant::load(root()) {
+            Err(e) => {
+                hint(&format!("grid: {e}"));
+                exit::BAD_INPUT
+            }
+            Ok(rows) => {
+                if json {
+                    return emit_json(&rows);
+                }
+                print!("{}", porcelain::covenants(&rows));
+                exit::OK
+            }
+        };
+    }
+    let mut via = None;
+    let mut note = None;
+    let mut positional = Vec::new();
+    let mut rest = args;
+    while let Some((arg, tail)) = rest.split_first() {
+        rest = tail;
+        let mut flag = |slot: &mut Option<String>| match rest.split_first() {
+            Some((value, tail)) => {
+                *slot = Some((*value).to_owned());
+                rest = tail;
+                true
+            }
+            None => false,
+        };
+        match *arg {
+            "--via" => {
+                if !flag(&mut via) {
+                    hint(BIND_USAGE);
+                    return exit::BAD_INPUT;
+                }
+            }
+            "--note" => {
+                if !flag(&mut note) {
+                    hint(BIND_USAGE);
+                    return exit::BAD_INPUT;
+                }
+            }
+            other if other.starts_with("--") => {
+                hint(&format!("grid: unknown flag `{other}`\n{BIND_USAGE}"));
+                return exit::BAD_INPUT;
+            }
+            other => positional.push(other),
+        }
+    }
+    let ([a, b], Some(via)) = (positional.as_slice(), via) else {
+        hint(BIND_USAGE);
+        return exit::BAD_INPUT;
+    };
+    if via.is_empty() {
+        hint(BIND_USAGE);
+        return exit::BAD_INPUT;
+    }
+    for pattern in [*a, *b] {
+        match rpc::matching(root(), pattern) {
+            Err(e) => {
+                hint(&format!("grid: {e}"));
+                return exit::INTERNAL;
+            }
+            // The `resolve` contract, restated: a name that resolves to
+            // nothing is bad input, and the hint lists the closest charted
+            // callsigns — silence was read as "does not exist", which is the
+            // one conclusion grid never licenses.
+            Ok(0) => {
+                hint(&miss(pattern));
+                return exit::BAD_INPUT;
+            }
+            Ok(_) => {}
+        }
+    }
+    let mut covenants = match covenant::load(root()) {
+        Ok(rows) => rows,
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            return exit::BAD_INPUT;
+        }
+    };
+    let fresh = grid_wire::Covenant {
+        a: grid_wire::CallsignPattern((*a).to_owned()),
+        b: grid_wire::CallsignPattern((*b).to_owned()),
+        via,
+        note,
+    };
+    // Declaring the same pair twice is one declaration, not two.
+    if !covenants
+        .iter()
+        .any(|c| c.a == fresh.a && c.b == fresh.b && c.via == fresh.via)
+    {
+        covenants.push(fresh);
+    }
+    if let Err(e) = covenant::save(root(), &covenants) {
+        hint(&format!("grid: {e}"));
+        return exit::INTERNAL;
+    }
+    if json {
+        return emit_json(&covenants);
+    }
+    print!("{}", porcelain::covenants(&covenants));
+    exit::OK
+}
+
+const WATCH_USAGE: &str = "usage: grid watch [<base>] [--floor <zoc>] [--track <file>]\n\
+     reads changed paths on stdin, one per line; a blank line ends an event";
+
+/// `grid watch [<base>]` — drift maintained as signed deltas.
+///
+/// Events arrive on stdin: one changed path per line, a blank line ending an
+/// event. That is deliberately the whole event source — an OS watcher is a
+/// dependency decision, and `fswatch . | grid watch` or
+/// `git diff --name-only | grid watch` already reaches this.
+///
+/// Output is `delta` records, `+` for a suspect that appeared and `-` for one
+/// retracted. A consumer holds a running sum; the sum after any prefix of
+/// events is what a fresh `grid drift` would say.
+fn watch_verb(args: &[&str], json: bool) -> u8 {
+    let mut floor = None;
+    let mut track = None;
+    let mut positional = Vec::new();
+    let mut rest = args;
+    while let Some((arg, tail)) = rest.split_first() {
+        rest = tail;
+        match *arg {
+            "--floor" => {
+                let (Some(spec), Some(want), Some(tail)) = (
+                    rest.first(),
+                    rest.first().and_then(|s| zoc_named(s)),
+                    rest.get(1..),
+                ) else {
+                    hint(WATCH_USAGE);
+                    return exit::BAD_INPUT;
+                };
+                let _ = spec;
+                floor = Some(want);
+                rest = tail;
+            }
+            "--track" => {
+                let (Some(spec), Some(tail)) = (rest.first(), rest.get(1..)) else {
+                    hint(WATCH_USAGE);
+                    return exit::BAD_INPUT;
+                };
+                match track::load(spec) {
+                    Ok(t) => track = Some(t),
+                    Err(e) => {
+                        hint(&format!("grid: {e}"));
+                        return exit::BAD_INPUT;
+                    }
+                }
+                rest = tail;
+            }
+            other if other.starts_with("--") => {
+                hint(&format!("grid: unknown flag `{other}`\n{WATCH_USAGE}"));
+                return exit::BAD_INPUT;
+            }
+            other => positional.push(other),
+        }
+    }
+    if positional.len() > 1 {
+        hint(WATCH_USAGE);
+        return exit::BAD_INPUT;
+    }
+    let base = snapshot_or_rev(positional.first().unwrap_or(&"HEAD"));
+    let mut session = match watch::Session::open(
+        root(),
+        base,
+        floor.unwrap_or(grid_wire::Zoc::Observed),
+        track,
+    ) {
+        Ok(session) => session,
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            return exit::BAD_INPUT;
+        }
+    };
+    hint("grid: watching — one changed path per line, blank line ends an event");
+
+    let mut batch: Vec<String> = Vec::new();
+    let stdin = std::io::stdin();
+    for line in stdin.lock().lines() {
+        let Ok(line) = line else {
+            hint("grid: cannot read stdin");
+            return exit::INTERNAL;
+        };
+        let path = line.trim();
+        if !path.is_empty() {
+            batch.push(path.to_owned());
+            continue;
+        }
+        if batch.is_empty() {
+            continue;
+        }
+        let code = emit_event(&mut session, &batch, json);
+        batch.clear();
+        if code != exit::OK {
+            return code;
+        }
+    }
+    // End of input is the end of the last event, so a caller that pipes a
+    // file list and closes the pipe gets an answer rather than silence.
+    let code = if batch.is_empty() {
+        exit::OK
+    } else {
+        emit_event(&mut session, &batch, json)
+    };
+    let declined = session.declined();
+    if code == exit::OK && declined > 0 && !json {
+        print!("{}", porcelain::declined(&[format!("{declined} events")]));
+    }
+    code
+}
+
+/// One event's worth of output. Always exit 0 on success: watch mode reports
+/// a stream, and a stream has no verdict — `grid drift` is the verb that
+/// holds.
+fn emit_event(session: &mut watch::Session, batch: &[String], json: bool) -> u8 {
+    match session.event(batch) {
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            exit::INTERNAL
+        }
+        Ok(emitted) => {
+            for path in &emitted.declined {
+                hint(&format!(
+                    "grid: {path} does not parse — no deltas for this event, \
+                     because a file grid cannot read is not a file with nothing in it"
+                ));
+            }
+            if !json {
+                // The refusal is part of the stream, not a note beside it.
+                print!("{}", porcelain::declined(&emitted.declined));
+            }
+            if emitted.recomputed {
+                hint(
+                    "grid: event too large to maintain incrementally — recomputed the whole \
+                     suspect set; the deltas are the same, the work was not",
+                );
+            }
+            if json {
+                return emit_json(&emitted.deltas);
+            }
+            print!("{}", porcelain::deltas(&emitted.deltas));
+            // A stream is only a stream if it arrives: without this the
+            // consumer sees nothing until the pipe closes.
+            let _unflushed = std::io::stdout().flush();
+            exit::OK
+        }
+    }
+}
+
 /// `grid resolve <name>` — the definitions a name refers to.
 ///
 /// Ambiguity is not an error here: every candidate is printed, because the
@@ -441,6 +889,36 @@ fn resolve(args: &[&str], json: bool) -> u8 {
         .rsplit_once(':')
         .and_then(|(file, line)| Some((file, line.parse::<u64>().ok()?)))
         .filter(|(file, _)| file.contains('/'));
+    // A bare file path lists what the file contains — the "what's in
+    // here" opener. `:line` narrows to the enclosing definition instead.
+    let looks_like_file = file_line.is_none()
+        && !name.contains('@')
+        && (name.contains('/')
+            || matches!(
+                name.rsplit_once('.').map(|(_, e)| e),
+                Some("py" | "pyi" | "rs")
+            ));
+    if looks_like_file {
+        return match rpc::defs_in_file(root(), name) {
+            Err(e) => {
+                hint(&format!("grid: {e}"));
+                exit::INTERNAL
+            }
+            Ok(defs) if defs.is_empty() => {
+                hint(&format!(
+                    "grid: no charted definitions in `{name}` — paths are repo-relative"
+                ));
+                exit::BAD_INPUT
+            }
+            Ok(defs) => {
+                if json {
+                    return emit_json(&defs);
+                }
+                print!("{}", porcelain::refs(&defs));
+                exit::OK
+            }
+        };
+    }
     let locator = if let Some((file, line)) = file_line {
         grid_wire::Locator::FileLine {
             file: file.to_owned(),
@@ -471,12 +949,32 @@ fn resolve(args: &[&str], json: bool) -> u8 {
             if defs.len() > 1 {
                 hint(&format!("grid: {name} names {} definitions", defs.len()));
             }
-            // An empty result is exit 0 with no records: "nothing is called
-            // that" is an answer (PORCELAIN.md).
+            // A miss used to be a silent exit 0, and agents read silence as
+            // "does not exist". Bad input plus the near misses instead.
+            if defs.is_empty() {
+                hint(&miss(name));
+                return exit::BAD_INPUT;
+            }
             print!("{}", porcelain::refs(&defs));
             exit::OK
         }
     }
+}
+
+/// The refusal for a name that resolved to nothing: what was asked, and the
+/// closest charted callsigns so a partial path or a typo self-corrects.
+fn miss(name: &str) -> String {
+    let mut msg = format!("grid: nothing is called `{name}`");
+    if let Ok(near) = rpc::nearest(root(), name, 5) {
+        if !near.is_empty() {
+            msg.push_str(" — closest:");
+            for callsign in near {
+                msg.push_str("\n  ");
+                msg.push_str(&callsign);
+            }
+        }
+    }
+    msg
 }
 
 /// `grid scope <callsign-pattern>... [--depth N]` — the context pack around
@@ -518,10 +1016,23 @@ fn scope(args: &[&str], json: bool) -> u8 {
                 return emit_json(&pack);
             }
             print!("{}", porcelain::scope(&pack, &namer()));
+            // The pack's horizon, said out loud. `scope` walks a fixed number
+            // of layers and spends no fuel, so it is complete to exactly that
+            // depth and to nothing beyond — a reader who cannot tell those
+            // apart cannot use a bounded answer.
+            let hops = depth.unwrap_or(DEFAULT_SCOPE_DEPTH);
+            hint(&format!(
+                "grid: scope complete through {hops} hop{} — nothing further was walked",
+                if hops == 1 { "" } else { "s" }
+            ));
             exit::OK
         }
     }
 }
+
+/// The depth `grid scope` walks when none is named. Stated here rather than
+/// only in the daemon, because the horizon banner has to name the real one.
+const DEFAULT_SCOPE_DEPTH: u64 = 0;
 
 /// `grid todo <track> [<head-rev|snap:id>]` — the gate verdict as a
 /// worklist. Always exit 0 when it answers: remaining work is a report, not
@@ -669,7 +1180,7 @@ fn uses(args: &[&str], json: bool) -> u8 {
             }
             match defs.as_slice() {
                 [] => {
-                    hint(&format!("grid: nothing is called `{name}`"));
+                    hint(&miss(name));
                     return exit::BAD_INPUT;
                 }
                 [_, _, ..] => {
@@ -687,6 +1198,9 @@ fn uses(args: &[&str], json: bool) -> u8 {
             }
             if json {
                 return emit_json(&edges);
+            }
+            if edges.is_empty() {
+                hint("grid: no proven callers — not the same as unused; `grid orphans` lists these honestly");
             }
             print!("{}", porcelain::uses(&edges, &namer()));
             exit::OK
@@ -803,7 +1317,7 @@ fn log(args: &[&str], json: bool) -> u8 {
         }
     };
     let Some(def) = defs.first() else {
-        hint(&format!("grid: nothing is called `{name}`"));
+        hint(&miss(name));
         return exit::BAD_INPUT;
     };
     let rows = legs::history(root(), &def.datum.0);
@@ -848,12 +1362,18 @@ fn hotspots(args: &[&str], json: bool) -> u8 {
             hint(&format!("grid: {e}"));
             exit::BAD_INPUT
         }
-        Ok(rows) => {
+        Ok((rows, source)) => {
             if json {
                 return emit_json(&rows);
             }
-            if rows.iter().all(|r| r.legs == 0) {
-                hint("grid: no patch log yet — ranking by complexity alone; legs accrue from edits and surveys");
+            match source {
+                rpc::ChurnSource::GitFiles => hint(
+                    "grid: churn seeded from git file history (file-level) — grid legs accrue from edits and surveys",
+                ),
+                rpc::ChurnSource::None => hint(
+                    "grid: no history yet — ranking by complexity alone",
+                ),
+                rpc::ChurnSource::Legs => {}
             }
             print!("{}", porcelain::hotspots(&rows));
             exit::OK

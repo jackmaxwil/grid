@@ -14,7 +14,7 @@
   },
   "x-porcelain": {
     "doc": "packages/grid/docs/PORCELAIN.md",
-    "version": "1.2.0",
+    "version": "1.6.0",
     "description": "Normative grammar for human-facing stdout records. --json emits wire results verbatim; the porcelain version is reported by grid.version."
   },
   "methods": [
@@ -27,7 +27,7 @@
         {
           "name": "current versions",
           "params": [],
-          "result": { "name": "version", "value": { "wire": "0.1.0", "engine": "grid 0.1.0", "porcelain": "1.2.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
+          "result": { "name": "version", "value": { "wire": "0.1.0", "engine": "grid 0.1.0", "porcelain": "1.6.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
         }
       ],
       "result": {
@@ -456,6 +456,47 @@
       ],
       "result": { "name": "bisect", "schema": { "$ref": "#/components/schemas/BisectResult" } },
       "errors": [{ "$ref": "#/components/errors/UnknownSnapshot" }]
+    },
+    {
+      "name": "grid.drift",
+      "summary": "Dependents of changed interfaces: definitions that depend on something whose sig moved, and that did not themselves change. The set the compiler cannot enumerate across languages, re-exports and processes.",
+      "paramStructure": "by-name",
+      "params": [
+        { "name": "base", "required": true, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } },
+        { "name": "head", "required": true, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } },
+        { "name": "floor", "required": false, "schema": { "$ref": "#/components/schemas/Zoc" } },
+        { "name": "track", "required": false, "schema": { "$ref": "#/components/schemas/Track" } },
+        { "name": "tests", "required": false, "schema": { "type": "boolean", "description": "Also enumerate every known test and report the ones whose recorded verdict no longer applies." } }
+      ],
+      "examples": [
+        {
+          "name": "dependents of a changed interface",
+          "params": [
+            { "name": "base", "value": { "git_rev": "bc21972" } },
+            { "name": "head", "value": { "git_rev": "HEAD" } }
+          ],
+          "result": {
+            "name": "drift",
+            "value": {
+              "base": "snap:b3:a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4",
+              "head": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1",
+              "suspects": [
+                {
+                  "dependent": { "datum": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "callsign": "cortana.reaper.Reaper.sweep" },
+                  "changed": { "datum": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "callsign": "cortana.reaper.TagContract.validate" },
+                  "relation": "calls",
+                  "zoc": "proven",
+                  "sig_before": "b3:897d897d897d897d897d897d897d897d897d897d897d897d897d897d897d897d",
+                  "sig_after": "b3:1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b1a4b"
+                }
+              ],
+              "unchecked": { "unresolved_refs": 3, "budget_rejected": 0 }
+            }
+          }
+        }
+      ],
+      "result": { "name": "drift", "schema": { "$ref": "#/components/schemas/DriftReport" } },
+      "errors": [{ "$ref": "#/components/errors/UnknownSnapshot" }]
     }
   ],
   "components": {
@@ -632,7 +673,9 @@
           "action": { "type": "string", "enum": ["added", "removed", "modified", "moved"] },
           "callsign": { "$ref": "#/components/schemas/Callsign" },
           "before": { "$ref": "#/components/schemas/Datum" },
-          "after": { "$ref": "#/components/schemas/Datum" }
+          "after": { "$ref": "#/components/schemas/Datum" },
+          "moved_from": { "$ref": "#/components/schemas/Callsign", "description": "For action 'moved': the callsign the datum answered to before. A rename rebinds the callsign; the datum does not change." },
+          "sig_changed": { "type": "boolean", "description": "Whether the interface identity changed, when both snapshots carry sigs. Absent means at least one side predates segment epoch 3, and a consumer treats unknown as changed." }
         },
         "additionalProperties": false,
         "description": "added: 'after' only. removed: 'before' only. modified: both (this pair is a Leg)."
@@ -672,7 +715,7 @@
         "type": "object",
         "required": ["action", "callsign"],
         "properties": {
-          "action": { "type": "string", "enum": ["add", "remove", "modify"] },
+          "action": { "type": "string", "enum": ["add", "remove", "modify", "move"] },
           "callsign": { "$ref": "#/components/schemas/CallsignPattern" }
         },
         "additionalProperties": false
@@ -837,12 +880,13 @@
           "frontier": { "type": "array", "items": { "$ref": "#/components/schemas/Datum" }, "description": "Present iff status is 'aground': where the walk ran out of fuel. Resume by issuing a new walk from the frontier." },
           "stats": {
             "type": "object",
-            "description": "Diagnostics only; excluded from the determinism comparison surface.",
+            "description": "Diagnostics, plus one claim. visited/hops/ms are diagnostics and are excluded from the determinism comparison surface; complete_within is not a diagnostic — it is a statement about the answer, is a pure function of the graph and the query, and belongs to the comparison surface.",
             "required": ["visited", "hops", "ms"],
             "properties": {
               "visited": { "type": "integer", "minimum": 0 },
               "hops": { "type": "integer", "minimum": 0 },
-              "ms": { "type": "integer", "minimum": 0 }
+              "ms": { "type": "integer", "minimum": 0 },
+              "complete_within": { "type": "integer", "minimum": 0, "description": "Depth through which the answer is complete: every definition reachable within this many hops, under this query's relations and evidence floor, is in the result. On 'complete' it is the effective hop bound. On 'aground' it is the last layer the walk fully expanded before the budget refused; absent when even the roots' own layer did not finish, which certifies nothing and says so." }
             },
             "additionalProperties": false
           }
@@ -1126,6 +1170,97 @@
               "additionalProperties": false
             }
           }
+        },
+        "additionalProperties": false
+      },
+      "Covenant": {
+        "type": "object",
+        "required": ["a", "b", "via"],
+        "properties": {
+          "a": { "$ref": "#/components/schemas/CallsignPattern" },
+          "b": { "$ref": "#/components/schemas/CallsignPattern" },
+          "via": { "type": "string", "minLength": 1, "description": "The boundary the coupling crosses: 'schema', 'wire', 'protocol' — free text, and the word that appears in a drift record's reason." },
+          "note": { "type": "string" }
+        },
+        "additionalProperties": false,
+        "description": "A declared, symmetric coupling between two callsign patterns that no language's binding rules establish — a serde boundary, a JSON contract, a Python dict a Rust struct deserializes. A human knows the pair; this is where it is written down. Declared coupling is the one modeled evidence that gates, because a human declared it."
+      },
+      "WeakTest": {
+        "type": "object",
+        "required": ["test", "def"],
+        "properties": {
+          "test": { "type": "string", "minLength": 1 },
+          "def": { "$ref": "#/components/schemas/DefRef", "description": "The definition whose behaviour moved while this test kept passing, as it was at base." }
+        },
+        "additionalProperties": false,
+        "description": "A test that covered a definition, kept passing while that definition's body changed, and was not itself touched — so it proved nothing about the change. Heuristic: a ranking, never a gate."
+      },
+      "StaleTest": {
+        "type": "object",
+        "required": ["test", "reason"],
+        "properties": {
+          "test": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "enum": ["closure-changed", "closure-rejected"], "description": "closure-changed: the recorded verdict keys to a closure this snapshot no longer has. closure-rejected: the closure could not be established at all, which is a miss and therefore never a hit." }
+        },
+        "additionalProperties": false,
+        "description": "A test whose recorded verdict no longer applies. Staleness is identity math over the closure, not a guess, so it gates."
+      },
+      "DriftDelta": {
+        "type": "object",
+        "required": ["suspect", "weight"],
+        "properties": {
+          "suspect": { "$ref": "#/components/schemas/DriftSuspect" },
+          "weight": { "type": "integer", "minimum": -1, "maximum": 1, "description": "+1 the suspect appeared, -1 it was retracted. A retraction is emitted when an edit resolves a suspect — the dependent was updated, a covenant was satisfied, the interface was reverted. Consumers hold a running sum, and the sum after any prefix of events equals a fresh grid drift." }
+        },
+        "additionalProperties": false,
+        "description": "One signed change to the suspect set. Watch mode emits these rather than a current list, so a consumer never has to diff lists to see what changed, and the algebra of the stream is checkable by summation."
+      },
+      "DriftWarning": {
+        "type": "object",
+        "required": ["subject", "message"],
+        "properties": {
+          "subject": { "type": "string", "description": "The callsign or pattern the warning is about." },
+          "message": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "DriftSuspect": {
+        "type": "object",
+        "required": ["dependent", "changed", "relation", "zoc"],
+        "properties": {
+          "dependent": { "$ref": "#/components/schemas/DefRef", "description": "The definition that depends on the changed one and did not itself change." },
+          "changed": { "$ref": "#/components/schemas/DefRef", "description": "The definition whose interface moved, as it was at base." },
+          "relation": { "$ref": "#/components/schemas/Relation" },
+          "zoc": { "$ref": "#/components/schemas/Zoc", "description": "Evidence grade of the edge that made this a suspect." },
+          "sig_before": { "$ref": "#/components/schemas/Datum", "description": "The changed definition's interface identity at base, when the snapshot carries one." },
+          "sig_after": { "$ref": "#/components/schemas/Datum", "description": "Its interface identity at head, when the snapshot carries one. Absent on both sides means the sig was unknown and the change was treated as visible." },
+          "reason": { "type": "string", "description": "Why this edge implicated the dependent beyond the edge itself: 'stale-trace' for a decayed observation, 'covenant:<via>' for a declared coupling." }
+        },
+        "additionalProperties": false
+      },
+      "DriftUnchecked": {
+        "type": "object",
+        "required": ["budget_rejected"],
+        "properties": {
+          "unresolved_refs": { "type": "integer", "minimum": 0, "description": "References the head survey declined to bind, so no edge exists for them and no dependent could be found through them. Absent means head was a published snapshot nobody re-surveyed in this run, so the count is unknown — never reported as zero." },
+          "budget_rejected": { "type": "integer", "minimum": 0, "description": "Definitions whose inbound walk ran past its budget. The walk is rejected whole, never truncated: a truncated walk is indistinguishable from a smaller one." },
+          "unattributed_entries": { "type": "integer", "minimum": 0, "description": "Recorded verdicts no retained wake claims, so no test owns them and no test-staleness check covered them. Present when the report was asked for tests." },
+          "weak_skipped": { "type": "integer", "minimum": 0, "description": "Weak-test checks declined because their coverage came from a decayed trace. A heuristic built on a demoted heuristic is noise, so grid declines it and says how often." }
+        },
+        "additionalProperties": false,
+        "description": "What drift could not check. A drift report claiming no suspects where it could not see callers is dishonest silence, so the counts ride with every answer."
+      },
+      "DriftReport": {
+        "type": "object",
+        "required": ["base", "head", "suspects", "unchecked"],
+        "properties": {
+          "base": { "$ref": "#/components/schemas/SnapshotId" },
+          "head": { "$ref": "#/components/schemas/SnapshotId" },
+          "suspects": { "type": "array", "items": { "$ref": "#/components/schemas/DriftSuspect" } },
+          "unchecked": { "$ref": "#/components/schemas/DriftUnchecked" },
+          "warnings": { "type": "array", "items": { "$ref": "#/components/schemas/DriftWarning" }, "description": "Reported rather than refused: a declared covenant whose pattern matches nothing at drift time, and anything else drift wants a human to see without holding on it." },
+          "stale_tests": { "type": "array", "items": { "$ref": "#/components/schemas/StaleTest" }, "description": "Present when the report was asked for tests: every known test whose recorded verdict no longer applies." },
+          "weak": { "type": "array", "items": { "$ref": "#/components/schemas/WeakTest" }, "description": "Present when the report was asked for tests: tests that covered a changed definition, stayed green, and were never touched. Ranked, never gated." }
         },
         "additionalProperties": false
       },

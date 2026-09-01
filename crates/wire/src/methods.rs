@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     Anchor, CacheCheckRequest, CacheResultEntry, CallsignPattern, CarriedAnchor, Datum, DefRef,
-    EditResult, EditSpec, Estimate, GitRev, LeadlineQuery, LeadlineResult, LintResult, Locator,
-    MadeGood, ReviewPack, ScopePack, Snapshot, SnapshotId, SnapshotOrRev, Suspects, TodoList,
-    Track, TrackId, Wake, WakeDiff, WakeId, XteVerdict,
+    DriftReport, EditResult, EditSpec, Estimate, GitRev, LeadlineQuery, LeadlineResult, LintResult,
+    Locator, MadeGood, ReviewPack, ScopePack, Snapshot, SnapshotId, SnapshotOrRev, Suspects,
+    TodoList, Track, TrackId, Wake, WakeDiff, WakeId, XteVerdict, Zoc,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -229,3 +229,18 @@ pub struct BisectParams {
     pub bad: SnapshotOrRev,
     pub test: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DriftParams {
+    pub base: SnapshotOrRev,
+    pub head: SnapshotOrRev,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub floor: Option<Zoc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track: Option<Track>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tests: Option<bool>,
+}
+
+pub type DriftResult = DriftReport;

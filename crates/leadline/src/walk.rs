@@ -19,6 +19,17 @@
 //! The Kani harnesses in [`crate::proofs`] prove (2) and (3) over a symbolic
 //! graph: no sequence of steps, however adversarial the edges, re-enters the
 //! loop with a budget that did not strictly decrease.
+//!
+//! ## Why an aground answer can certify a radius
+//!
+//! Because the walk is strictly layered, a layer that finished expanding has
+//! discovered every node one hop past it — that is what expanding a layer
+//! *is*. So the deepest fully-expanded layer is a radius the answer is
+//! complete to, under this walk's filter and nothing broader. The certificate
+//! is read off state the walk already keeps and spends no fuel, which is why
+//! [`Walk::complete_within`] exists at all: a caller holding a partial answer
+//! can otherwise not tell "every def within 3 hops is here" from "the walk
+//! stopped mid-layer and even depth 1 may be short".
 
 use std::collections::HashMap;
 
@@ -93,6 +104,18 @@ pub struct Walk {
     pub visited: u64,
     /// Layers completed.
     pub hops: u64,
+    /// The radius this answer is *complete* to: every node reachable within
+    /// this many hops, under this walk's filter, is in [`Walk::seen`].
+    ///
+    /// The walk is strictly layered, so a layer fully expanded before the
+    /// fuel ran out has necessarily discovered every node one hop past it.
+    /// The certificate is therefore free — it reads state the walk already
+    /// keeps — and it is what upgrades an aground result from "here is where
+    /// I stopped" to "here is the radius I finished".
+    ///
+    /// `None` when not even the roots' own layer was expanded: that answer
+    /// certifies nothing, and says so rather than claiming `Some(0)`.
+    pub complete_within: Option<u64>,
 }
 
 impl Walk {
@@ -140,6 +163,12 @@ pub fn walk<G: Graph + ?Sized>(
     mut budget: Budget,
     mut stop: impl FnMut(Ordinal) -> bool,
 ) -> Walk {
+    // The hop bound as asked for. A walk whose frontier drains is complete to
+    // the whole bound, whatever depth it actually reached.
+    let hop_bound = budget.hops();
+    // The deepest layer fully expanded. Set only after a layer's expansion
+    // finishes, so a refusal mid-layer never certifies that layer.
+    let mut certified: Option<u64> = None;
     let mut seen: HashMap<Ordinal, Reached> = HashMap::new();
     let mut layer: Vec<Ordinal> = Vec::new();
     for &root in roots {
@@ -170,6 +199,7 @@ pub fn walk<G: Graph + ?Sized>(
                 frontier: Vec::new(),
                 visited,
                 hops,
+                complete_within: Some(hop_bound),
             };
         }
         // A hop buys the expansion of one layer. Charging before expanding is
@@ -178,7 +208,7 @@ pub fn walk<G: Graph + ?Sized>(
         // than depth 3 is ever discovered, and the layer we cannot afford is
         // reported as the frontier rather than half-explored.
         if !budget.take_hop() {
-            return aground(seen, layer, visited, hops);
+            return aground(seen, layer, visited, hops, certified);
         }
         hops += 1;
         let mut next = Vec::new();
@@ -188,7 +218,7 @@ pub fn walk<G: Graph + ?Sized>(
                 // unexpanded tail of this layer, then whatever it had found.
                 let mut rest = layer[i..].to_vec();
                 rest.extend(next);
-                return aground(seen, rest, visited, hops);
+                return aground(seen, rest, visited, hops, certified);
             }
             visited += 1;
             if stop(node) {
@@ -198,6 +228,10 @@ pub fn walk<G: Graph + ?Sized>(
                     frontier: Vec::new(),
                     visited,
                     hops,
+                    // Stopped by the caller, mid-layer: the reach set is not
+                    // the answer here and is not complete to the bound. The
+                    // honest certificate is the last layer that finished.
+                    complete_within: certified,
                 };
             }
             for step in graph.steps(node, dir) {
@@ -219,6 +253,10 @@ pub fn walk<G: Graph + ?Sized>(
                 }
             }
         }
+        // This layer finished: everything within `depth + 1` hops has been
+        // discovered, but only `depth` is claimed — the layer at `depth + 1`
+        // has not been expanded, so nothing past it is known.
+        certified = Some(depth);
         if next.is_empty() {
             return Walk {
                 status: Status::Complete,
@@ -226,6 +264,7 @@ pub fn walk<G: Graph + ?Sized>(
                 frontier: Vec::new(),
                 visited,
                 hops,
+                complete_within: Some(hop_bound),
             };
         }
         layer = next;
@@ -238,6 +277,7 @@ fn aground(
     frontier: Vec<Ordinal>,
     visited: u64,
     hops: u64,
+    complete_within: Option<u64>,
 ) -> Walk {
     Walk {
         status: Status::Aground,
@@ -245,5 +285,6 @@ fn aground(
         frontier,
         visited,
         hops,
+        complete_within,
     }
 }

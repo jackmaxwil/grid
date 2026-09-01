@@ -19,12 +19,28 @@ use grid_wire::{
 
 use crate::{relation_tag, DatumId, Ordinal, Segment};
 
-/// Definitions of a chart, by callsign, with the shape as move evidence.
+/// Definitions of a chart, by callsign, with the shape as move evidence and
+/// the sig as interface evidence.
 ///
 /// A callsign two segments both define is a collision the survey already
 /// refused to resolve; here the lowest datum wins, so the comparison is a
 /// function of content rather than of segment order.
-type Defs = BTreeMap<String, (DatumId, Option<[u8; 32]>)>;
+type Defs = BTreeMap<String, DefFacts>;
+
+/// What one side of the comparison knows about a definition. `shape` and
+/// `sig` are `None` on images that predate their column — unknown, never a
+/// fabricated hash.
+type DefFacts = (DatumId, Option<[u8; 32]>, Option<[u8; 32]>);
+
+/// Did the interface move between two sides?
+///
+/// `None` when either side predates segment epoch 3: the honest answer is
+/// *unknown*, and every consumer treats unknown as changed (drift's changed
+/// set, per the plan). Answering `Some(false)` for an image that cannot
+/// carry a sig would be a fabricated all-clear.
+fn sig_changed(before: Option<[u8; 32]>, after: Option<[u8; 32]>) -> Option<bool> {
+    Some(before? != after?)
+}
 
 /// Edges keyed by `(src callsign, relation tag, dst callsign)` — the
 /// name-space identity of a relationship — carrying the datums that prove it.
@@ -47,7 +63,7 @@ fn defs_of<B: AsRef<[u8]>>(segments: &[Segment<B>]) -> Defs {
             let (Some(datum), Some(callsign)) = (segment.datum(ord), segment.callsign(ord)) else {
                 continue;
             };
-            let facts = (datum, segment.shape(ord));
+            let facts = (datum, segment.shape(ord), segment.sig(ord));
             out.entry(callsign.to_owned())
                 .and_modify(|d| *d = (*d).min(facts))
                 .or_insert(facts);
@@ -110,34 +126,36 @@ fn wire_edge(facts: EdgeFacts) -> Edge {
 /// Output order is deterministic (both maps are sorted), which the wire
 /// contract requires and every downstream hash depends on.
 #[must_use]
-pub fn made_good<B: AsRef<[u8]>>(
+pub fn made_good<A: AsRef<[u8]>, B: AsRef<[u8]>>(
     base_id: SnapshotId,
-    base: &[Segment<B>],
+    base: &[Segment<A>],
     head_id: SnapshotId,
     head: &[Segment<B>],
 ) -> MadeGood {
     let (base_defs, head_defs) = (defs_of(base), defs_of(head));
     let mut defs = Vec::new();
-    let mut added: Vec<(&String, DatumId, Option<[u8; 32]>)> = Vec::new();
-    let mut removed: Vec<(&String, DatumId, Option<[u8; 32]>)> = Vec::new();
-    for (callsign, (after, shape)) in &head_defs {
+    let mut added: Vec<(&String, DefFacts)> = Vec::new();
+    let mut removed: Vec<(&String, DefFacts)> = Vec::new();
+    for (callsign, head_facts) in &head_defs {
+        let (after, _, after_sig) = *head_facts;
         match base_defs.get(callsign) {
-            None => added.push((callsign, *after, *shape)),
+            None => added.push((callsign, *head_facts)),
             // Same callsign, same datum: the definition did not change. Not a
             // record — a `MadeGood` reports what changed.
-            Some((before, _)) if before == after => {}
-            Some((before, _)) => defs.push(DefChange {
+            Some((before, _, _)) if *before == after => {}
+            Some((before, _, before_sig)) => defs.push(DefChange {
                 action: DefChangeAction::Modified,
                 callsign: Callsign(callsign.clone()),
                 before: Some(datum(*before)),
-                after: Some(datum(*after)),
+                after: Some(datum(after)),
                 moved_from: None,
+                sig_changed: sig_changed(*before_sig, after_sig),
             }),
         }
     }
-    for (callsign, (before, shape)) in &base_defs {
+    for (callsign, base_facts) in &base_defs {
         if !head_defs.contains_key(callsign) {
-            removed.push((callsign, *before, *shape));
+            removed.push((callsign, *base_facts));
         }
     }
     defs.extend(detect_def_moves(&added, &removed));
@@ -178,20 +196,20 @@ pub fn made_good<B: AsRef<[u8]>>(
 /// the index applies to name collisions. Epoch-1 sides carry no shapes and
 /// detect nothing.
 fn detect_def_moves(
-    added: &[(&String, DatumId, Option<[u8; 32]>)],
-    removed: &[(&String, DatumId, Option<[u8; 32]>)],
+    added: &[(&String, DefFacts)],
+    removed: &[(&String, DefFacts)],
 ) -> Vec<DefChange> {
     use std::collections::HashMap;
     let mut add_count: HashMap<[u8; 32], usize> = HashMap::new();
-    let mut rem_at: HashMap<[u8; 32], (&String, DatumId, usize)> = HashMap::new();
-    for (_, _, shape) in added {
+    let mut rem_at: HashMap<[u8; 32], (&String, DefFacts, usize)> = HashMap::new();
+    for (_, (_, shape, _)) in added {
         if let Some(shape) = shape {
             *add_count.entry(*shape).or_insert(0) += 1;
         }
     }
-    for (name, d, shape) in removed {
-        if let Some(shape) = shape {
-            let entry = rem_at.entry(*shape).or_insert((name, *d, 0));
+    for (name, facts) in removed {
+        if let Some(shape) = facts.1 {
+            let entry = rem_at.entry(shape).or_insert((name, *facts, 0));
             entry.2 += 1;
         }
     }
@@ -201,36 +219,45 @@ fn detect_def_moves(
         })
     };
     let mut out = Vec::new();
-    for (callsign, d, shape) in added {
-        if unique(shape) {
-            let Some((old, before, _)) = shape.as_ref().and_then(|s| rem_at.get(s)) else {
+    for (callsign, facts) in added {
+        let (d, shape, after_sig) = *facts;
+        if unique(&shape) {
+            let Some((old, (before, _, before_sig), _)) = shape.and_then(|s| rem_at.get(&s)) else {
                 continue;
             };
             out.push(DefChange {
                 action: DefChangeAction::Moved,
                 callsign: Callsign((*callsign).clone()),
                 before: Some(datum(*before)),
-                after: Some(datum(*d)),
+                after: Some(datum(d)),
                 moved_from: Some(Callsign((*old).clone())),
+                // A move has both sides in hand, so the interface question is
+                // answerable: a rename that also changed the signature is a
+                // different event from one that only rebound the name.
+                sig_changed: sig_changed(*before_sig, after_sig),
             });
         } else {
             out.push(DefChange {
                 action: DefChangeAction::Added,
                 callsign: Callsign((*callsign).clone()),
                 before: None,
-                after: Some(datum(*d)),
+                after: Some(datum(d)),
                 moved_from: None,
+                // Nothing to compare against: an addition has no old
+                // interface, so the field stays unknown rather than false.
+                sig_changed: None,
             });
         }
     }
-    for (callsign, d, shape) in removed {
-        if !unique(shape) {
+    for (callsign, facts) in removed {
+        if !unique(&facts.1) {
             out.push(DefChange {
                 action: DefChangeAction::Removed,
                 callsign: Callsign((*callsign).clone()),
-                before: Some(datum(*d)),
+                before: Some(datum(facts.0)),
                 after: None,
                 moved_from: None,
+                sig_changed: None,
             });
         }
     }
