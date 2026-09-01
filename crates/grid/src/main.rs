@@ -38,9 +38,10 @@ mod stale;
 mod standing;
 mod suspects;
 mod track;
+mod watch;
 mod weak;
 
-use std::io::Write as _;
+use std::io::{BufRead as _, Write as _};
 use std::process::ExitCode;
 
 /// Exit codes, uniform across verbs (`docs/PORCELAIN.md`).
@@ -82,6 +83,7 @@ fn help() {
          drift [base] [head]          dependents of changed interfaces; exit 3 on suspects\n  \
          drift --tests                known tests whose recorded verdict no longer applies\n  \
          bind <A> <B> --via <word>    declare a coupling no language establishes\n  \
+         watch [base]                 signed drift deltas, one file event per stdin line\n  \
          resolve <name|file|f:line>   where it is; a bare file lists its defs\n  \
          uses <name> [--relation r]   proven inbound edges\n  \
          scope <pattern> [--depth N]  context pack around an edit\n  \
@@ -157,6 +159,7 @@ fn main() -> ExitCode {
         Some((&"diff", args)) => diff(args, json),
         Some((&"drift", args)) => drift_verb(args, json),
         Some((&"bind", args)) => bind(args, json),
+        Some((&"watch", args)) => watch_verb(args, json),
         Some((&"resolve", args)) => resolve(args, json),
         Some((&"gate", args)) => gate(args, json),
         Some((&"track", args)) => track::main(args, json),
@@ -720,6 +723,153 @@ fn bind(args: &[&str], json: bool) -> u8 {
     }
     print!("{}", porcelain::covenants(&covenants));
     exit::OK
+}
+
+const WATCH_USAGE: &str = "usage: grid watch [<base>] [--floor <zoc>] [--track <file>]\n\
+     reads changed paths on stdin, one per line; a blank line ends an event";
+
+/// `grid watch [<base>]` — drift maintained as signed deltas.
+///
+/// Events arrive on stdin: one changed path per line, a blank line ending an
+/// event. That is deliberately the whole event source — an OS watcher is a
+/// dependency decision, and `fswatch . | grid watch` or
+/// `git diff --name-only | grid watch` already reaches this.
+///
+/// Output is `delta` records, `+` for a suspect that appeared and `-` for one
+/// retracted. A consumer holds a running sum; the sum after any prefix of
+/// events is what a fresh `grid drift` would say.
+fn watch_verb(args: &[&str], json: bool) -> u8 {
+    let mut floor = None;
+    let mut track = None;
+    let mut positional = Vec::new();
+    let mut rest = args;
+    while let Some((arg, tail)) = rest.split_first() {
+        rest = tail;
+        match *arg {
+            "--floor" => {
+                let (Some(spec), Some(want), Some(tail)) = (
+                    rest.first(),
+                    rest.first().and_then(|s| zoc_named(s)),
+                    rest.get(1..),
+                ) else {
+                    hint(WATCH_USAGE);
+                    return exit::BAD_INPUT;
+                };
+                let _ = spec;
+                floor = Some(want);
+                rest = tail;
+            }
+            "--track" => {
+                let (Some(spec), Some(tail)) = (rest.first(), rest.get(1..)) else {
+                    hint(WATCH_USAGE);
+                    return exit::BAD_INPUT;
+                };
+                match track::load(spec) {
+                    Ok(t) => track = Some(t),
+                    Err(e) => {
+                        hint(&format!("grid: {e}"));
+                        return exit::BAD_INPUT;
+                    }
+                }
+                rest = tail;
+            }
+            other if other.starts_with("--") => {
+                hint(&format!("grid: unknown flag `{other}`\n{WATCH_USAGE}"));
+                return exit::BAD_INPUT;
+            }
+            other => positional.push(other),
+        }
+    }
+    if positional.len() > 1 {
+        hint(WATCH_USAGE);
+        return exit::BAD_INPUT;
+    }
+    let base = snapshot_or_rev(positional.first().unwrap_or(&"HEAD"));
+    let mut session = match watch::Session::open(
+        root(),
+        base,
+        floor.unwrap_or(grid_wire::Zoc::Observed),
+        track,
+    ) {
+        Ok(session) => session,
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            return exit::BAD_INPUT;
+        }
+    };
+    hint("grid: watching — one changed path per line, blank line ends an event");
+
+    let mut batch: Vec<String> = Vec::new();
+    let stdin = std::io::stdin();
+    for line in stdin.lock().lines() {
+        let Ok(line) = line else {
+            hint("grid: cannot read stdin");
+            return exit::INTERNAL;
+        };
+        let path = line.trim();
+        if !path.is_empty() {
+            batch.push(path.to_owned());
+            continue;
+        }
+        if batch.is_empty() {
+            continue;
+        }
+        let code = emit_event(&mut session, &batch, json);
+        batch.clear();
+        if code != exit::OK {
+            return code;
+        }
+    }
+    // End of input is the end of the last event, so a caller that pipes a
+    // file list and closes the pipe gets an answer rather than silence.
+    let code = if batch.is_empty() {
+        exit::OK
+    } else {
+        emit_event(&mut session, &batch, json)
+    };
+    let declined = session.declined();
+    if code == exit::OK && declined > 0 && !json {
+        print!("{}", porcelain::declined(&[format!("{declined} events")]));
+    }
+    code
+}
+
+/// One event's worth of output. Always exit 0 on success: watch mode reports
+/// a stream, and a stream has no verdict — `grid drift` is the verb that
+/// holds.
+fn emit_event(session: &mut watch::Session, batch: &[String], json: bool) -> u8 {
+    match session.event(batch) {
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            exit::INTERNAL
+        }
+        Ok(emitted) => {
+            for path in &emitted.declined {
+                hint(&format!(
+                    "grid: {path} does not parse — no deltas for this event, \
+                     because a file grid cannot read is not a file with nothing in it"
+                ));
+            }
+            if !json {
+                // The refusal is part of the stream, not a note beside it.
+                print!("{}", porcelain::declined(&emitted.declined));
+            }
+            if emitted.recomputed {
+                hint(
+                    "grid: event too large to maintain incrementally — recomputed the whole \
+                     suspect set; the deltas are the same, the work was not",
+                );
+            }
+            if json {
+                return emit_json(&emitted.deltas);
+            }
+            print!("{}", porcelain::deltas(&emitted.deltas));
+            // A stream is only a stream if it arrives: without this the
+            // consumer sees nothing until the pipe closes.
+            let _unflushed = std::io::stdout().flush();
+            exit::OK
+        }
+    }
 }
 
 /// `grid resolve <name>` — the definitions a name refers to.

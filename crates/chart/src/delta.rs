@@ -126,9 +126,9 @@ fn wire_edge(facts: EdgeFacts) -> Edge {
 /// Output order is deterministic (both maps are sorted), which the wire
 /// contract requires and every downstream hash depends on.
 #[must_use]
-pub fn made_good<B: AsRef<[u8]>>(
+pub fn made_good<A: AsRef<[u8]>, B: AsRef<[u8]>>(
     base_id: SnapshotId,
-    base: &[Segment<B>],
+    base: &[Segment<A>],
     head_id: SnapshotId,
     head: &[Segment<B>],
 ) -> MadeGood {

@@ -125,7 +125,7 @@ impl From<chart_provider::Error> for Error {
 
 /// Evidence rank, strongest first — the `at_or_above` order the rest of the
 /// engine uses.
-const fn rank(z: Zoc) -> u8 {
+pub(crate) const fn rank(z: Zoc) -> u8 {
     match z {
         Zoc::Proven => 0,
         Zoc::Observed => 1,
@@ -136,11 +136,11 @@ const fn rank(z: Zoc) -> u8 {
 
 /// One changed definition, as drift needs it: the base-side datum to walk
 /// inbound from, and the interface transition to report.
-struct Changed {
-    callsign: String,
-    datum: DatumId,
-    sig_before: Option<Datum>,
-    sig_after: Option<Datum>,
+pub(crate) struct Changed {
+    pub(crate) callsign: String,
+    pub(crate) datum: DatumId,
+    pub(crate) sig_before: Option<Datum>,
+    pub(crate) sig_after: Option<Datum>,
 }
 
 /// The changed set `C`. `Modified` with `sig_changed: Some(false)` is
@@ -163,7 +163,7 @@ fn changed_set(made_good: &MadeGood) -> Vec<&DefChange> {
 
 /// Every callsign the delta reports as changed in any way. A dependent whose
 /// callsign is in here changed too, so it is not a suspect.
-fn touched(made_good: &MadeGood) -> HashSet<&str> {
+pub(crate) fn touched(made_good: &MadeGood) -> HashSet<&str> {
     made_good
         .defs
         .iter()
@@ -304,45 +304,7 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
             budget_rejected = budget_rejected.saturating_add(1);
             continue;
         };
-        for dep in found {
-            // A dependent base cannot name changed nothing between base and
-            // head *under a name*, so neither check can implicate it — and
-            // neither can excuse it.
-            if dep
-                .callsign
-                .as_deref()
-                .is_some_and(|c| touched.contains(c) || promised(track, c))
-            {
-                continue;
-            }
-            let key = (
-                dep.key(),
-                change.callsign.clone(),
-                grid_chart::relation_tag(dep.relation),
-            );
-            // Strongest evidence wins a duplicate: a pair proven *and*
-            // observed is proven, and reporting it twice at two grades would
-            // read as two findings.
-            match suspects.entry(key) {
-                std::collections::btree_map::Entry::Occupied(mut slot) => {
-                    if rank(dep.zoc) < rank(slot.get().zoc) {
-                        slot.get_mut().zoc = dep.zoc;
-                        slot.get_mut().reason = dep.reason;
-                    }
-                }
-                std::collections::btree_map::Entry::Vacant(slot) => {
-                    slot.insert(DriftSuspect {
-                        dependent: def_ref(&chart, dep.datum, dep.callsign.as_deref()),
-                        changed: def_ref(&chart, change.datum, Some(&change.callsign)),
-                        relation: dep.relation,
-                        zoc: dep.zoc,
-                        sig_before: change.sig_before.clone(),
-                        sig_after: change.sig_after.clone(),
-                        reason: dep.reason,
-                    });
-                }
-            }
-        }
+        fold_rows(&chart, change, found, &touched, track, &mut suspects);
     }
 
     if budget_rejected > 0 {
@@ -465,7 +427,7 @@ fn datum_of<B: AsRef<[u8]>>(segments: &[Segment<B>], callsign: &str) -> Option<D
 /// `Ok(None)` is the budget refusal — the *whole* answer for this definition
 /// is withheld, because a partial list is the one output that reads as
 /// complete while being short.
-fn inbound_of<B: AsRef<[u8]>>(
+pub(crate) fn inbound_of<B: AsRef<[u8]>>(
     segments: &[Segment<B>],
     change: &Changed,
     floor: Zoc,
@@ -517,9 +479,9 @@ fn inbound_of<B: AsRef<[u8]>>(
 /// The changed set, with each definition's base-side datum and the interface
 /// transition to report. Split out of [`compute`] so the one place that
 /// decides *what counts as changed* is readable on its own.
-fn changed_set_of<B: AsRef<[u8]>>(
+pub(crate) fn changed_set_of<A: AsRef<[u8]>, B: AsRef<[u8]>>(
     made_good: &MadeGood,
-    base: &[Segment<B>],
+    base: &[Segment<A>],
     head: &[Segment<B>],
 ) -> Vec<Changed> {
     let base_sigs = sigs_by_callsign(base);
@@ -538,8 +500,63 @@ fn changed_set_of<B: AsRef<[u8]>>(
         .collect()
 }
 
+/// Fold one changed definition's inbound dependents into the suspect map.
+///
+/// Split out of [`compute`] because watch mode calls it for exactly the
+/// definitions an event moved, and the two must build the same rows — a
+/// second implementation of "what a suspect is" is the one thing an
+/// incremental view cannot afford.
+pub(crate) fn fold_rows(
+    chart: &ChartDelta,
+    change: &Changed,
+    found: Vec<Inbound>,
+    touched: &HashSet<&str>,
+    track: Option<&Track>,
+    suspects: &mut BTreeMap<(String, String, u8), DriftSuspect>,
+) {
+    for dep in found {
+        // A dependent base cannot name changed nothing between base and head
+        // *under a name*, so neither check can implicate it — and neither can
+        // excuse it.
+        if dep
+            .callsign
+            .as_deref()
+            .is_some_and(|c| touched.contains(c) || promised(track, c))
+        {
+            continue;
+        }
+        let key = (
+            dep.key(),
+            change.callsign.clone(),
+            grid_chart::relation_tag(dep.relation),
+        );
+        // Strongest evidence wins a duplicate: a pair proven *and* observed is
+        // proven, and reporting it twice at two grades would read as two
+        // findings.
+        match suspects.entry(key) {
+            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                if rank(dep.zoc) < rank(slot.get().zoc) {
+                    slot.get_mut().zoc = dep.zoc;
+                    slot.get_mut().reason = dep.reason;
+                }
+            }
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(DriftSuspect {
+                    dependent: def_ref(chart, dep.datum, dep.callsign.as_deref()),
+                    changed: def_ref(chart, change.datum, Some(&change.callsign)),
+                    relation: dep.relation,
+                    zoc: dep.zoc,
+                    sig_before: change.sig_before.clone(),
+                    sig_after: change.sig_after.clone(),
+                    reason: dep.reason,
+                });
+            }
+        }
+    }
+}
+
 /// One inbound dependency found for a changed definition, whatever proved it.
-struct Inbound {
+pub(crate) struct Inbound {
     datum: DatumId,
     /// The name base knows this dependent by, or `None` when base does not
     /// intern it at all — which happens exactly on a decayed trace, where
@@ -570,7 +587,7 @@ impl Inbound {
 /// A store that cannot be read is an error, never an empty map: answering
 /// "nothing was observed" for a store that has observations is the silence
 /// this whole report shape exists to prevent.
-fn observed_inbound<B: AsRef<[u8]>>(
+pub(crate) fn observed_inbound<B: AsRef<[u8]>>(
     root: &std::path::Path,
     segments: &[Segment<B>],
 ) -> Result<HashMap<DatumId, Vec<grid_wake::Graded>>, Error> {

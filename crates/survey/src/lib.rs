@@ -247,7 +247,19 @@ fn extract_all<'s>(
     (per_file, reread)
 }
 
-fn run_sources(
+/// Survey an already-discovered file set.
+///
+/// Discovery is the expensive part of [`run`] on a warm tree — `git ls-files`
+/// plus a read of every tracked file — and a caller that already holds the
+/// list, and knows which entries changed, has no reason to pay it again.
+/// Phases 2 and 3 still run over the whole tree, and must: an edge is a fact
+/// about two files, so cross-file resolution is recomputed from per-file
+/// facts every time. That is the incremental-equals-full rule, not an
+/// oversight.
+///
+/// # Errors
+/// [`SurveyError::Chart`] if the graph exceeds what a segment can address.
+pub fn run_sources(
     sources: &[SourceFile],
     roots: &files::CrateRoots,
     cache: &mut Cache,

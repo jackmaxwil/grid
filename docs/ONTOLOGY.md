@@ -60,6 +60,7 @@ rows are `| \`token\` | one answer, at most three lines when printed |`.
 | `verdict-stale` | a recorded test verdict that no longer applies: the test's closure key, recomputed now, is not one the cache holds. Identity math, not a guess, so it gates. Reported as `miss <test> closure-changed`. |
 | `miss` | record: a cache miss — the datum must be run, not looked up. Not a failure; exits 0. |
 | `warn` | record: something reported rather than refused — callsign, then the message. |
+| `delta` | record: one signed change to the drift suspect set — `+` appeared, `-` retracted (`grid watch`). Consumers hold a running sum; the sum after any prefix of events equals a fresh `grid drift`. |
 | `bind` | record: one declared covenant — pattern A, pattern B, and the boundary word (`grid bind --list`). |
 | `suspect` | one drift finding: a dependent, the changed definition it depends on, and the edge between them. Reported as a `drift` record. |
 | `conflict` | record: a compare-and-swap failure in `edit apply` — the datum moved since you read it. Re-resolve the name and retry with the fresh `now` coordinate. Exit 4. |
