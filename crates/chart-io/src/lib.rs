@@ -429,13 +429,14 @@ impl Store {
 
     fn write_membership(&self, chain: &[(String, Vec<Member>)]) -> Result<(), StoreError> {
         let image = grid_chart::build_membership(chain)?;
-        place(
-            &self.dir,
-            &self.dir.join(MEMBERSHIP),
-            &image,
-            "membership.tmp",
-            false,
-        )?;
+        // Content too (D5): an unchanged chain — every survey of an
+        // unchanged tree — rewrites nothing, as the live manifest already
+        // does not.
+        let path = self.dir.join(MEMBERSHIP);
+        if fs::read(&path).is_ok_and(|current| current == image) {
+            return Ok(());
+        }
+        place(&self.dir, &path, &image, "membership.tmp", false)?;
         Ok(())
     }
 
