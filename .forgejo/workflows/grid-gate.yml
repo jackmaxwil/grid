@@ -170,7 +170,29 @@ jobs:
   assurance:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth 0 is this job's own precondition now, not just the two shell scripts'
+      # convenience: check_pr_metadata.py diffs against origin/main to decide whether the
+      # branch touched charted source, and a shallow clone would give it nothing to diff.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Row to Issue: a diff that touches charted source (.rs, .py, .pyi — the same set
+      # self-gate below counts) names the forge issue it serves, and that issue is open,
+      # sized once, has an area and a milestone. Only CI can see the forge, so this step —
+      # not scripts/check-guardrails.sh — is where it runs; the tree's own check is
+      # `--selfcheck`. First step of the cheapest required job, so a bad citation fails
+      # before the rest of the gate spends anything. Guarded to pull requests because
+      # PR_BODY is empty on a push and the job has no PR to judge.
+      - name: Row to Issue — PR body cites an open, sized, scheduled issue
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          FORGEJO_API_URL: ${{ github.api_url }}
+          FORGEJO_REPOSITORY: ${{ github.repository }}
+          FORGEJO_PR: ${{ github.event.pull_request.number }}
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/check_pr_metadata.py
       - name: C5 grep-gate — unsafe is confined to chart-io
         run: ./scripts/check-unsafe-confined.sh
       - name: ASSURANCE.md claims all have evidence links

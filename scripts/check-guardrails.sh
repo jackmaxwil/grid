@@ -25,6 +25,10 @@ run "$PY" scripts/guardrails/check_manifests.py
 run "$PY" scripts/guardrails/check_boundaries.py
 run "$PY" scripts/guardrails/check_commit_style.py
 run "$PY" scripts/guardrails/check_commit_style.py --selfcheck
+# The Row to Issue gate (.forgejo/workflows/grid-gate.yml, assurance job) only ever runs
+# in CI, against the live forge; the tree's own check of it is this flag, over a fake
+# transport that never leaves the process.
+run "$PY" scripts/check_pr_metadata.py --selfcheck
 run "$PY" scripts/guardrails/check_hygiene.py
 run "$PY" scripts/guardrails/check_blob_size.py
 run scripts/check-unsafe-confined.sh
