@@ -1093,6 +1093,15 @@ fn trace_ingest_then_diff_is_the_ci_loop() {
     let same = grid(dir.path(), &["trace", "diff", "trace:g", "trace:g"]);
     assert_eq!(code(&same), 0);
     assert!(stdout(&same).is_empty(), "no records without a difference");
+    // An id nothing was retained under is bad input, and the refusal says
+    // what was wrong — not the argument echoed back as `grid: nope`.
+    let unknown = grid(dir.path(), &["trace", "diff", "nope", "trace:g"]);
+    assert_eq!(code(&unknown), 2);
+    let said = stderr(&unknown);
+    assert!(
+        said.contains("unknown trace id nope") && said.contains("ingest"),
+        "the refusal names the problem and the way out: {said}"
+    );
     // Green against red: red kept calling, exit 3, fork then edge records.
     let forked = grid(dir.path(), &["trace", "diff", "trace:g", "trace:r"]);
     assert_eq!(code(&forked), 3, "a forked trace is a divergence");

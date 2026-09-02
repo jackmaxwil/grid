@@ -2394,7 +2394,7 @@ fn trace(args: &[&str], json: bool) -> u8 {
                         exit::OK
                     }
                 }
-                Err(rpc::TraceDiffError::UnknownTrace(e)) => {
+                Err(e @ rpc::TraceDiffError::UnknownTrace(_)) => {
                     hint(&format!("grid: {e}"));
                     exit::BAD_INPUT
                 }
