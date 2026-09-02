@@ -1,0 +1,133 @@
+# A thin caller of the justfile the git hooks already run — never a second copy of the
+# rules. Adapted from yi's .forgejo/workflows/pr.yml; .forgejo/workflows/grid-gate.yml is
+# the same gate for the Forgejo estate and calls the same recipes.
+name: pr
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # `lint`, `guardrails` and `test` are the three lanes of `just check` and none depends on
+  # another, so the gate pays the longest rather than the sum. `just lane` is what runs
+  # them: it carries prepush's own invariant — that the gate regenerated nothing — into each
+  # lane, so splitting the run does not drop it. That invariant is load-bearing here,
+  # because crates/wire is generated and so are the guardrail baselines.
+  gate:
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [lint, guardrails, test]
+    runs-on: ubuntu-latest
+    steps:
+      # check_commit_style.py resolves origin/main and refuses to pass blind on a shallow
+      # clone, so the full history is the gate's precondition.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # `rustup show` prints — and installs — whatever rust-toolchain.toml pins, so the
+      # version lives in one file rather than in every workflow.
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.lane }}
+          cache-on-failure: true
+      - name: tools the guardrails lane announces when absent
+        if: matrix.lane == 'guardrails'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-deny,cargo-machete
+      - name: nextest, which just test uses when it is on PATH
+        if: matrix.lane == 'test'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-nextest
+      - if: matrix.lane == 'lint'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - name: codespell
+        if: matrix.lane == 'guardrails'
+        run: pipx install codespell
+      # The determinism smoke (plan Wave 2 accept): hashing a real tree twice must agree,
+      # and the repo itself is the corpus grid always has.
+      - env:
+          GRID_CORPUS: ${{ github.workspace }}
+        run: just lane ${{ matrix.lane }}
+
+  # The title is judged by the same rule the subjects are, and only CI can see it: it
+  # exists nowhere in the tree the local hook scans. Its own job, so the three gate lanes
+  # do not each re-run a one-second python script.
+  title:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: python3 scripts/guardrails/check_commit_style.py
+
+  # Fuzz targets are code: they must keep compiling even when nothing fuzzes them at PR
+  # time. A rotting target is a claim with no evidence behind it. The runs themselves are
+  # postmerge's, because a fuzzing budget that fits in a PR gate finds nothing.
+  fuzz-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      # rust-toolchain.toml pins 1.94.0, so `cargo` alone is stable even after the
+      # nightly install; fuzz needs the nightly named explicitly.
+      - run: cargo +nightly fuzz build normalize
+      - run: cargo +nightly fuzz build references
+      - run: cargo +nightly fuzz build segment
+
+  # C5 evidence, and cheap enough to keep at PR time: no unsafe outside chart-io, and every
+  # due claim in ASSURANCE.md names evidence that exists.
+  assurance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/check-unsafe-confined.sh
+      - run: ./scripts/check-assurance-links.sh
+
+  # From wave 3 on, grid gates its own PRs: the plan's ground rule, and the best corpus we
+  # own. The plan is hand-written in .grid/plans and names what this branch promised to
+  # change; exit 3 means the diff diverged from it.
+  self-gate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: grid gates grid
+        # No `ls`: the step shell exits on error, so a glob that matches nothing reaches
+        # GNU ls as a literal, ls exits 2, and the script dies at the assignment — before
+        # the guard below can speak. grid charts .rs/.py/.pyi (survey::files::lang_of); a
+        # diff naming none of them has no delta to gate, so it needs no plan.
+        run: |
+          set -- .grid/plans/*.json
+          src=$(git diff --name-only "origin/$BASE...HEAD" |
+                grep -cE '\.(rs|py|pyi)$' || true)
+          if [ -f "$1" ]; then
+            cargo run -q -p grid -- gate "$1" HEAD
+          elif [ "$src" = 0 ]; then
+            echo "no charted source in the diff: nothing for grid to gate"
+          else
+            echo "no plan: a grid PR that changes source carries one in .grid/plans/"
+            exit 1
+          fi
+        env:
+          BASE: ${{ github.base_ref }}

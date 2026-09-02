@@ -96,8 +96,13 @@ grid too, with `_common.py` ported as-is.
 ## CI
 
 yi's CI lives in `.forgejo/workflows/`; its GitHub equivalents were dropped
-when the estate moved. Grid keeps its existing `.forgejo/workflows/grid-gate.yml`
-and gains `.github/workflows/` as the same gate expressed in yi's lane shape.
+when the estate moved. Grid gains `.github/workflows/` in yi's lane shape, and
+`.forgejo/workflows/grid-gate.yml` is rewritten to call the same recipes —
+yi's rule is that a workflow is a thin caller of the justfile the git hooks
+already run and never a second copy of the rules, and grid's Forgejo file had
+become exactly that second copy (it ran `cargo clippy --workspace` without
+`--all-targets` and no guardrails at all, so the checks added above would
+never have run in the CI grid actually uses).
 
 | yi job | grid |
 |---|---|
