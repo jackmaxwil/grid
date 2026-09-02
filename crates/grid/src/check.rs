@@ -33,6 +33,7 @@
 //! reviewer sees is a path the query verb would produce, at the grade the
 //! chart stored for it.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt::Write as _;
 use std::path::Path;
 
 use grid_chart::{DatumId, Ordinal, Segment};
@@ -545,6 +546,331 @@ fn def_ref<B: AsRef<[u8]>>(segment: &Segment<B>, ord: Ordinal) -> Option<DefRef>
             line: u64::from(loc.line),
         }),
     })
+}
+
+/// Render a check as one markdown document for a pull-request comment.
+///
+/// The porcelain is the record form and stays exactly what it was; this is
+/// the same judgment for a reader who is about to leave a review comment,
+/// where thirty records with padded columns are a wall and a heading with
+/// bullets is a paragraph. Nothing is computed here — every bullet is a field
+/// of the same [`grid_wire::CheckResult`], in the same gate-first order the
+/// porcelain prints, so the two cannot disagree about what gated.
+///
+/// Every bullet is `callsign — reason — file:line`, and the three columns
+/// keep their meaning across every section: what, why, where. A section with
+/// nothing in it is omitted rather than printed empty, because an empty
+/// heading in a review comment reads as a check that ran and found nothing
+/// when it may be a check that never ran (`--quick` asks for no traces at
+/// all); the footer says what was not checked.
+#[must_use]
+pub fn markdown(answer: &CheckResult, name: &crate::porcelain::NameOf) -> String {
+    let show = |d: &Datum| name(d).unwrap_or_else(|| format!("@{}", prefix(d)));
+    let mut out = String::new();
+    let (base, head) = answer.drift.as_ref().map_or_else(
+        || ("?".to_owned(), "?".to_owned()),
+        |d| {
+            (
+                format!("@{}", prefix_of(&d.base.0)),
+                format!("@{}", prefix_of(&d.head.0)),
+            )
+        },
+    );
+    let _ = writeln!(out, "# grid check {base} → {head}\n");
+    out.push_str(if gated(answer) {
+        "**Exit 3** — something this change did was not checked. Every bullet under \
+         *Gates* is evidence grid can stand behind; the tail below ranks and does not gate.\n"
+    } else {
+        "**Exit 0** — no gate fired. The tail below ranks and never gates.\n"
+    });
+
+    let blocking = gate_sections(answer, &show);
+    if !blocking.is_empty() {
+        out.push_str("\n## Gates\n");
+        out.push_str(&blocking);
+    }
+    let ranked = tail_sections(answer, &show);
+    if !ranked.is_empty() {
+        out.push_str("\n## Tail\n");
+        out.push_str(&ranked);
+    }
+    if let Some(cert) = answer.refactor.as_ref() {
+        let _ = writeln!(out, "\n## Certificate\n\n- {}", certificate(cert));
+    }
+
+    let mut footer: Vec<String> = answer
+        .drift
+        .as_ref()
+        .map(|d| unchecked_lines(&d.unchecked))
+        .unwrap_or_default();
+    footer.extend(answer.warnings.iter().flatten().map(|w| {
+        // `-` is the porcelain's "no subject" column; a document has no
+        // columns, so the message stands on its own.
+        if w.subject == "-" {
+            w.message.clone()
+        } else {
+            format!("{}: {}", w.subject, w.message)
+        }
+    }));
+    if !footer.is_empty() {
+        let _ = writeln!(out, "\n---\n\nNot checked: {}", footer.join("; "));
+    }
+    out
+}
+
+/// The sections that move the exit code, in the porcelain's own order.
+fn gate_sections(answer: &CheckResult, show: &impl Fn(&Datum) -> String) -> String {
+    let mut out = String::new();
+    let suspects = || answer.drift.iter().flat_map(|d| &d.suspects);
+    section(
+        &mut out,
+        "Drift suspects",
+        suspects()
+            .filter(|s| !is_covenant(s))
+            .map(|s| suspect_bullet(s, show)),
+    );
+    section(
+        &mut out,
+        "Covenant fires",
+        suspects()
+            .filter(|s| is_covenant(s))
+            .map(|s| suspect_bullet(s, show)),
+    );
+    section(
+        &mut out,
+        "Uncompiled callers",
+        answer
+            .compile
+            .iter()
+            .flat_map(|c| &c.uncompiled)
+            .map(|s| suspect_bullet(s, show)),
+    );
+    section(
+        &mut out,
+        "Adherence",
+        answer
+            .verdict
+            .iter()
+            .filter(|v| v.gate == GateVerdictGate::Hold)
+            .flat_map(|v| adherence_bullets(v, show)),
+    );
+    section(
+        &mut out,
+        "Stale verdicts",
+        answer.stale.iter().flatten().map(|s| {
+            bullet(
+                &s.test,
+                match s.reason {
+                    grid_wire::StaleTestReason::ClosureChanged => "closure-changed",
+                    grid_wire::StaleTestReason::ClosureRejected => "closure-rejected",
+                },
+                None,
+            )
+        }),
+    );
+    section(
+        &mut out,
+        "Declared compat",
+        answer
+            .compat
+            .iter()
+            .flatten()
+            .filter(|f| f.declared)
+            .map(|f| compat_bullet(f, show)),
+    );
+    out
+}
+
+/// The sections that rank and never move the exit code.
+fn tail_sections(answer: &CheckResult, show: &impl Fn(&Datum) -> String) -> String {
+    let mut out = String::new();
+    section(
+        &mut out,
+        "Weak tests",
+        answer.weak.iter().flatten().map(|w| {
+            bullet(
+                &w.test,
+                &format!("proved nothing about {}", named(&w.def, show)),
+                w.def.materialization.as_ref(),
+            )
+        }),
+    );
+    section(
+        &mut out,
+        "Uncovered",
+        answer.uncovered.iter().flatten().map(|d| {
+            bullet(
+                &named(d, show),
+                "no selected test reaches it",
+                d.materialization.as_ref(),
+            )
+        }),
+    );
+    section(
+        &mut out,
+        "Clone-of",
+        answer.clones.iter().flatten().map(|c| {
+            bullet(
+                &named(&c.def, show),
+                &format!("clone-of {}", named(&c.existing, show)),
+                c.def.materialization.as_ref(),
+            )
+        }),
+    );
+    section(
+        &mut out,
+        "Compat",
+        answer
+            .compat
+            .iter()
+            .flatten()
+            .filter(|f| !f.declared)
+            .map(|f| compat_bullet(f, show)),
+    );
+    out
+}
+
+/// A covenant fire is a drift suspect whose reason names the declaration —
+/// the same row, listed under its own heading because a human declared it
+/// and a reader wants to know which of the two kinds fired.
+fn is_covenant(suspect: &grid_wire::DriftSuspect) -> bool {
+    suspect
+        .reason
+        .as_deref()
+        .is_some_and(|r| r.starts_with("covenant:"))
+}
+
+/// One `### <title>` block, or nothing at all when the iterator is empty.
+fn section(out: &mut String, title: &str, rows: impl Iterator<Item = String>) {
+    let rows: Vec<String> = rows.collect();
+    if rows.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "\n### {title}\n");
+    for row in rows {
+        out.push_str(&row);
+    }
+}
+
+/// One bullet: the callsign in backticks, the reason, and `file:line` in
+/// backticks — the one shape every section uses, so the three columns keep
+/// their meaning throughout the document: what, why, where.
+fn bullet(what: &str, why: &str, at: Option<&DefRefMaterialization>) -> String {
+    match at {
+        Some(at) => format!("- `{what}` — {why} — `{}:{}`\n", at.file, at.line),
+        None => format!("- `{what}` — {why}\n"),
+    }
+}
+
+fn named(def: &DefRef, show: &impl Fn(&Datum) -> String) -> String {
+    def.callsign
+        .as_ref()
+        .map_or_else(|| show(&def.datum), |c| c.0.clone())
+}
+
+/// A suspect's bullet: the dependent, what it depends on and how, and where
+/// the dependent is — the `drift` record's own columns as a sentence.
+fn suspect_bullet(suspect: &grid_wire::DriftSuspect, show: &impl Fn(&Datum) -> String) -> String {
+    let relation = grid_gate::lint::relation_name(suspect.relation);
+    let changed = named(&suspect.changed, show);
+    let grade = grade(suspect.grade);
+    let why = match suspect.reason.as_deref() {
+        Some(reason) => format!("{relation} `{changed}` ({grade}, {reason})"),
+        None => format!("{relation} `{changed}` ({grade})"),
+    };
+    bullet(
+        &named(&suspect.dependent, show),
+        &why,
+        suspect.dependent.materialization.as_ref(),
+    )
+}
+
+fn compat_bullet(finding: &grid_wire::CompatFinding, show: &impl Fn(&Datum) -> String) -> String {
+    bullet(
+        &named(&finding.def, show),
+        &format!("compat: {}", finding.rule),
+        finding.def.materialization.as_ref(),
+    )
+}
+
+/// The gate's divergences, each as its own bullet: a promise never built, an
+/// edge nobody promised, a definition nobody accounted for.
+fn adherence_bullets(
+    verdict: &grid_wire::GateVerdict,
+    show: &impl Fn(&Datum) -> String,
+) -> Vec<String> {
+    let mut out: Vec<String> = verdict
+        .missing
+        .iter()
+        .map(|p| {
+            bullet(
+                &format!("{} -> {}", p.src.0, p.dst.0),
+                "missing: promised and never built",
+                None,
+            )
+        })
+        .collect();
+    out.extend(verdict.surplus.iter().map(|e| {
+        bullet(
+            &format!("{} -> {}", show(&e.edge.src), show(&e.edge.dst)),
+            "surplus: built and never promised",
+            None,
+        )
+    }));
+    out.extend(verdict.defs_unaccounted.iter().map(|d| {
+        bullet(
+            &d.callsign.0,
+            "unaccounted: changed and never promised",
+            None,
+        )
+    }));
+    out.extend(
+        verdict
+            .invariant_violations
+            .iter()
+            .map(|v| bullet(&v.id, "invariant violated", None)),
+    );
+    out
+}
+
+/// The refactor certificate, as the one sentence the porcelain prints.
+fn certificate(cert: &RefactorCertificate) -> String {
+    let interfaces = match cert.interfaces_moved {
+        0 => "interfaces held".to_owned(),
+        n => format!("{n} interfaces moved"),
+    };
+    match (cert.replayed_pass, cert.uncovered) {
+        (Some(replayed), Some(uncovered)) => format!(
+            "**refactor** — {interfaces} · {replayed} covering tests replayed pass · \
+             {uncovered} changed defs uncovered"
+        ),
+        _ => format!("**refactor** — {interfaces} · no retained traces"),
+    }
+}
+
+/// What the check could not check, as the footer sentence.
+fn unchecked_lines(unchecked: &grid_wire::DriftUnchecked) -> Vec<String> {
+    let mut out = Vec::new();
+    match unchecked.unresolved_refs {
+        Some(n) => out.push(format!("{n} unresolved references")),
+        None => out
+            .push("an unknown number of unresolved references (head was not surveyed)".to_owned()),
+    }
+    let mut count = |n: Option<u64>, what: &str| {
+        if let Some(n) = n.filter(|n| *n > 0) {
+            out.push(format!("{n} {what}"));
+        }
+    };
+    count(unchecked.unattributed_entries, "unattributed verdicts");
+    count(
+        unchecked.weak_skipped,
+        "weak-checks skipped (stale coverage)",
+    );
+    count(
+        unchecked.compat_unchecked,
+        "compat unchecked (derive not visible)",
+    );
+    out
 }
 
 /// Every callsign the live epoch knows, sorted — the name-space side of the

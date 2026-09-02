@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.13.0
+version: 2.14.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -253,26 +253,53 @@ a file grid cannot read is not a file with nothing in it.
 
 ## Text-mode output
 
-Two verbs answer in prose rather than records, because their answer *is*
-prose: `grid explain <word>` and `grid scope --bodies`/`--sigs`. Their stdout
-is a document — `## <callsign>  <file:line>  (body, hop k)` and `## sig
-<callsign>  <file:line>  (hop k)` headers, each followed by the text, closed
-by one `# horizon: bodies complete through <N|none>, sigs through <M|none>,
-≈<T> tokens (bytes/4)` line that names the depth each tier is complete to.
-The record grammar above does not apply to those lines and no consumer should
-parse them as records: `--json` is the record form, and for `scope` it is the
-`ScopePack`'s additive `bodies`, `sigs` and `horizon`. Two named presets stand
-for the two depth pairs worth knowing: `--orient` is `--bodies 0 --sigs 2`
-(the shape of an unfamiliar tree, no bodies paid for) and `--edit` is
-`--bodies 1 --sigs 3` (what the first step of an edit loop needs). Each only
-*supplies* a depth — an explicit `--bodies` or `--sigs` beside one wins,
-whichever order they were typed in — and neither touches `--depth`,
-`--budget` or `--since`. The budget is spent in
-whole hop layers, farthest first, so the horizon is never a claim about a
-layer that was cut in half; a body layer that will not fit is demoted to its
-sigs before it is dropped, and a pack that packed nothing still prints its
-horizon line. Without `--bodies` and `--sigs`, `grid scope` prints the same
-`ref`/`edge`/`inv` records it always has.
+Three verbs answer in prose rather than records, because their answer *is*
+prose: `grid explain <word>`, `grid scope --bodies`/`--sigs`, and `grid check
+--format md`. **The rule over all of them: `--json` is always the record
+form.** A text mode is a rendering for a human reader — a terminal, a review
+comment — and no consumer should parse one; every fact in one is a field of
+the same wire result, and the wire result is what a machine reads. The record
+grammar above does not apply to any line in this section.
+
+`grid explain <word>` and `grid scope --bodies`/`--sigs` print a document —
+`## <callsign>  <file:line>  (body, hop k)` and `## sig <callsign>
+<file:line>  (hop k)` headers, each followed by the text, closed by one
+`# horizon: bodies complete through <N|none>, sigs through <M|none>, ≈<T>
+tokens (bytes/4)` line that names the depth each tier is complete to. For
+`scope` the record form is the `ScopePack`'s additive `bodies`, `sigs` and
+`horizon`. Two named presets stand for the two depth pairs worth knowing:
+`--orient` is `--bodies 0 --sigs 2` (the shape of an unfamiliar tree, no
+bodies paid for) and `--edit` is `--bodies 1 --sigs 3` (what the first step of
+an edit loop needs). Each only *supplies* a depth — an explicit `--bodies` or
+`--sigs` beside one wins, whichever order they were typed in — and neither
+touches `--depth`, `--budget` or `--since`. The budget is spent in whole hop
+layers, farthest first, so the horizon is never a claim about a layer that was
+cut in half; a body layer that will not fit is demoted to its sigs before it
+is dropped, and a pack that packed nothing still prints its horizon line.
+Without `--bodies` and `--sigs`, `grid scope` prints the same `ref`/`edge`/
+`inv` records it always has.
+
+`grid check --format md` is the composite as one markdown document, for
+pasting into a pull request. A `# grid check @<base> → @<head>` heading, then
+one line saying what the exit code means, then `## Gates` — `### Drift
+suspects`, `### Covenant fires`, `### Uncompiled callers`, `### Adherence`,
+`### Stale verdicts`, `### Declared compat`, in the porcelain's own gate-first
+order — then `## Tail` (`### Weak tests`, `### Uncovered`, `### Clone-of`,
+`### Compat`), then `## Certificate` when no gate fired, and the unchecked
+counts after a `---` rule as a `Not checked:` footer. Every bullet is
+``- `callsign` — reason — `file:line` ``, the three columns keeping their
+meaning throughout: what, why, where. A section with nothing in it is omitted
+rather than printed empty. Nothing is computed for this form — every bullet is
+a field of the same `CheckResult` the records render, so the two cannot
+disagree about what gated — and the exit code is the composite's own. A
+section that refuses refuses the *whole* document: exit `1` or `2`, the reason
+on stderr, and nothing at all on stdout, because a document with a heading, no
+gates and a footer is the same shape as a clean check and a reviewer skims
+shape. `--format md` and `--json` are two output forms and asking for both is
+bad input; an unknown format word is bad input rather than a silent fall back
+to records. `--quick`'s repeat filter is porcelain's alone: a review comment
+that omitted a count because a hook had already seen it would be a comment
+about a different check.
 
 ## Glyphs
 

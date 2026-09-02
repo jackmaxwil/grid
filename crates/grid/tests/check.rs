@@ -896,3 +896,145 @@ fn a_missing_base_refusal_names_the_command_and_the_tree() {
         stderr(&bad)
     );
 }
+
+/// T-11, ground truth: `--format md` is one document over the same judgment
+/// the porcelain prints — headings for the gate-first order, one bullet per
+/// finding as `callsign — reason — file:line`, the certificate, and what was
+/// not checked as a footer. The records and `--json` are untouched by it.
+#[test]
+fn format_md_is_one_document_over_the_same_judgment() {
+    let dir = loaded_repo();
+    let records = stdout(&grid(dir.path(), &["check"]));
+    let raw = json(&grid(dir.path(), &["check", "--json"]));
+
+    let out = grid(dir.path(), &["check", "--format", "md"]);
+    let doc = stdout(&out);
+    assert_eq!(code(&out), 3, "the exit is the composite's own: {doc}");
+
+    let head = doc.lines().next().expect("a heading");
+    assert!(
+        head.starts_with("# grid check @") && head.contains(" → @"),
+        "the heading names base and head: {head}"
+    );
+    assert!(
+        doc.contains("**Exit 3** — something this change did was not checked"),
+        "and what the exit means: {doc}"
+    );
+    assert!(
+        doc.contains("\n## Gates\n") && doc.contains("\n### Drift suspects\n"),
+        "gates first, by section: {doc}"
+    );
+    assert!(
+        doc.lines().any(
+            |l| l.starts_with("- `app.untouched` — constructs `app.Cfg` (proven)")
+                && l.ends_with("— `crates/app/src/lib.rs:3`")
+        ),
+        "one bullet per finding — callsign, reason, file:line: {doc}"
+    );
+    assert!(
+        doc.contains("\n### Stale verdicts\n") && doc.contains("- `test_lib.test_covered`"),
+        "every gating section is a section: {doc}"
+    );
+    assert!(
+        doc.contains("\n## Tail\n") && doc.contains("\n### Compat\n"),
+        "and the ranked findings are below the gates: {doc}"
+    );
+    assert!(
+        !doc.contains("## Certificate"),
+        "a gate fired, so there is no certificate: {doc}"
+    );
+    assert!(
+        doc.contains("\n---\n\nNot checked: ") && doc.contains("unresolved references"),
+        "the counts close the document as a footer: {doc}"
+    );
+
+    // The other two forms are what they were: three renderings, one judgment.
+    assert_eq!(stdout(&grid(dir.path(), &["check"])), records);
+    assert_eq!(json(&grid(dir.path(), &["check", "--json"])), raw);
+    assert!(!records.contains("# grid check"), "porcelain is records");
+
+    // A green check gets the certificate line and no Gates section.
+    let green = tempfile::tempdir().expect("tempdir");
+    git(green.path(), &["init", "-q", "-b", "main"]);
+    write(
+        green.path(),
+        &[
+            ("pkg/__init__.py", ""),
+            ("pkg/a.py", "def f():\n    return 1\n"),
+        ],
+    );
+    commit(green.path(), "one");
+    commit(green.path(), "two");
+    let clean = grid(green.path(), &["check", "--format", "md"]);
+    assert_eq!(code(&clean), 0, "{}", stderr(&clean));
+    assert!(
+        stdout(&clean).contains("**Exit 0** — no gate fired")
+            && stdout(&clean).contains("## Certificate")
+            && stdout(&clean).contains("**refactor** — interfaces held")
+            && !stdout(&clean).contains("## Gates"),
+        "{}",
+        stdout(&clean)
+    );
+
+    // Two output forms at once is a contradiction, not a precedence rule.
+    let both = grid(dir.path(), &["check", "--format", "md", "--json"]);
+    assert_eq!(code(&both), 2, "{}", stdout(&both));
+    let unknown = grid(dir.path(), &["check", "--format", "html"]);
+    assert_eq!(code(&unknown), 2);
+    assert!(
+        stderr(&unknown).contains("unknown format `html`"),
+        "{}",
+        stderr(&unknown)
+    );
+}
+
+/// T-11, conservatism: a section that refuses refuses the whole document.
+/// The temptation is the opposite one — a pull-request comment that says
+/// "grid could not read the trace store" is friendlier than no comment — and
+/// it is exactly wrong: a document with a heading, no gates and a footer is
+/// the same shape as a clean check, and a reviewer skims shape. So
+/// `--format md` refuses the way the records do: the reason on stderr, the
+/// exit code of the section that refused, and nothing at all on stdout.
+#[test]
+fn format_md_with_a_refusing_section_emits_no_document() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(
+        dir.path(),
+        &[
+            ("pkg/__init__.py", ""),
+            ("pkg/a.py", "def f():\n    return 1\n"),
+        ],
+    );
+    commit(dir.path(), "before");
+    write(dir.path(), &[("pkg/a.py", "def f():\n    return 2\n")]);
+    commit(dir.path(), "after");
+    assert_eq!(code(&grid(dir.path(), &["check", "--format", "md"])), 0);
+    // A trace store grid cannot read: unknown contents, not empty contents.
+    write(dir.path(), &[(".grid/traces/bad.json", "{")]);
+
+    let out = grid(dir.path(), &["check", "--format", "md"]);
+    assert_eq!(
+        code(&out),
+        1,
+        "the refusing section's exit, not a friendlier one:\n{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert_eq!(
+        stdout(&out),
+        "",
+        "and no document at all, not a document with the gates missing: {:?}",
+        stdout(&out)
+    );
+    assert!(
+        stderr(&out).contains("bad.json"),
+        "the reason is still said: {}",
+        stderr(&out)
+    );
+
+    // A bad-input refusal is the same posture with the input's exit code.
+    let bad = grid(dir.path(), &["check", "--format", "md", "deadbeef"]);
+    assert_eq!(code(&bad), 2, "{}", stdout(&bad));
+    assert_eq!(stdout(&bad), "", "{:?}", stdout(&bad));
+}

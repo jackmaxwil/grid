@@ -109,6 +109,7 @@ fn help() {
          todo <plan>                  the promise as a worklist\n  \
          check [base] [head] [--quick]  everything the change did that nobody checked; exit 3\n  \
          check --plan <p> [--why]     the same, plus the gate verdict and why it says so\n  \
+         check --format md            the same, as one markdown document for a PR comment\n  \
          check --compile [-- args]    wrap cargo check; the callers it did not compile; exit 3\n  \
          cache lookup|record ...      test verdicts keyed by identity closure\n  \
          edit apply <file>            compare-and-swap edits by datum\n  \
@@ -1705,7 +1706,7 @@ fn orphans(args: &[&str], json: bool) -> u8 {
     }
 }
 
-const CHECK_USAGE: &str = "usage: grid check [<base>] [<head>] [--plan <plan>] [--quick] [--why] [--trace <id>] [--compile [-- <cargo check args>]]\n       grid check --compile [-- <cargo check args>]";
+const CHECK_USAGE: &str = "usage: grid check [<base>] [<head>] [--plan <plan>] [--quick] [--why] [--format md] [--trace <id>] [--compile [-- <cargo check args>]]\n       grid check --compile [-- <cargo check args>]";
 
 /// `grid check [<base>] [<head>] [--plan <plan>] [--quick] [--why]` —
 /// everything the change did that nobody checked: drift suspects, the
@@ -1728,6 +1729,7 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
     let mut trace = None;
     let mut why = false;
     let mut quick = false;
+    let mut markdown = false;
     let mut compile = None;
     let mut rest = args;
     while let Some((arg, tail)) = rest.split_first() {
@@ -1735,6 +1737,17 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
         match *arg {
             "--why" => why = true,
             "--quick" => quick = true,
+            "--format" => {
+                let Some((value, tail)) = rest.split_first() else {
+                    hint(CHECK_USAGE);
+                    return exit::BAD_INPUT;
+                };
+                if !is_markdown(value) {
+                    return exit::BAD_INPUT;
+                }
+                markdown = true;
+                rest = tail;
+            }
             "--compile" => compile = Some(Vec::new()),
             "--" => {
                 let Some(cargo_args) = compile.as_mut() else {
@@ -1771,6 +1784,12 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
             }
         }
     }
+    if markdown && json {
+        hint(&format!(
+            "grid: --format md and --json are two output forms; pick one\n{CHECK_USAGE}"
+        ));
+        return exit::BAD_INPUT;
+    }
     if trace.is_some() && plan.is_none() {
         hint(&format!(
             "grid: --trace names the run a plan's coverage is read from and needs --plan\n{CHECK_USAGE}"
@@ -1780,19 +1799,10 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
     // `--compile` wraps the compile and writes the record first; with a
     // plan the check then reads it, without one the record's own report is
     // the whole answer — the mode use case 3 runs, unchanged.
-    let mut compiled = None;
-    if let Some(cargo_args) = compile {
-        if !positional.is_empty() {
-            hint(&format!(
-                "grid: --compile checks the worktree against {COMPILE_BASE}; endpoints do not apply\n{CHECK_USAGE}"
-            ));
-            return exit::BAD_INPUT;
-        }
-        match compile_wrap(&cargo_args) {
-            Ok(record) => compiled = Some(record),
-            Err(code) => return code,
-        }
-    }
+    let compiled = match compile_first(compile, &positional) {
+        Ok(record) => record,
+        Err(code) => return code,
+    };
     if let (None, Some(record)) = (&plan, compiled.as_ref()) {
         return compile_only(record, quick, json);
     }
@@ -1806,7 +1816,21 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
         compile: compiled.is_some().then_some(true),
         quick: quick.then_some(true),
     };
-    match check::answer(&params, root()) {
+    let form = if json {
+        Form::Json
+    } else if markdown {
+        Form::Markdown
+    } else {
+        Form::Records
+    };
+    check_run(&params, &form, why, quick)
+}
+
+/// Ask the composite and print it, or refuse whole with the section's own
+/// reason. A refusal writes nothing on stdout in any of the three forms —
+/// half a review comment reads as a check that found half these things.
+fn check_run(params: &grid_wire::methods::CheckParams, form: &Form, why: bool, quick: bool) -> u8 {
+    match check::answer(params, root()) {
         // Grid could not stand behind a section: a walk over fuel, a store
         // that would not open. Internal, and never a report without it.
         Err(
@@ -1822,31 +1846,83 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
             hint(&format!("grid: {e}"));
             exit::BAD_INPUT
         }
-        Ok(pack) => check_emit(&pack, why, json, quick),
+        Ok(pack) => check_emit(&pack, form, why, quick),
     }
+}
+
+/// `--format`'s one word today. An unknown one is bad input rather than a
+/// silent fallback to records: a caller who asked for a document and got
+/// porcelain would paste porcelain into a pull request.
+fn is_markdown(value: &str) -> bool {
+    if value == "md" {
+        return true;
+    }
+    hint(&format!(
+        "grid: unknown format `{value}` — `md` is the one text form; \
+         `--json` is the record form\n{CHECK_USAGE}"
+    ));
+    false
+}
+
+/// Run the wrapped compile, when one was asked for, and hand back its record.
+/// `Err` is the exit code to leave with.
+fn compile_first(
+    cargo_args: Option<Vec<String>>,
+    positional: &[&str],
+) -> Result<Option<grid_wire::CompileRecord>, u8> {
+    let Some(cargo_args) = cargo_args else {
+        return Ok(None);
+    };
+    if !positional.is_empty() {
+        hint(&format!(
+            "grid: --compile checks the worktree against {COMPILE_BASE}; endpoints do not apply\n{CHECK_USAGE}"
+        ));
+        return Err(exit::BAD_INPUT);
+    }
+    compile_wrap(&cargo_args).map(Some)
+}
+
+/// Which of the three forms one check's answer is printed in.
+enum Form {
+    /// Porcelain records, `docs/PORCELAIN.md`'s grammar.
+    Records,
+    /// The wire result verbatim.
+    Json,
+    /// One markdown document, for a pull-request comment.
+    Markdown,
 }
 
 /// Print a check's answer and compute its exit: 3 exactly when a gating
 /// section fired, the same predicate that withholds the refactor certificate.
 ///
-/// Under `--quick` the two lines a hook would otherwise repeat verbatim
-/// every turn are dropped when their content has not moved since the last
-/// `--quick` in this store ([`check::quiet`]). The full check never filters,
-/// and `--json` is the record form: it carries every count whatever a
-/// previous run printed.
-fn check_emit(pack: &grid_wire::CheckResult, why: bool, json: bool, quick: bool) -> u8 {
+/// Three forms, one judgment. `--json` is the record form. `--format md` is
+/// one document for a pull-request comment. Otherwise porcelain — and under
+/// `--quick` the two lines a hook would repeat verbatim every turn are
+/// dropped when their content has not moved since the last `--quick` in this
+/// store ([`check::quiet`]). The filter is porcelain's alone: `--json`
+/// carries every count whatever a previous run printed, and a review comment
+/// that omitted a count because a hook had already seen it would be a comment
+/// about a different check.
+fn check_emit(pack: &grid_wire::CheckResult, form: &Form, why: bool, quick: bool) -> u8 {
     let code = if check::gated(pack) {
         exit::DIVERGENCE
     } else {
         exit::OK
     };
-    if json {
+    match form {
         // A serialization failure is internal (1) and outranks the
         // verdict, exactly as `grid gate` treats it.
-        return match emit_json(pack) {
-            exit::OK => code,
-            failure => failure,
-        };
+        Form::Json => {
+            return match emit_json(pack) {
+                exit::OK => code,
+                failure => failure,
+            }
+        }
+        Form::Markdown => {
+            print!("{}", check::markdown(pack, &namer()));
+            return code;
+        }
+        Form::Records => {}
     }
     let text = check::porcelain(pack, &namer(), why);
     print!(
