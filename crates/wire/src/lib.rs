@@ -1062,6 +1062,8 @@ pub enum TestSelectionWhy {
     Aground,
     #[serde(rename = "not_recorded")]
     NotRecorded,
+    #[serde(rename = "unwatched")]
+    Unwatched,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

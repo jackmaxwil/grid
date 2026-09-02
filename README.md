@@ -141,7 +141,9 @@ executed lines onto definitions; one report is one test, one `observed`
 edge per definition it reached, with the snapshot it was mapped against.
 
 ```bash
-# Rust, per test name $t from `cargo nextest list`
+# Rust, per test name $t from `cargo nextest list`; the report is removed
+# first, or a test whose run wrote none inherits the previous test's reach
+rm -f cov.lcov
 cargo llvm-cov nextest --lcov --output-path cov.lcov -E "test(=$t)"
 grid trace ingest --lcov cov.lcov --test "$t"
 

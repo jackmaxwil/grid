@@ -950,6 +950,7 @@ pub fn test_run(run: &grid_wire::TestRun) -> String {
             },
             grid_wire::TestSelectionWhy::Aground => "aground",
             grid_wire::TestSelectionWhy::NotRecorded => "not-recorded",
+            grid_wire::TestSelectionWhy::Unwatched => "unwatched",
         };
         record(&mut out, "miss", &[&sel.test.0, why]);
     }

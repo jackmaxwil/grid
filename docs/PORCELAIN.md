@@ -161,7 +161,10 @@ observation, named the same in every language; on Rust a macro invocation
 such as `proptest!` defines it, on Python a decorator or a generated
 attribute or a definition the frontend declined — `:not-charted`
 when nothing under that module is charted at all; bare `unresolved` from a
-plan computed before the column existed), `aground` (the walk ran past its
+plan computed before the column existed), `unwatched` (a changed definition
+that no retained trace lists at all — nobody has watched which tests reach
+it, so no trace's silence about it is evidence and nothing replays across
+it), `aground` (the walk ran past its
 fuel, so every test is selected), or
 `not-recorded` (nothing on record to replay); `test <ok|fail>  <test>
 pass=<pass|fail>` per outcome the runner reported; `warn <test>

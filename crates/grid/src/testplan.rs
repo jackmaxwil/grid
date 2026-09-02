@@ -21,6 +21,12 @@
 //!   selected regardless of the walk. The honesty number says the static
 //!   closure is incomplete, so the closure alone never licenses a skip; a
 //!   live trace is the evidence that the test's reach was actually watched.
+//! - A definition in `C` that *no* retained trace lists — not this test's,
+//!   not any test's — makes every test `unwatched`: nobody has ever seen
+//!   which tests execute it, so a trace's silence about it is the absence of
+//!   evidence rather than evidence of absence, and nothing replays across it.
+//!   The cost is a full run whenever a definition no test has been seen to
+//!   execute moves; the alternative was a green run on a red tree.
 //! - What is left is looked up under `Kind::Test` and the run's `env_hash`;
 //!   a hit is replayed, a miss joins the run set as `not_recorded`.
 //! - Definitions in `C` no selected test can reach are `uncovered` — a
@@ -322,6 +328,7 @@ fn sort_tests<B: AsRef<[u8]>>(
     resolver: &Resolver,
     reached: Option<&HashSet<DatumId>>,
     traced: &HashSet<DatumId>,
+    unwatched: bool,
 ) -> Sorted {
     let held_at_base = |datum: DatumId| inputs.base.iter().any(|s| s.ordinal(&datum).is_some());
     let chart = grid_cache::Chart::new(inputs.head);
@@ -351,6 +358,9 @@ fn sort_tests<B: AsRef<[u8]>>(
             Some(_) if !held_at_base(datum) => TestSelectionWhy::Reached,
             Some(reached) if reached.contains(&datum) => TestSelectionWhy::Reached,
             Some(_) if !traced.contains(&datum) => TestSelectionWhy::NoTrace,
+            // Conservatism: this test's trace does not list the changed
+            // definition, but no trace does — so its silence proves nothing.
+            Some(_) if unwatched => TestSelectionWhy::Unwatched,
             Some(_) => {
                 let hit = inputs
                     .replay
@@ -404,11 +414,28 @@ pub fn compute<B: AsRef<[u8]>>(inputs: &Inputs<'_, B>) -> TestPlan {
     // The one inbound walk. `None` is aground, and aground selects everything.
     let reached = graph.walk(&roots, true, inputs.fuel);
     let mut budget_rejected = u64::from(reached.is_none());
+    // A changed definition no retained trace has ever listed as a callee —
+    // at either end of the change, live or decayed, because even a decayed
+    // trace shows some run was seen to reach it. A test in the inventory is
+    // covered by its own run: it is the thing the runner executes, and its
+    // edit selects it by reach.
+    let inventory: HashSet<DatumId> = inputs
+        .tests
+        .iter()
+        .filter_map(|test| resolver.resolve(&callsign_of(&test.0)).ok())
+        .collect();
+    let unwatched = inputs.changed.iter().any(|change| {
+        let listed = |datum: DatumId| graph.observed_in.contains_key(&datum);
+        !(listed(change.before)
+            || change
+                .after
+                .is_some_and(|after| listed(after) || inventory.contains(&after)))
+    });
     let Sorted {
         selected,
         replayed,
         mut reached_tests,
-    } = sort_tests(inputs, &resolver, reached.as_ref(), &traced);
+    } = sort_tests(inputs, &resolver, reached.as_ref(), &traced, unwatched);
 
     // The uncovered set is `C` minus what reached tests reach. Only reached
     // tests need walking — an unreached test reaches nothing in `C`, or the
@@ -825,6 +852,56 @@ mod tests {
         assert_eq!(
             selected(&plan),
             [("tests/test_core.py::test_b".to_owned(), Why::NoTrace)]
+        );
+    }
+
+    /// Conservatism: a changed definition that no retained trace covers
+    /// licenses no replay. `d` moves; no trace ever listed `d`, so nobody
+    /// watched which tests reach it — and a trace that does not list `d` is
+    /// then the absence of evidence, not evidence of absence. Every traced
+    /// test runs, with the reason, and `d` is still reported `uncovered`.
+    /// Replaying here is how `grid test` printed a green run on a tree whose
+    /// tests failed: the changed body's only path from its test was one the
+    /// chart could not see and no trace had watched.
+    #[test]
+    fn a_change_no_trace_covers_selects_every_test_rather_than_replaying() {
+        let dir = repo(&owned(&python(1, 2, 9, [1, 2, 3])));
+        ingest(dir.path(), "tests.test_core.test_a", &["pkg.core.a"]);
+        ingest(dir.path(), "tests.test_core.test_b", &["pkg.core.b"]);
+        record_pass(
+            dir.path(),
+            ENV,
+            &["tests.test_core.test_a", "tests.test_core.test_b"],
+        );
+        write(dir.path(), &owned(&python(1, 2, 10, [1, 2, 3])));
+        let plan = plan(dir.path(), Some("HEAD"), ENV, &PY_TESTS[..2]);
+        assert!(
+            plan.replayed.is_empty(),
+            "a change no trace covers licenses no replay: {:?}",
+            replayed(&plan)
+        );
+        assert_eq!(
+            selected(&plan),
+            [
+                ("tests/test_core.py::test_a".to_owned(), Why::Unwatched),
+                ("tests/test_core.py::test_b".to_owned(), Why::Unwatched),
+            ]
+        );
+        let uncovered: Vec<_> = plan
+            .uncovered
+            .iter()
+            .filter_map(|d| d.callsign.as_ref().map(|c| c.0.as_str()))
+            .collect();
+        assert_eq!(uncovered, ["pkg.core.d"], "still reported, still a warn");
+        // The same change with `d` watched by some trace — even a trace of
+        // another test — is the ordinary case: `d`'s absence from a's and
+        // b's traces is then evidence, and both replay.
+        ingest(dir.path(), "tests.test_core.test_d", &["pkg.core.d"]);
+        let watched = super::fixtures::plan(dir.path(), Some("HEAD"), ENV, &PY_TESTS[..2]);
+        assert!(watched.selected.is_empty(), "{:?}", selected(&watched));
+        assert_eq!(
+            replayed(&watched),
+            ["tests/test_core.py::test_a", "tests/test_core.py::test_b"]
         );
     }
 
