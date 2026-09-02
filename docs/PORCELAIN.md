@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.5.0
+version: 2.6.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -49,6 +49,25 @@ culprit when known, followed by a `done` record carrying measured `steps` and
 success: insufficient history is bad input (exit `2`) with the explanation on
 stderr and no stdout records. Seeded test fixtures exercise this grammar but
 are not production-history claims.
+
+`grid suspects <test> --closure <snapshot|rev>` is the same verb's second
+evidence mode, for the failure that has no history at all — the test passed
+at the last snapshot and fails now. Its rows are the same `hit` records with
+the word `closure` where the Ochiai score sits, and `via <k> hops, datum
+moved` as the evidence: the definitions the test's closure at head can reach
+whose datum that snapshot did not hold — a body that moved, or one that
+arrived since — nearest first, datum identity as the tie-break. Heuristic — a
+candidate is a definition that changed and is reachable, not a proven cause —
+so the exit is `0` on any answer, including an empty one. When two retained
+traces of the test straddle the snapshot, one `fork` record follows the
+ranking, from the same `grid trace diff` machinery.
+The output closes with one `miss` record saying how much of the closure the
+chart could not follow; today that is `miss ?  references declined uncounted
+(no survey ran in this call)`, because the declined split is a property of a
+survey run and this verb answers from the published snapshot. A closure that
+runs past its fuel is refused whole (exit `1`) and a `since` the retained
+chain never held is bad input (exit `2`) — never an empty ranking, which
+would read as "nothing in the closure moved".
 
 Verdict roles on `edge` records: `match`, `miss`, `surplus`, `tolerated`.
 
@@ -193,7 +212,10 @@ tags a new verb's meanings, which carried 2.1.0 to 2.2.0 (`grid test`'s
 and 2.3.0 to 2.4.0 (`grid gate`'s `def` record, trailing `unaccounted:
 interface` when a def promise's `interface` claim is why it holds). Adding a
 text-mode output is minor too, which carried 2.4.0 to 2.5.0 (`grid scope
---bodies`'s document and its `# horizon:` line)
+--bodies`'s document and its `# horizon:` line), and one more evidence mode
+inside an existing verb carried 2.5.0 to 2.6.0 (`grid suspects --closure`'s
+`hit` records with `closure` in the score column, its `fork`, and its closing
+`miss`)
 — changing column
 order or meaning is major — and so is renaming a tag, which is what carried
 1.6.0 to 2.0.0 (`docs/plans/2026-09-01-naming.md`). The daemon reports this

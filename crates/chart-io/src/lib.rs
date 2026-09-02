@@ -418,6 +418,31 @@ impl Store {
     /// # Errors
     /// [`StoreError`] if the store directory cannot be read.
     pub fn epoch_for_rev(&self, rev: &str) -> Result<Option<Arc<Epoch>>, StoreError> {
+        self.manifest_for_rev(rev)?
+            .map(|m| load_epoch(&self.dir, m).map(Arc::new))
+            .transpose()
+    }
+
+    /// The id of the most recent retained snapshot surveyed at `rev`, without
+    /// mapping its segments.
+    ///
+    /// A snapshot id is a hash of the manifest, so answering "which snapshot
+    /// is that rev" never needs the chart itself. Every caller that only
+    /// wants the coordinate — membership queries, which read a separate
+    /// image — takes this instead of loading an epoch it will not walk.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store directory cannot be read.
+    pub fn snapshot_for_rev(&self, rev: &str) -> Result<Option<SnapshotId>, StoreError> {
+        Ok(self.manifest_for_rev(rev)?.map(|m| m.snapshot_id()))
+    }
+
+    /// The most recent retained manifest surveyed at `rev`.
+    ///
+    /// Retained manifests record the rev they were surveyed at; scanning them
+    /// is bounded by the number of published snapshots, and the live epoch is
+    /// checked by the caller first.
+    fn manifest_for_rev(&self, rev: &str) -> Result<Option<Manifest>, StoreError> {
         let mut best: Option<(std::time::SystemTime, Manifest)> = None;
         for entry in fs::read_dir(&self.dir)? {
             let entry = entry?;
@@ -442,8 +467,7 @@ impl Store {
                 best = Some((at, manifest));
             }
         }
-        best.map(|(_, m)| load_epoch(&self.dir, m).map(Arc::new))
-            .transpose()
+        Ok(best.map(|(_, m)| m))
     }
 }
 

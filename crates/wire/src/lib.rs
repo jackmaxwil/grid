@@ -839,6 +839,8 @@ pub struct SuspectsRankedItem {
     pub datum: Datum,
     pub score: f64,
     pub via: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hops: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -96,7 +96,7 @@ fn help() {
          hotspots [--under p]         complexity x churn, descending\n  \
          roots                        import name -> directory map\n  \
          log <name>                   a definition's history in identity space\n  \
-         suspects <test>              likely culprits, ranked\n  \
+         suspects <test> [--closure <since>]  likely culprits, ranked\n  \
          test [base] [--trace|--all]  run what the change can reach; replay the rest; exit 3 on red\n  \
          gate <plan> [head]           promise vs delta; exit 3 on hold\n  \
          plan lint <file>             validate a promise file\n  \
@@ -1760,42 +1760,102 @@ fn compile_report(record: &grid_wire::CompileRecord, json: bool) -> u8 {
     }
 }
 
-/// `grid suspects <test> [<trace>] [<base>]` — rank changed definitions seen
-/// in retained spectra for the named test.
+const SUSPECTS_USAGE: &str =
+    "usage: grid suspects <test> [<trace>] [<base>] [--closure <snapshot|rev>]";
+
+/// `grid suspects <test> [<trace>] [<base>] [--closure <since>]` — rank
+/// changed definitions for the named test, in one of two evidence modes.
+///
+/// Without `--closure`, plain Ochiai over retained spectra, which refuses
+/// without history. With it, the definitions the test's closure at head can
+/// reach whose bodies moved since that snapshot, ranked by hop distance —
+/// heuristic, so exit `0` on any answer, and no history required.
 fn suspects(args: &[&str], json: bool) -> u8 {
-    let Some(test) = args.first() else {
-        hint("usage: grid suspects <test> [<trace>] [<base>]");
+    let mut closure = None;
+    let mut positional = Vec::new();
+    let mut rest = args;
+    while let Some((arg, tail)) = rest.split_first() {
+        rest = tail;
+        match *arg {
+            "--closure" => {
+                let (Some(spec), Some(tail)) = (rest.first(), rest.get(1..)) else {
+                    hint(SUSPECTS_USAGE);
+                    return exit::BAD_INPUT;
+                };
+                closure = Some(snapshot_or_rev(spec));
+                rest = tail;
+            }
+            other if other.starts_with("--") => {
+                hint(&format!("grid: unknown flag `{other}`\n{SUSPECTS_USAGE}"));
+                return exit::BAD_INPUT;
+            }
+            other => positional.push(other),
+        }
+    }
+    let (Some(test), true) = (positional.first(), positional.len() <= 3) else {
+        hint(SUSPECTS_USAGE);
         return exit::BAD_INPUT;
     };
-    if args.len() > 3 {
-        hint("usage: grid suspects <test> [<trace>] [<base>]");
-        return exit::BAD_INPUT;
-    }
     let params = grid_wire::methods::SuspectsParams {
         test: (*test).to_owned(),
-        trace: args
+        trace: positional
             .get(1)
             .map(|trace| grid_wire::TraceId((*trace).to_owned())),
-        base: args.get(2).map(|base| snapshot_or_rev(base)),
+        base: positional.get(2).map(|base| snapshot_or_rev(base)),
+        closure_since: closure.clone(),
     };
-    match suspects::rank(&params, root()) {
-        Err(error) => {
-            hint(&format!("grid: {error}"));
-            match error {
-                suspects::Error::UnknownTrace(_) => exit::STALE,
-                suspects::Error::InsufficientHistory(_) => exit::BAD_INPUT,
-                suspects::Error::Chart(_) => exit::INTERNAL,
+    match closure {
+        Some(since) => suspects_closure(&params, &since, json),
+        None => match suspects::rank(&params, root()) {
+            Err(error) => suspects_refused(&error),
+            Ok(result) => {
+                if json {
+                    return emit_json(&result);
+                }
+                print!("{}", porcelain::suspects(&result));
+                exit::OK
             }
-        }
-        Ok(result) => {
+        },
+    }
+}
+
+/// The closure evidence mode's output: the ranking, the fork when two
+/// retained traces straddle `since`, and the closing `miss` that says how
+/// much of the closure the chart could not follow.
+fn suspects_closure(
+    params: &grid_wire::methods::SuspectsParams,
+    since: &grid_wire::SnapshotOrRev,
+    json: bool,
+) -> u8 {
+    match suspects::rank_closure(params, since, root()) {
+        Err(error) => suspects_refused(&error),
+        Ok(found) => {
             if json {
-                return emit_json(&result);
+                return emit_json(&found.suspects);
             }
-            for item in result.ranked {
-                println!("hit     {} {:.6} {}", item.datum.0, item.score, item.via);
+            print!("{}", porcelain::suspects(&found.suspects));
+            if let Some(diff) = &found.fork {
+                print!("{}", porcelain::fork(diff));
             }
+            // Unknown, never zero: the declined split is a property of a
+            // survey *run* and no survey ran here — this verb answers from
+            // the published snapshot, which is what keeps it inside its
+            // millisecond budget.
+            println!("miss    ?  references declined uncounted (no survey ran in this call)");
             exit::OK
         }
+    }
+}
+
+/// One refusal table for both modes.
+fn suspects_refused(error: &suspects::Error) -> u8 {
+    hint(&format!("grid: {error}"));
+    match error {
+        suspects::Error::UnknownTrace(_) => exit::STALE,
+        suspects::Error::InsufficientHistory(_)
+        | suspects::Error::UnknownTest(_)
+        | suspects::Error::UnknownSince(_) => exit::BAD_INPUT,
+        suspects::Error::ClosureRejected(_) | suspects::Error::Chart(_) => exit::INTERNAL,
     }
 }
 

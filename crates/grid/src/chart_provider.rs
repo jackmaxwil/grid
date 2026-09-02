@@ -295,6 +295,33 @@ impl ChartDelta {
             }
         }
     }
+
+    /// The snapshot id a `SnapshotOrRev` names, without mapping its segments.
+    ///
+    /// A snapshot id is a hash of a manifest, so naming a snapshot never
+    /// needs the chart it indexes. A query that only wants the coordinate —
+    /// a membership diff reads a separate image — takes this rather than
+    /// [`ChartDelta::epoch_of`], which maps and validates every segment of an
+    /// epoch it will never walk.
+    ///
+    /// # Errors
+    /// [`Error::NoSnapshotForRev`] when a rev has never been surveyed,
+    /// [`Error::Store`] when the store cannot be read.
+    pub fn snapshot_of(&self, target: &SnapshotOrRev) -> Result<SnapshotId, Error> {
+        match target {
+            SnapshotOrRev::Snapshot { snapshot } => Ok(snapshot.clone()),
+            SnapshotOrRev::GitRev { git_rev } => {
+                let rev = resolve_rev(&self.root, &git_rev.0);
+                if self.head.manifest().git_rev == rev && !self.head.segments().is_empty() {
+                    return Ok(wire_id(self.head.snapshot_id()));
+                }
+                self.store
+                    .snapshot_for_rev(&rev)?
+                    .map(|id| wire_id(&id))
+                    .ok_or_else(|| Error::NoSnapshotForRev(git_rev.0.clone()))
+            }
+        }
+    }
 }
 
 /// Wire `SnapshotId` as the chart's. Both are `snap:b3:<hex>`; the two types

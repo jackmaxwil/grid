@@ -384,6 +384,56 @@ fn wave_ten_methods_reject_bad_params_and_absent_history() {
     );
 }
 
+/// C10 for the closure evidence mode: the same params the CLI builds, over
+/// the real socket, answering with `hops` on every row — and refusing a
+/// snapshot the chain never held rather than ranking nothing.
+#[test]
+fn suspects_closure_answers_over_the_socket_with_hops() {
+    let dir = repo();
+    std::fs::write(
+        dir.path().join("a.py"),
+        "def culprit():\n    return 1\n\ndef the_test():\n    return culprit()\n",
+    )
+    .expect("write");
+    let daemon = Daemon::start(dir.path());
+    let since = daemon.call("grid.survey.run", &json!({}))["result"]["snapshot_id"].clone();
+    std::fs::write(
+        dir.path().join("a.py"),
+        "def culprit():\n    return 2\n\ndef the_test():\n    return culprit()\n",
+    )
+    .expect("write");
+    daemon.call("grid.survey.run", &json!({}));
+
+    let response = daemon.call(
+        "grid.suspects",
+        &json!({"test": "a.the_test", "closure_since": {"snapshot": since}}),
+    );
+    assert!(response.get("error").is_none(), "got {response}");
+    let ranked = response["result"]["ranked"]
+        .as_array()
+        .expect("ranked array");
+    assert_eq!(
+        ranked.len(),
+        1,
+        "one reachable definition moved: {response}"
+    );
+    assert_eq!(ranked[0]["hops"], 1, "and it is one hop away: {response}");
+
+    let unheld = daemon.call(
+        "grid.suspects",
+        &json!({
+            "test": "a.the_test",
+            "closure_since": {
+                "snapshot": "snap:b3:0000000000000000000000000000000000000000000000000000000000000000"
+            }
+        }),
+    );
+    assert_eq!(
+        unheld["error"]["code"], -32003,
+        "a snapshot the chain never held is a typed refusal: {unheld}"
+    );
+}
+
 #[test]
 fn delta_answers_with_a_diff_the_contract_accepts() {
     let dir = repo();

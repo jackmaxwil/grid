@@ -244,6 +244,8 @@ pub struct SuspectsParams {
     pub trace: Option<TraceId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<SnapshotOrRev>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closure_since: Option<SnapshotOrRev>,
 }
 
 pub type SuspectsResult = Suspects;

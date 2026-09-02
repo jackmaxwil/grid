@@ -265,9 +265,17 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
                     crate::suspects::Error::UnknownTrace(_) => {
                         (WireError::UnknownTrace.code(), e.to_string())
                     }
-                    crate::suspects::Error::InsufficientHistory(_) => {
+                    crate::suspects::Error::InsufficientHistory(_)
+                    | crate::suspects::Error::UnknownTest(_) => {
                         (WireError::NoSnapshot.code(), e.to_string())
                     }
+                    crate::suspects::Error::UnknownSince(_) => {
+                        (WireError::UnknownSnapshot.code(), e.to_string())
+                    }
+                    // A refused closure is the engine declining to answer,
+                    // not the caller asking wrongly: internal, like every
+                    // other budget rejection.
+                    crate::suspects::Error::ClosureRejected(_) => (-32603, e.to_string()),
                     crate::suspects::Error::Chart(chart) => chart_error(chart),
                 })
         }

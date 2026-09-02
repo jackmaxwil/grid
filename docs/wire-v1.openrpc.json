@@ -14,7 +14,7 @@
   },
   "x-porcelain": {
     "doc": "packages/grid/docs/PORCELAIN.md",
-    "version": "2.5.0",
+    "version": "2.6.0",
     "description": "Normative grammar for human-facing stdout records. --json emits wire results verbatim; the porcelain version is reported by grid.version."
   },
   "methods": [
@@ -27,7 +27,7 @@
         {
           "name": "current versions",
           "params": [],
-          "result": { "name": "version", "value": { "wire": "1.0.0", "engine": "grid 0.1.0", "porcelain": "2.5.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
+          "result": { "name": "version", "value": { "wire": "1.0.0", "engine": "grid 0.1.0", "porcelain": "2.6.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
         }
       ],
       "result": {
@@ -436,12 +436,13 @@
     },
     {
       "name": "grid.suspects",
-      "summary": "Fault localization: the failing test's observed closure intersected with the recent delta, ranked. Requires trace retention and a populated verdict cache for history-aware scoring.",
+      "summary": "Fault localization, in two evidence modes. Without closure_since: the failing test's observed closure intersected with the recent delta, ranked by Ochiai — requires trace retention and a populated verdict cache. With closure_since: the definitions in the test's static closure at head whose bodies moved since that snapshot, ranked by hop distance — no run history required, and heuristic, because a candidate is a definition that changed and is reachable, not a proven cause.",
       "paramStructure": "by-name",
       "params": [
         { "name": "test", "required": true, "schema": { "type": "string", "minLength": 1 } },
         { "name": "trace", "required": false, "schema": { "$ref": "#/components/schemas/TraceId" } },
-        { "name": "base", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } }
+        { "name": "base", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } },
+        { "name": "closure_since", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotOrRev", "description": "Select the closure evidence mode and name the snapshot bodies are compared against. Candidates are the test's transitive closure at head intersected with the base-side half of the membership diff since this snapshot. A snapshot the retained chain never held is a typed refusal, never an empty ranking; a closure that runs past its fuel refuses the whole answer rather than serving a shorter one." } }
       ],
       "examples": [
         {
@@ -1304,7 +1305,8 @@
               "properties": {
                 "datum": { "$ref": "#/components/schemas/Datum" },
                 "score": { "type": "number", "minimum": 0, "maximum": 1 },
-                "via": { "type": "string", "description": "Why this ranked: the intersection that implicated it." }
+                "via": { "type": "string", "description": "Why this ranked: the intersection that implicated it." },
+                "hops": { "type": "integer", "minimum": 0, "description": "Hop distance from the test to this definition in the closure walked at head. Present only in closure mode (closure_since), where the ranking IS the hop distance and score is its monotone rendering, 1/(1+hops); absent under Ochiai scoring, which ranks by spectra rather than by distance." }
               },
               "additionalProperties": false
             }

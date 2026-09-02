@@ -15,7 +15,7 @@ use grid_wire::{
 };
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "2.5.0";
+pub const VERSION: &str = "2.6.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -1018,11 +1018,10 @@ pub fn trace_ingest(result: &TraceIngestResult, total: u64) -> String {
     }
     out
 }
-/// `fork` / `edge` records for a trace diff: where the traces parted, then
-/// what each does that the other never did. Handles are datum-short because a
-/// trace is addressed by content, like a cache verdict.
+/// The `fork` record of a trace diff: where two runs of the same test parted.
+/// Empty when they never did.
 #[must_use]
-pub fn trace_diff(diff: &grid_wire::TraceDiff) -> String {
+pub fn fork(diff: &grid_wire::TraceDiff) -> String {
     let mut out = String::new();
     if let Some(fork) = &diff.first_divergence {
         let callee =
@@ -1037,6 +1036,32 @@ pub fn trace_diff(diff: &grid_wire::TraceDiff) -> String {
             ],
         );
     }
+    out
+}
+
+/// Ranked `hit` records for `grid suspects`, in either evidence mode.
+///
+/// The second column is the evidence: an Ochiai score, or the word `closure`
+/// when the row was ranked by hop distance instead. The third says why it
+/// ranked.
+#[must_use]
+pub fn suspects(result: &grid_wire::Suspects) -> String {
+    let mut out = String::new();
+    for item in &result.ranked {
+        let mode = item
+            .hops
+            .map_or_else(|| format!("{:.6}", item.score), |_| "closure".to_owned());
+        record(&mut out, "hit", &[&item.datum.0, &mode, &item.via]);
+    }
+    out
+}
+
+/// `fork` / `edge` records for a trace diff: where the traces parted, then
+/// what each does that the other never did. Handles are datum-short because a
+/// trace is addressed by content, like a cache verdict.
+#[must_use]
+pub fn trace_diff(diff: &grid_wire::TraceDiff) -> String {
+    let mut out = fork(diff);
     let arrow = |e: &grid_wire::Edge| {
         format!(
             "{} -{}-> {}",
