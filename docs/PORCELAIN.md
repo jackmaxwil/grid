@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.14.0
+version: 2.15.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -285,8 +285,13 @@ one line saying what the exit code means, then `## Gates` — `### Drift
 suspects`, `### Covenant fires`, `### Uncompiled callers`, `### Adherence`,
 `### Stale verdicts`, `### Declared compat`, in the porcelain's own gate-first
 order — then `## Tail` (`### Weak tests`, `### Uncovered`, `### Clone-of`,
-`### Compat`), then `## Certificate` when no gate fired, and the unchecked
-counts after a `---` rule as a `Not checked:` footer. Every bullet is
+`### Compat`), then `## Certificate` when no gate fired, and — after a `---`
+rule — a `Not checked:` footer carrying the unchecked counts and **every
+`warn` the records carry**: the composite's own, the drift report's (a
+covenant whose pattern matches nothing, a test whose verdicts can no longer
+be re-keyed) and the compile report's undecided `cfg` predicates. A gate is
+loud in either form, but a check that quietly stopped running looks exactly
+like a check that passed, and the document is what a human reviews from. Every bullet is
 ``- `callsign` — reason — `file:line` ``, the three columns keeping their
 meaning throughout: what, why, where. A section with nothing in it is omitted
 rather than printed empty. Nothing is computed for this form — every bullet is

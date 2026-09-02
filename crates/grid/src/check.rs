@@ -603,15 +603,37 @@ pub fn markdown(answer: &CheckResult, name: &crate::porcelain::NameOf) -> String
         .as_ref()
         .map(|d| unchecked_lines(&d.unchecked))
         .unwrap_or_default();
-    footer.extend(answer.warnings.iter().flatten().map(|w| {
-        // `-` is the porcelain's "no subject" column; a document has no
-        // columns, so the message stands on its own.
+    // `-` is the porcelain's "no subject" column; a document has no columns,
+    // so the message stands on its own.
+    let line = |w: &DriftWarning| {
         if w.subject == "-" {
             w.message.clone()
         } else {
             format!("{}: {}", w.subject, w.message)
         }
-    }));
+    };
+    // Every `warn` the records emit, from all three places that emit one: the
+    // composite's own, the drift report's (a covenant whose pattern matches
+    // nothing, a test whose verdicts can no longer be re-keyed) and the
+    // compile report's (a cfg predicate grid could not decide). This is the
+    // half of the document nobody notices is missing: a gate that fired is
+    // loud in either form, but a check that quietly stopped running looks
+    // exactly like a check that passed, and the document is the surface a
+    // human reviews from.
+    footer.extend(
+        answer
+            .warnings
+            .iter()
+            .flatten()
+            .chain(
+                answer
+                    .drift
+                    .iter()
+                    .flat_map(|d| d.warnings.iter().flatten()),
+            )
+            .chain(answer.compile.iter().flat_map(|c| &c.unknown))
+            .map(line),
+    );
     if !footer.is_empty() {
         let _ = writeln!(out, "\n---\n\nNot checked: {}", footer.join("; "));
     }

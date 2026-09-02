@@ -1038,3 +1038,81 @@ fn format_md_with_a_refusing_section_emits_no_document() {
     assert_eq!(code(&bad), 2, "{}", stdout(&bad));
     assert_eq!(stdout(&bad), "", "{:?}", stdout(&bad));
 }
+
+/// T-11, conservatism: every `warn` the records carry reaches the document.
+///
+/// The document is a *review* surface, and the one thing a reviewer cannot
+/// recover from it is a check that quietly stopped running. A covenant whose
+/// pattern matches nothing at head is exactly that — the declaration is no
+/// longer checked — and the records say so with a `warn`. A document that
+/// showed a clean certificate over the same result would be the porcelain
+/// and the document disagreeing about what was *checked*, which is the half
+/// nobody notices.
+#[test]
+fn format_md_carries_every_warn_the_records_carry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(
+        dir.path(),
+        &[
+            ("pkg/__init__.py", ""),
+            (
+                "pkg/writer.py",
+                "def encode(tag):\n    return {\"n\": tag}\n",
+            ),
+            (
+                "pkg/reader.py",
+                "def decode(blob):\n    return blob[\"n\"]\n",
+            ),
+        ],
+    );
+    commit(dir.path(), "before");
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let declared = grid(
+        dir.path(),
+        &[
+            "covenant",
+            "pkg.writer.encode",
+            "pkg.reader.decode",
+            "--via",
+            "schema",
+        ],
+    );
+    assert_eq!(code(&declared), 0, "{}", stderr(&declared));
+    // Both sides are deleted out from under the declaration. Neither pattern
+    // matches anything at head, so the covenant is no longer checked at all —
+    // and because both sides moved together it fires nothing, which is what
+    // makes the document look clean.
+    std::fs::remove_file(dir.path().join("pkg/writer.py")).expect("remove");
+    std::fs::remove_file(dir.path().join("pkg/reader.py")).expect("remove");
+    commit(dir.path(), "drop both sides");
+
+    let records = grid(dir.path(), &["check"]);
+    let printed = stdout(&records);
+    assert!(
+        printed
+            .lines()
+            .any(|l| l.starts_with("warn ") && l.contains("matches nothing")),
+        "the records say the declaration stopped being checked:\n{printed}"
+    );
+
+    let out = grid(dir.path(), &["check", "--format", "md"]);
+    let doc = stdout(&out);
+    assert!(
+        doc.contains("covenant:schema matches nothing"),
+        "and so must the document — a review surface that hides what stopped \
+         being checked is worse than no review surface:\n{doc}"
+    );
+    assert!(
+        doc.contains("pkg.reader.decode"),
+        "naming the pattern that stopped matching, as the record does:\n{doc}"
+    );
+    // And the document is otherwise exactly the shape a reviewer skims past:
+    // exit 0, a certificate, no gates. That is what makes the omission the
+    // dangerous one rather than a cosmetic one.
+    assert_eq!(code(&out), 0, "{doc}");
+    assert!(
+        doc.contains("## Certificate") && !doc.contains("## Gates"),
+        "{doc}"
+    );
+}
