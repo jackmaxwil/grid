@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.22.0
+version: 2.24.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
