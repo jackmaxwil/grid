@@ -1,0 +1,154 @@
+{
+  "plan_id": "plan:from-diff-10333efad325",
+  "base": {
+    "snapshot": "snap:b3:a49f3ce26122c56f829e1d9a291242891b93f1f6d38f225b37b510333efad325"
+  },
+  "delta": {
+    "defs": [
+      {
+        "action": "add",
+        "callsign": "scripts.forge_tracking.describe"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.forge_tracking.git"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.forge_tracking.hygiene"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.forge_tracking.main"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.forge_tracking.measure"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.forge_tracking.paged"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.forge_tracking.points"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.forge_tracking.selfcheck"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.forge_tracking.selfcheck.issue"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.forge_tracking.selfcheck.recorder"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.forge_tracking.selfcheck.recorder.transport"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.forge_tracking.send"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.forge_tracking.write_rows"
+      }
+    ],
+    "edges": [
+      {
+        "action": "add",
+        "src": "scripts.forge_tracking.write_rows",
+        "relation": "calls",
+        "dst": "scripts.forge_tracking.describe"
+      },
+      {
+        "action": "add",
+        "src": "scripts.forge_tracking.selfcheck",
+        "relation": "calls",
+        "dst": "scripts.forge_tracking.write_rows"
+      },
+      {
+        "action": "add",
+        "src": "scripts.forge_tracking.selfcheck",
+        "relation": "calls",
+        "dst": "scripts.forge_tracking.measure"
+      },
+      {
+        "action": "add",
+        "src": "scripts.forge_tracking.selfcheck",
+        "relation": "calls",
+        "dst": "scripts.forge_tracking.selfcheck.recorder"
+      },
+      {
+        "action": "add",
+        "src": "scripts.forge_tracking.selfcheck",
+        "relation": "calls",
+        "dst": "scripts.forge_tracking.selfcheck.issue"
+      },
+      {
+        "action": "add",
+        "src": "scripts.forge_tracking.selfcheck",
+        "relation": "calls",
+        "dst": "scripts.forge_tracking.hygiene"
+      },
+      {
+        "action": "add",
+        "src": "scripts.forge_tracking.measure",
+        "relation": "calls",
+        "dst": "scripts.forge_tracking.points"
+      },
+      {
+        "action": "add",
+        "src": "scripts.forge_tracking.measure",
+        "relation": "calls",
+        "dst": "scripts.forge_tracking.paged"
+      },
+      {
+        "action": "add",
+        "src": "scripts.forge_tracking.main",
+        "relation": "calls",
+        "dst": "scripts.forge_tracking.write_rows"
+      },
+      {
+        "action": "add",
+        "src": "scripts.forge_tracking.main",
+        "relation": "calls",
+        "dst": "scripts.forge_tracking.selfcheck"
+      },
+      {
+        "action": "add",
+        "src": "scripts.forge_tracking.main",
+        "relation": "calls",
+        "dst": "scripts.forge_tracking.git"
+      },
+      {
+        "action": "add",
+        "src": "scripts.forge_tracking.main",
+        "relation": "calls",
+        "dst": "scripts.forge_tracking.measure"
+      },
+      {
+        "action": "add",
+        "src": "scripts.forge_tracking.main",
+        "relation": "calls",
+        "dst": "scripts.forge_tracking.hygiene"
+      },
+      {
+        "action": "add",
+        "src": "scripts.forge_tracking.hygiene",
+        "relation": "calls",
+        "dst": "scripts.forge_tracking.measure"
+      },
+      {
+        "action": "add",
+        "src": "scripts.forge_tracking.hygiene",
+        "relation": "calls",
+        "dst": "scripts.forge_tracking.paged"
+      }
+    ]
+  }
+}

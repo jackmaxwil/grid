@@ -1,0 +1,41 @@
+# The milestone dates on the forge are measured from the forge's own closed
+# issues, so they go stale the moment work lands; this is what re-measures them.
+# Weekly rather than per-merge: a date that moves a day every push is noise, and
+# the derivation only reads issue history, which a week's worth of merges moves.
+#
+# Ported from yi's .forgejo/workflows/tracking-hygiene.yml. One repository per
+# workflow file — `secrets.GITHUB_TOKEN` is scoped to the repository the job
+# runs in, so apex/grid re-measures from its own copy; apex/yi's copy of this
+# file cannot reach across to apex/grid, and vice versa.
+
+name: tracking-hygiene
+
+on:
+  schedule:
+    # 05:17 UTC Monday: no runner contention, and a Monday morning date is the
+    # one an operator reads before planning the week.
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+jobs:
+  tracking:
+    runs-on: ubuntu-latest
+    # Two REST walks over the open+closed issue set; a minute is generous and a
+    # hang is a bug.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: re-measure every open milestone's due date
+        env:
+          FORGEJO_API_URL: ${{ github.api_url }}
+          FORGEJO_REPOSITORY: ${{ github.repository }}
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/forge_tracking.py --measure
+      # After the re-measure, so the derivation it compares against is the one
+      # just written; a red here is an issue or a date no one can fix by rerunning.
+      - name: fail on an issue or a date the design does not allow
+        env:
+          FORGEJO_API_URL: ${{ github.api_url }}
+          FORGEJO_REPOSITORY: ${{ github.repository }}
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/forge_tracking.py --hygiene
