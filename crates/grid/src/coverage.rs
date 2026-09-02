@@ -24,7 +24,7 @@
 //! shared a process; a nextest wrapper script keying `LLVM_PROFILE_FILE` by
 //! test name would make it one invocation, and that is nextest configuration
 //! rather than grid code. It lands when the loop is measured too slow for CI.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use grid_chart::Ordinal;
 use grid_wire::{SnapshotId, Trace, TraceEndpoint, TraceObservation};
@@ -61,9 +61,20 @@ struct CoverageFile {
 struct Mapper {
     /// Every charted file, sorted by repo-relative path.
     files: Vec<File>,
+    /// Chart index by exact repo-relative path.
+    by_path: HashMap<String, usize>,
+    /// Chart indices by file name, the candidates for a suffix match.
+    by_name: HashMap<String, Vec<usize>>,
     touched: BTreeMap<String, u64>,
     unmapped_lines: u64,
     unknown_files: u64,
+    /// Where the mapping is happening: the two coordinates the trace
+    /// records. The snapshot is the load-bearing one — `git_rev` needs git
+    /// to mean anything and a rewritten history stops answering; the
+    /// snapshot id names the chart the observations were mapped against,
+    /// which is what a later reader has to grade them under.
+    git_rev: String,
+    snapshot: Option<SnapshotId>,
 }
 
 /// One charted file's definitions, in the shape a line lookup wants.
@@ -80,47 +91,78 @@ struct Span {
 }
 
 impl Mapper {
-    fn new(chart: &ChartDelta) -> Self {
-        let mut by_path: BTreeMap<String, Vec<Span>> = BTreeMap::new();
+    /// The live chart's mapper, and where the mapping is happening.
+    fn open(root: &std::path::Path) -> Result<Self, chart_provider::Error> {
+        let chart = ChartDelta::open(root)?;
+        let mut spans: BTreeMap<String, Vec<Span>> = BTreeMap::new();
         for segment in chart.head().segments() {
             for i in 0..segment.def_count() {
                 let ord = Ordinal(i);
                 let (Some(loc), Some(datum)) = (segment.location(ord), segment.datum(ord)) else {
                     continue;
                 };
-                by_path.entry(loc.path.to_owned()).or_default().push(Span {
+                spans.entry(loc.path.to_owned()).or_default().push(Span {
                     line: loc.line,
                     line_end: loc.line_end,
                     datum: datum.to_string(),
                 });
             }
         }
-        Self {
-            files: by_path
-                .into_iter()
-                .map(|(path, defs)| File { path, defs })
-                .collect(),
+        let files: Vec<File> = spans
+            .into_iter()
+            .map(|(path, defs)| File { path, defs })
+            .collect();
+        let by_path = files
+            .iter()
+            .enumerate()
+            .map(|(i, file)| (file.path.clone(), i))
+            .collect();
+        let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, file) in files.iter().enumerate() {
+            let name = file.path.rsplit('/').next().unwrap_or(&file.path);
+            by_name.entry(name.to_owned()).or_default().push(i);
+        }
+        Ok(Self {
+            files,
+            by_path,
+            by_name,
             touched: BTreeMap::new(),
             unmapped_lines: 0,
             unknown_files: 0,
-        }
+            git_rev: chart_provider::resolve_rev(root, "HEAD"),
+            snapshot: chart.current(),
+        })
     }
 
     /// The chart's index for a reported path, counting the file as unknown
     /// when the chart holds no definitions for it.
     ///
     /// Report paths are usually absolute (lcov) or runner-relative
-    /// (coverage.py); chart paths are repo-relative. A suffix match on a
-    /// path-segment boundary bridges the two.
+    /// (coverage.py); chart paths are repo-relative. An exact match wins;
+    /// otherwise the *longest* charted path that is a suffix of the reported
+    /// one on a segment boundary — `b/a/x.py` over `a/x.py` for
+    /// `/repo/b/a/x.py`, where the first match in sort order would have
+    /// filed the lines under the wrong module. Candidates come from the file
+    /// name index, so a report over thousands of files is not a scan of the
+    /// chart per file.
     fn file(&mut self, reported: &str) -> Option<usize> {
-        let hit = self.files.iter().position(|file| {
-            reported == file.path
-                || reported
-                    .strip_suffix(file.path.as_str())
-                    .is_some_and(|head| head.ends_with('/'))
+        let hit = self.by_path.get(reported).copied().or_else(|| {
+            let name = reported.rsplit('/').next().unwrap_or(reported);
+            self.by_name
+                .get(name)?
+                .iter()
+                .copied()
+                .filter(|&i| {
+                    self.files.get(i).is_some_and(|file| {
+                        reported
+                            .strip_suffix(file.path.as_str())
+                            .is_some_and(|head| head.ends_with('/'))
+                    })
+                })
+                .max_by_key(|&i| self.files.get(i).map_or(0, |file| file.path.len()))
         });
         if hit.is_none() {
-            self.unknown_files += 1;
+            self.unknown_files = self.unknown_files.saturating_add(1);
         }
         hit
     }
@@ -137,12 +179,15 @@ impl Mapper {
                 .map(|span| span.datum.clone())
         });
         match innermost {
-            Some(datum) => *self.touched.entry(datum).or_insert(0) += 1,
-            None => self.unmapped_lines += 1,
+            Some(datum) => {
+                let count = self.touched.entry(datum).or_insert(0);
+                *count = count.saturating_add(1);
+            }
+            None => self.unmapped_lines = self.unmapped_lines.saturating_add(1),
         }
     }
 
-    fn finish(self, trace_id: String, test: &str, at: Coordinates) -> Mapped {
+    fn finish(self, trace_id: String, test: &str) -> Mapped {
         let observations = self
             .touched
             .into_iter()
@@ -159,10 +204,10 @@ impl Mapper {
         Mapped {
             trace: Trace {
                 trace_id,
-                git_rev: grid_wire::GitRev(at.git_rev),
+                git_rev: grid_wire::GitRev(self.git_rev),
                 command: Some(test.to_owned()),
                 started_at: None,
-                snapshot: at.snapshot,
+                snapshot: self.snapshot,
                 observations,
             },
             unmapped_lines: self.unmapped_lines,
@@ -171,34 +216,19 @@ impl Mapper {
     }
 }
 
-/// Where a mapping happened: the two coordinates the trace records.
-///
-/// The snapshot is the load-bearing one. `git_rev` needs git to mean
-/// anything and a rewritten history stops answering; the snapshot id names
-/// the chart the observations were mapped against, which is what a later
-/// reader has to grade them under.
-struct Coordinates {
-    git_rev: String,
-    snapshot: Option<SnapshotId>,
-}
-
-/// The live chart, its mapper, and where the mapping is happening.
-fn open(root: &std::path::Path) -> Result<(Mapper, Coordinates), chart_provider::Error> {
-    let chart = ChartDelta::open(root)?;
-    let at = Coordinates {
-        git_rev: chart_provider::resolve_rev(root, "HEAD"),
-        snapshot: chart.current(),
-    };
-    Ok((Mapper::new(&chart), at))
-}
-
 /// Map an lcov report onto the live chart as observations from `test`.
 ///
 /// # Errors
-/// A message when the store cannot be opened. An lcov record grid does not
-/// read is skipped, which is the format's own rule and not a parse failure.
+/// A message when the store cannot be opened, or when the text holds no
+/// `SF:` record at all — an empty or absent report is bad input, never a
+/// trace claiming the test reached nothing (the same posture the JSON path
+/// takes with text that is not a report). An lcov record grid does not read
+/// is skipped, which is the format's own rule and not a parse failure.
 pub fn trace_of_lcov(root: &std::path::Path, lcov: &str, test: &str) -> Result<Mapped, String> {
-    let (mut mapper, at) = open(root).map_err(|e| e.to_string())?;
+    if !lcov.lines().any(|line| line.starts_with("SF:")) {
+        return Err("not an lcov report: no SF: record (an empty report is not a test that reached nothing)".to_owned());
+    }
+    let mut mapper = Mapper::open(root).map_err(|e| e.to_string())?;
     let mut current: Option<usize> = None;
     for line in lcov.lines() {
         if let Some(sf) = line.strip_prefix("SF:") {
@@ -222,7 +252,7 @@ pub fn trace_of_lcov(root: &std::path::Path, lcov: &str, test: &str) -> Result<M
         };
         mapper.line(file, line_no);
     }
-    Ok(mapper.finish(format!("trace:lcov:{test}"), test, at))
+    Ok(mapper.finish(format!("trace:lcov:{test}"), test))
 }
 
 /// Map a coverage.py JSON report onto the live chart as observations from
@@ -245,7 +275,7 @@ pub fn trace_of_coverage_json(
     let report: CoverageReport = serde_json::from_str(json).map_err(|e| {
         format!("not a coverage.py JSON report: {e} (expected files.<path>.executed_lines)")
     })?;
-    let (mut mapper, at) = open(root).map_err(|e| e.to_string())?;
+    let mut mapper = Mapper::open(root).map_err(|e| e.to_string())?;
     for (path, file) in &report.files {
         let Some(index) = mapper.file(path) else {
             continue;
@@ -254,5 +284,26 @@ pub fn trace_of_coverage_json(
             mapper.line(index, line_no);
         }
     }
-    Ok(mapper.finish(format!("trace:cov:{test}"), test, at))
+    Ok(mapper.finish(format!("trace:cov:{test}"), test))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::trace_of_lcov;
+
+    /// An empty or SF-less report is refused: `cargo llvm-cov` writes no
+    /// report when the test command fails, and an empty text read in its
+    /// place must not become a trace that says the test reached nothing.
+    #[test]
+    fn an_lcov_text_with_no_sf_record_is_refused_not_an_empty_trace() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for text in ["", "TN:\nend_of_record\n"] {
+            let out = trace_of_lcov(dir.path(), text, "t");
+            assert!(
+                out.is_err(),
+                "{text:?} is not a report: {:?}",
+                out.map(|m| m.trace.observations.len())
+            );
+        }
+    }
 }

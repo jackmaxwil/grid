@@ -1724,3 +1724,70 @@ fn grid_test_runs_the_inventory_and_exits_three_on_a_red_test() {
         "{ran:?}"
     );
 }
+
+/// A reported coverage path is attributed to the *longest* charted suffix,
+/// never the first in sort order: `/repo/b/a/x.py` is `b/a/x.py`, not
+/// `a/x.py`, and the observation lands on the definition that actually ran.
+#[test]
+fn a_coverage_path_is_attributed_to_the_longest_charted_suffix() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let git = |args: &[&str]| {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .env("GIT_AUTHOR_NAME", "grid")
+            .env("GIT_AUTHOR_EMAIL", "grid@example.invalid")
+            .env("GIT_COMMITTER_NAME", "grid")
+            .env("GIT_COMMITTER_EMAIL", "grid@example.invalid")
+            .output()
+            .expect("run git")
+            .status
+            .success();
+        assert!(ok, "git {args:?} failed");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    for (path, text) in [
+        ("a/__init__.py", ""),
+        ("a/x.py", "def f():\n    return 1\n"),
+        ("b/__init__.py", ""),
+        ("b/a/__init__.py", ""),
+        ("b/a/x.py", "def g():\n    return 2\n"),
+    ] {
+        let full = dir.path().join(path);
+        std::fs::create_dir_all(full.parent().expect("parent")).expect("mkdir");
+        std::fs::write(full, text).expect("write");
+    }
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "two modules, one file name"]);
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let lcov = format!(
+        "TN:\nSF:{}/b/a/x.py\nDA:1,1\nDA:2,1\nend_of_record\n",
+        dir.path().display()
+    );
+    std::fs::write(dir.path().join("cov.lcov"), lcov).expect("write");
+    let out = grid(
+        dir.path(),
+        &["trace", "ingest", "--lcov", "cov.lcov", "--test", "t"],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let expected: Vec<serde_json::Value> = serde_json::from_str(&stdout(&grid(
+        dir.path(),
+        &["resolve", "b.a.x.g", "--json"],
+    )))
+    .expect("resolve --json");
+    let retained = retained_traces(dir.path());
+    let record: serde_json::Value =
+        serde_json::from_slice(retained.get("trace:lcov:t").expect("retained trace"))
+            .expect("json");
+    let callees: Vec<&serde_json::Value> = record["trace"]["observations"]
+        .as_array()
+        .expect("observations")
+        .iter()
+        .map(|o| &o["callee"]["datum"])
+        .collect();
+    assert_eq!(
+        callees,
+        vec![&expected[0]["datum"]],
+        "the lines ran in b/a/x.py, so the observation is b.a.x.g: {record}"
+    );
+}

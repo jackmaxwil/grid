@@ -931,15 +931,11 @@ pub fn test_run(run: &grid_wire::TestRun) -> String {
         };
         record(&mut out, "miss", &[&sel.test.0, why]);
     }
-    let mut failed = 0usize;
     for outcome in &run.ran {
         // A test is expected to pass; the column says what it did.
         let (verdict, actual) = match outcome.verdict {
             grid_wire::TestOutcomeVerdict::Pass => ("ok", "pass"),
-            grid_wire::TestOutcomeVerdict::Fail => {
-                failed = failed.saturating_add(1);
-                ("fail", "fail")
-            }
+            grid_wire::TestOutcomeVerdict::Fail => ("fail", "fail"),
         };
         record(
             &mut out,
@@ -951,13 +947,16 @@ pub fn test_run(run: &grid_wire::TestRun) -> String {
         record(&mut out, "warn", &[&warning.subject, &warning.message]);
     }
     let total = run.plan.selected.len() + run.plan.replayed.len();
+    // Failed is the exit code's own count: run failures plus replayed
+    // `fail` verdicts, so the line and the exit cannot disagree.
     record(
         &mut out,
         "done",
         &[&format!(
-            "tests {}/{total} ran · {} replayed · {failed} failed",
+            "tests {}/{total} ran · {} replayed · {} failed",
             run.ran.len(),
-            run.plan.replayed.len()
+            run.plan.replayed.len(),
+            crate::testrun::failed(run)
         )],
     );
     out

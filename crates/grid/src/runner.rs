@@ -163,12 +163,20 @@ impl Real {
         let mut outcomes = Vec::new();
         let lcov = self.root.join(".grid/test/coverage.lcov");
         for test in tests {
+            // One report per test, so the previous test's must be gone
+            // before this one runs: `cargo llvm-cov` writes nothing when the
+            // test command fails, and reading the stale file would file the
+            // last test's reach under this test's name.
+            let _absent = std::fs::remove_file(&lcov);
             let mut args: Vec<String> = vec![
                 "llvm-cov".into(),
                 "nextest".into(),
                 "--lcov".into(),
                 "--output-path".into(),
                 lcov.display().to_string(),
+                // A failing test still ran, and its reach is still its
+                // trace: without this the report is withheld on failure.
+                "--ignore-run-fail".into(),
                 "--no-fail-fast".into(),
             ];
             args.extend(self.args.iter().cloned());
@@ -177,14 +185,24 @@ impl Real {
             args.push(filter(std::slice::from_ref(test)));
             let stderr = cargo_passthrough(&self.root, &args)?;
             let mut parsed = parse_nextest(&stderr, std::slice::from_ref(test));
-            let report = std::fs::read_to_string(&lcov).unwrap_or_default();
-            let trace_id = self.ingest(&report, test, true);
+            // No report is no trace — never an empty trace, which would read
+            // as "this test reached nothing charted" and license a replay on
+            // the static closure alone.
+            let trace_id = match std::fs::read_to_string(&lcov) {
+                Ok(report) if !report.trim().is_empty() => self.ingest(&report, test, true),
+                _ => {
+                    hint(&format!(
+                        "grid: {test}: cargo llvm-cov wrote no report — verdict kept, no trace"
+                    ));
+                    None
+                }
+            };
             for outcome in &mut parsed {
                 outcome.trace_id.clone_from(&trace_id);
             }
             outcomes.extend(parsed);
         }
-        let _ = std::fs::remove_file(&lcov);
+        let _absent = std::fs::remove_file(&lcov);
         Ok(outcomes)
     }
 
@@ -323,7 +341,7 @@ impl Real {
                 "-m",
                 "coverage",
                 "json",
-                &format!("--contexts={test}"),
+                &format!("--contexts={}", context_pattern(test)),
                 "-o",
                 &path.display().to_string(),
             ],
@@ -432,18 +450,59 @@ fn filter(tests: &[String]) -> String {
         .join(" + ")
 }
 
+/// coverage.py's `--contexts` takes a Python regex. A pytest-cov context is
+/// `<nodeid>|<phase>`, and a node id carries regex metacharacters of its own
+/// (`test_z[1-2]` is a character class, `.` matches anything, an unanchored
+/// `test_a` also matches `test_ab`), so the id is escaped and anchored to
+/// the start and to the phase separator.
+fn context_pattern(test: &str) -> String {
+    let mut out = String::with_capacity(test.len().saturating_add(4));
+    out.push('^');
+    for c in test.chars() {
+        if !c.is_ascii_alphanumeric() && c != '_' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push_str("\\|");
+    out
+}
+
+/// `text` minus ANSI escape sequences. nextest colours its stderr under
+/// `CARGO_TERM_COLOR=always` (or its own colour setting), and a coloured
+/// `PASS` token is not the word `PASS`; the runner is asked for plain output
+/// and this is the belt to that suspender.
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next();
+            // CSI: parameter and intermediate bytes, then one final byte.
+            for c in chars.by_ref() {
+                if ('\x40'..='\x7e').contains(&c) {
+                    break;
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Verdict lines out of nextest's stderr: `PASS [ 0.01s] (1/3) <binary> <name>`,
 /// with `FAIL`, `TIMEOUT`, signals, and `TRY n` retries in the same shape.
 /// The last line for a test wins, which is what a retry means.
 fn parse_nextest(stderr: &str, tests: &[String]) -> Vec<Outcome> {
     let mut verdicts: HashMap<&str, bool> = HashMap::new();
-    for line in stderr.lines() {
+    let plain = strip_ansi(stderr);
+    for line in plain.lines() {
         let tokens: Vec<&str> = line.split_whitespace().collect();
-        let Some(status) = tokens
-            .windows(2)
-            .find(|w| w[1].starts_with('[') && verdict_of(w[0]).is_some())
-            .and_then(|w| verdict_of(w[0]))
-        else {
+        let Some(status) = tokens.windows(2).find_map(|w| match w {
+            [status, next] if next.starts_with('[') => verdict_of(status),
+            _ => None,
+        }) else {
             continue;
         };
         let [.., binary, name] = tokens.as_slice() else {
@@ -465,7 +524,6 @@ fn parse_nextest(stderr: &str, tests: &[String]) -> Vec<Outcome> {
         })
         .collect()
 }
-
 const fn verdict_of(token: &str) -> Option<bool> {
     match token.as_bytes() {
         b"PASS" | b"LEAK" | b"FLAKY" => Some(true),
@@ -534,6 +592,11 @@ fn passthrough(program: &str, root: &Path, args: &[String]) -> Result<String, St
     let out = Command::new(program)
         .args(args)
         .current_dir(root)
+        // The same bytes are parsed for verdicts, and a coloured `PASS` is
+        // not the word `PASS`: cargo, nextest and pytest all honour these.
+        .env("CARGO_TERM_COLOR", "never")
+        .env("NO_COLOR", "1")
+        .env("PY_COLORS", "0")
         .output()
         .map_err(|e| format!("{program}: {e}"))?;
     let (stdout, stderr) = (
@@ -550,4 +613,41 @@ fn passthrough(program: &str, root: &Path, args: &[String]) -> Result<String, St
         ));
     }
     Ok(format!("{stdout}\n{stderr}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{context_pattern, parse_nextest};
+
+    /// A coloured verdict line is still a verdict: `CARGO_TERM_COLOR=always`
+    /// must not turn every selected test into "not reported by the runner".
+    #[test]
+    fn a_coloured_nextest_verdict_still_parses() {
+        let tests = ["grid-wire::conformance a_test".to_owned()];
+        let stderr = "\x1b[32;1m        PASS\x1b[0m [   0.011s] (1/1) \
+                      \x1b[36mgrid-wire::conformance\x1b[0m \x1b[1ma_test\x1b[0m\n";
+        let parsed = parse_nextest(stderr, &tests);
+        assert_eq!(parsed.len(), 1, "the coloured line is parsed: {parsed:?}");
+        assert!(parsed[0].pass);
+        let failed = parse_nextest(
+            "\x1b[31;1m        FAIL\x1b[0m [   0.011s] (1/1) grid-wire::conformance a_test\n",
+            &tests,
+        );
+        assert_eq!(failed.len(), 1);
+        assert!(!failed[0].pass);
+    }
+
+    /// The coverage.py context is a regex: the id is escaped and anchored,
+    /// so `test_a` cannot select `test_ab` and `test_z[1-2]` selects itself.
+    #[test]
+    fn a_pytest_id_is_escaped_and_anchored_as_a_context_regex() {
+        assert_eq!(
+            context_pattern("tests/test_x.py::test_a"),
+            "^tests\\/test_x\\.py\\:\\:test_a\\|"
+        );
+        assert_eq!(
+            context_pattern("tests/t.py::test_z[1-2]"),
+            "^tests\\/t\\.py\\:\\:test_z\\[1\\-2\\]\\|"
+        );
+    }
 }

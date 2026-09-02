@@ -141,9 +141,10 @@ key already held the opposite verdict; `warn <def>  uncovered` per changed
 definition no selected test reaches; and a closing `done  tests R/N ran ·
 H replayed · F failed`. The first column of `hit` and `miss` is the test
 id as the runner names it, not a datum: a test is addressed by name in this
-verb, and the datum rides in `--json`. Exit `3` when a run test failed (a
-selected test the runner never reported on counts as failed and is named
-in a `warn`), `1` when the runner could not be spawned, `0` otherwise —
+verb, and the datum rides in `--json`. Exit `3` when a run test failed or
+a replayed verdict is `fail` — the closure is unchanged, so the failure
+stands, and `F` in the `done` line counts both (a selected test the runner
+never reported on counts as failed and is named in a `warn`), `1` when the runner could not be spawned, `0` otherwise —
 `uncovered` and `nondeterministic` are heuristic and never move it. Runner
 output goes to stderr; the horizon line on stderr says how many tests were
 selected out of how many, and what the plan and the survey cost.

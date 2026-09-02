@@ -102,14 +102,15 @@ fn env_hash(runner: &dyn Runner, opts: &Opts) -> String {
         vec![u8::from(opts.trace)],
     ];
     for field in fields {
-        h.update(&(field.len() as u64).to_le_bytes());
+        h.update(&u64::try_from(field.len()).unwrap_or(u64::MAX).to_le_bytes());
         h.update(&field);
     }
     format!("env:b3:{}", h.finalize().to_hex())
 }
 
 /// The whole verb, over any runner. Returns the exit code: 3 when a run
-/// test failed, 1 when the runner could not be spawned, 0 otherwise.
+/// test failed or a replayed verdict is `fail`, 1 when the runner could not
+/// be spawned, 0 otherwise.
 pub fn drive(root: &std::path::Path, opts: &Opts, runner: &mut dyn Runner, json: bool) -> u8 {
     let tests = match runner.inventory() {
         Ok(tests) => tests,
@@ -169,16 +170,17 @@ pub fn drive(root: &std::path::Path, opts: &Opts, runner: &mut dyn Runner, json:
     // Remembered for the next run's default base. Best effort: a base that
     // cannot be remembered costs a wider selection next time, never a verdict.
     let last = crate::testplan::last_path(root);
-    let _unwritable = last
+    if let Err(e) = last
         .parent()
-        .map(std::fs::create_dir_all)
-        .and_then(|_| std::fs::write(&last, &run.plan.head.0).ok());
-    let failed = run
-        .ran
-        .iter()
-        .filter(|o| o.verdict == TestOutcomeVerdict::Fail)
-        .count();
-    let code = if failed > 0 {
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(&last, &run.plan.head.0))
+    {
+        hint(&format!(
+            "grid: could not remember this base for the next run ({}): {e}",
+            last.display()
+        ));
+    }
+    let code = if failed(&run) > 0 {
         exit::DIVERGENCE
     } else {
         exit::OK
@@ -191,6 +193,27 @@ pub fn drive(root: &std::path::Path, opts: &Opts, runner: &mut dyn Runner, json:
     }
     print!("{}", porcelain::test_run(&run));
     code
+}
+
+/// How many tests this run leaves red: every run test the runner failed,
+/// plus every verdict replayed from the cache as `fail`. One function, read
+/// by the exit code and by the `done` line, so the two cannot disagree — and
+/// a replay is a verdict about this exact closure, so a replayed `fail` is
+/// as red as a fresh one.
+#[must_use]
+pub fn failed(run: &TestRun) -> usize {
+    let ran = run
+        .ran
+        .iter()
+        .filter(|o| o.verdict == TestOutcomeVerdict::Fail)
+        .count();
+    let replayed = run
+        .plan
+        .replayed
+        .iter()
+        .filter(|hit| hit.verdict == grid_wire::CacheHitVerdict::Fail)
+        .count();
+    ran.saturating_add(replayed)
 }
 
 /// Record every verdict and assemble the run: the plan verbatim, what the
@@ -621,5 +644,68 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("flake"));
+    }
+
+    /// A verdict replayed from the cache as `fail` is as red as a fresh one:
+    /// nothing changed, so the suite still fails under this exact closure,
+    /// and the exit code and the `done` line both say so.
+    #[test]
+    fn a_replayed_fail_verdict_moves_the_exit() {
+        // `a` returns 5 where `test_a` expects 1.
+        let dir = repo(&owned(&python(5, 2, 9, [1, 2, 3])));
+        let mut fake = Fake {
+            root: dir.path().to_path_buf(),
+            ran: Vec::new(),
+        };
+        assert_eq!(
+            run(dir.path(), &mut fake, true),
+            3,
+            "first run: test_a fails"
+        );
+        let code = run(dir.path(), &mut fake, true);
+        assert_eq!(
+            fake.ran.len(),
+            1,
+            "nothing changed, so the runner was not asked a second time: {:?}",
+            fake.ran
+        );
+        assert_eq!(code, 3, "a replayed fail is still a failure");
+
+        // And the `done` line counts it, so the line and the exit agree.
+        let plan = grid_wire::TestPlan {
+            base: grid_wire::SnapshotId("snap:b3:base".into()),
+            head: grid_wire::SnapshotId("snap:b3:head".into()),
+            selected: Vec::new(),
+            replayed: vec![grid_wire::CacheHit {
+                datum: grid_wire::Datum("b3:00".into()),
+                verdict: grid_wire::CacheHitVerdict::Fail,
+                recorded_at: "2026-09-01T00:00:00Z".into(),
+                trace_id: None,
+                test: Some(grid_wire::TestId(TESTS[0].to_owned())),
+            }],
+            uncovered: Vec::new(),
+            unchecked: grid_wire::DriftUnchecked {
+                unresolved_refs: None,
+                unresolved_external: None,
+                unresolved_method: None,
+                unresolved_internal: None,
+                budget_rejected: 0,
+                unattributed_entries: None,
+                weak_skipped: None,
+                compat_unchecked: None,
+            },
+        };
+        let replayed_only = grid_wire::TestRun {
+            env_hash: "env".into(),
+            plan,
+            ran: Vec::new(),
+            warnings: Vec::new(),
+        };
+        assert_eq!(super::failed(&replayed_only), 1);
+        let out = crate::porcelain::test_run(&replayed_only);
+        assert!(
+            out.ends_with("done    tests 0/1 ran · 1 replayed · 1 failed\n"),
+            "the done line counts the replayed fail:\n{out}"
+        );
     }
 }
