@@ -180,3 +180,9 @@ that moves normalization is a declared epoch bump, never a silent re-hash.
 - Agent loop (steps 0–10): no new packages; `grid` gained path dependencies
   on `grid-lang-rs` (step 3, the cfg evaluator beside the sig canonicalizer)
   and `blake3` (step 2, `env_hash`), both already in the TCB.
+- Method calls (steps 4, 1, 2, 3): no new packages. The receiver facts are
+  `syn` visitors the tree already has, the resolver arm is lookups over
+  `DefIndex` and a static table of prelude method names, and the epoch-5
+  column is parsed by `grid-chart`'s validate-then-accept path. The one
+  test that runs a compiler (`receivers.rs`, rustc as the oracle) runs the
+  `cargo` that is running the test.

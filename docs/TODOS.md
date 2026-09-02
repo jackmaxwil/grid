@@ -152,24 +152,29 @@ plan).
 
 ### Honesty number and the resolver
 
-- **T-06 (P0, L) Method-call resolution for typed receivers.** Resolve
-  `x.m()` when the receiver's type is syntactically written: a parameter
-  annotated `x: &Foo` / `x: Foo`, `self` (done), a local bound by a struct
-  literal or a `Foo::new()`-shaped path call, a field access on such a
-  receiver whose struct field type is charted. Inherent methods only;
-  when a trait in scope also provides `m`, decline and count. Grade
-  **proven** only where the language's rules fix it (annotated parameter,
-  inherent method, no trait candidate); **modeled** for the inferred
-  local. Python: annotated parameters (`x: Foo`) and `self` only. Measure
-  the declined split before and after on grid and yi; the target is
-  `method` cut by half. Its own plan.
-- **T-17 (P1, M) Per-definition declined counts.** A segment fact (epoch
-  5, batch with anything else that earns a bump) so `suspects --closure`
-  and `check` can say how much of *this* closure the chart could not
-  follow, instead of the repo-wide number.
-- **T-18 (P1, S) `use super::x` inside inline modules.** The Rust resolver
-  binds `use super::*` and `crate::x` but not `use super::x;` in an inline
-  `mod` (step 3's observation). Fixtures currently work around it.
+- **T-06 — done** (`docs/plans/2026-09-01-method-calls.md`, 30f41e0 +
+  3819612): `x.m()` resolves on a receiver whose type is written or
+  syntactically inferred, by rustc's own lookup order — proven where the
+  written form matches the inherent method's at the first step, modeled
+  otherwise, refused with a reason wherever a visible trait, a bounded
+  impl, a wrapper or no inherent method stands in the way; rustc's own
+  binding, run on the fixture, agrees with every emitted edge. Measured,
+  same tree, previous binary against this one: this repo `method` 9,549
+  → 7,802 (66 refused), `external` 2,534 → 4,100, proven edges 3,648 →
+  3,769, modeled 0 → 71; yi `method` 23,871 → 19,074 (338 refused),
+  `external` 10,062 → 13,742, proven 6,876 → 7,159, modeled 0 → 519.
+  Python: annotated parameters resolve modeled; zero on yi. The "cut by
+  half" target was not reachable by any syntactic rule (R-1); the
+  residual needs a type checker (T-45).
+- **T-17 — done** (6b71bcb + 6fc7855): segment epoch 5 stores the declined
+  split per definition (four saturating `u16`), summing to the survey's
+  counters by construction; an older snapshot answers unknown, never
+  zero. The consumers — `suspects --closure`, `check`, `scope --bodies`,
+  `grid uses` — do not read the column yet (T-46).
+- **T-18 — done** (faa5629): `self::` and `super::` inside an inline
+  module anchor against the module; one wrong proven edge on the fixture
+  is gone, and ~110 test-module references on this repo (4 on yi) that
+  `use super::x` had left `internal` are proven.
 - **T-19 (P2, M) Macro-generated callers.** Unreachable from source; see
   the binary-side idea under Future — the compiled artifact names macro
   output the survey declined.
@@ -310,10 +315,47 @@ plan).
 - **T-44 (P3, L) Non-code frontends.** SQL schema, OpenAPI/protobuf,
   Terraform — definitions and references, same drift and gate.
 
+### From the method-calls plan's cut line (`docs/plans/2026-09-01-method-calls.md`)
+
+- **T-45 (P1, L) A type checker for the seventy percent.** The `method`
+  residual (7,802 here, 19,074 on yi) has no syntactic type; only
+  rust-analyzer as a sidecar or in-process reaches it. Gated on R-5.
+- **T-46 (P1, S) Consumers of the per-definition declined split.**
+  `DefRef.declined` and `declined_within` on the wire; `suspects
+  --closure`'s `miss` summed over the closure's definitions (`miss ? …
+  (pre-epoch-5 snapshot)` when unknown, never `0`); `check`'s and
+  `drift`'s second clause `… of which N inside the changed definitions`
+  and `DriftUnchecked.unresolved_method_refused`; `scope --bodies`'
+  horizon clause; `grid uses X`'s refused hint. The column is stored
+  (epoch 5); each consumer is one join.
+- **T-47 (P2, M) Trait-method resolution by impl search.** Picking among
+  `Foo@A.m`, `Foo@B.m` and a blanket impl needs the trait in scope and
+  the receiver's bounds; declined with reason `trait candidate` today.
+- **T-48 (P2, M) Autoderef through `Box`/`Rc`/`Arc`/`Option`.** The
+  wrapper's own methods and impls sit earlier in the lookup chain; counted
+  `external` today, honestly.
+- **T-49 (P2, S) Cross-file chain following, Python constructor locals,
+  and a standing `resolve: modeled-receivers` declaration.** Extraction
+  follows a written return in the same file only (`MethodFacts.ret` holds
+  every method's return in phase 3 — the upgrade); Python locals bound by
+  a constructor and the standing declaration land with the first Python
+  repository whose annotated receivers resolve, which yi is not (zero).
+- **T-50 (P3, M) A `std` signature table.** Would turn part of the
+  seventy percent into `external` by name (`v.iter().map(..)` is
+  `Iterator::map`), not into edges, against a moving standard library.
+
 ### Research questions (no code until answered)
 
-- **R-1** What share of the `method` declined count does T-06's syntactic
-  rule recover on grid and yi? Measure before designing type inference.
+- **R-1 — answered** (`docs/plans/2026-09-01-method-calls.md`, Part I):
+  no syntactic rule halves the count. 70% of Rust method calls have no
+  type any syntax in the file states, 21% are calls on `std`/external
+  types (now `external`), 6–9% have a charted receiver of which a little
+  over half resolve. Measured after landing: `method` −18% on this repo,
+  −20% on yi; the rest is a type checker's (R-5).
+- **R-5** Does a rust-analyzer sidecar (LSP `textDocument/definition` per
+  call site, or `ra_ap_*` in-process) answer this repo's ~7,800 remaining
+  `method` call sites under a second, cold? The only route to the other
+  seventy percent, and a dependency decision the size of `syn` again.
 - **R-2** Is a per-file incremental resolver (T-14) sound under C13, or
   does it need the SCC-shared closure work from ANALYSIS.md?
 - **R-3** Are address-erased function datums stable across rebuilds on

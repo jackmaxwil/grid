@@ -19,10 +19,18 @@ itself. A Rust frontend that cannot chart its own repository is not done.
 - Macro expansion. A `#[derive]`-generated impl or a call inside a macro
   body is invisible: a missing definition or edge is an omission, and
   omissions are permitted; invented edges are not.
-- Trait-method receiver resolution (`x.frobnicate()` where the method comes
-  from a trait in scope). Needs types; types are `modeled`, and this wave
-  emits no modeled edges — same rule that keeps `obj.method()` out of the
-  Python chart.
+- Trait-method receiver resolution. Inherent methods on a receiver whose
+  type is written (a parameter or `let` annotation, a declared field
+  type) or syntactically inferred (a constructor, a struct literal, a
+  same-file written return, `?`/`unwrap` on a written `Option`/`Result`)
+  resolve — proven where the written form matches the inherent method's at
+  rustc's first lookup step, modeled otherwise. Trait methods (`x.m()`
+  where a trait supplies `m`), wrapper receivers (`Option<Foo>`, `Vec<Foo>`,
+  `Box<Foo>`), closure and pattern bindings, `for`/`match` bindings, type
+  parameters, `impl`/`dyn`, and chains through an unwritten return do not:
+  each is counted `method` (with the reason, where the receiver was typed)
+  or `external`. Seventy percent of Rust method calls have no syntactic
+  type at all; `cargo check` and traces cover them, not this resolver.
 - `#[path]` attributes and non-conventional module layouts.
 - TS/JS. That is a third frontend, not this one — `swc_ecma_parser` (pure
   Rust, the parser under Next.js/Vite toolchains, near-complete test262
@@ -219,3 +227,18 @@ expansion, a `modeled` tier) is a later wave with its own evidence story.
   `self::{mods[..depth−k]}::r`, leaving any `super` past the nesting for
   the resolver's own climb (T-18). On this repo the fix bound ~110 test-
   module references that `use super::x` had left declined; on yi, 4.
+- **No syntactic rule halves the `method` count (R-1, measured before
+  T-06 was designed).** Seventy percent of Rust method calls on this repo
+  and on yi have no type any syntax in the file states — closure
+  parameters, iterator chains, `match` bindings, locals bound by calls
+  whose returns live in other crates. Twenty-one percent are calls on
+  `std` and external types, which were `method` only because every method
+  call was declined unconditionally; they are `external` now. Six to nine
+  percent have a charted receiver type, and a little over half of those
+  resolve under the first-step rule. Measured after the plan landed, same
+  tree, previous binary against this one: this repo `method` 9,549 →
+  7,802 (66 refused), `external` 2,534 → 4,100, proven edges 3,648 →
+  3,769, modeled 0 → 71; yi `method` 23,871 → 19,074 (338 refused),
+  `external` 10,062 → 13,742, proven 6,876 → 7,159, modeled 0 → 519.
+  "Halved" is the residual only a type checker moves; the route is in the
+  plan's cut line (R-5).

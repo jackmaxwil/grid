@@ -95,12 +95,15 @@ help` lists every verb, `grid explain` defines every word.
 - **An edge exists only where the language's own binding rules establish
   it.** Glob imports, macro bodies, and method calls on receivers whose
   type is not written down are omissions, never guesses — and every
-  omission is counted: `miss 12246 references declined (external 2459,
-  method 9047, internal 740)` closes a survey of this repo — a prelude
-  name or a Python builtin left unbound is `external`, never a hole. Method calls
-  dominate on Rust; a moved signature reached only through `x.m()`
-  produces no suspect today (the compiler catches it on Rust; on Python
-  nothing does). Closing that is the top item in `docs/TODOS.md`.
+  omission is counted: `miss 12574 references declined (external 4100,
+  method 7802 of which 66 refused, internal 672)` closes a survey of this
+  repo — a prelude name or a Python builtin left unbound is `external`,
+  never a hole. A method call on a receiver whose type the file states
+  resolves by rustc's own lookup order: proven where the written form
+  matches the inherent method's at the first step, modeled where the type
+  was inferred or matched later, refused with a reason where a trait
+  could outrank it. Seventy percent of Rust method calls have no
+  syntactic type; `cargo check` and traces cover them, not the resolver.
 - **Evidence grades are load-bearing.** `proven > observed > modeled >
   heuristic`. Proven and observed gate (exit 3); modeled gates only under
   a declaration; heuristic ranks and never moves the exit.
@@ -162,6 +165,16 @@ longer exists in the chart asked about is demoted to heuristic with reason
 | `grid scope --bodies`, 3 hops | ~20ms |
 | `grid suspects --closure` | ~4ms by snapshot id |
 | `grid interfere`, both stores warm | ~83ms |
+
+The declined split after the method-calls plan (`docs/plans/2026-09-01-
+method-calls.md`), same tree, previous binary against this one:
+
+| | this repo before | after | yi (5,176 defs) before | after |
+|---|---:|---:|---:|---:|
+| proven / modeled edges | 3,648 / 0 | 3,769 / 71 | 6,876 / 0 | 7,159 / 519 |
+| `external` | 2,534 | 4,100 | 10,062 | 13,742 |
+| `method` (of which refused) | 9,549 | 7,802 (66) | 23,871 | 19,074 (338) |
+| `internal` | 765 | 672 | 2,946 | 2,942 |
 
 Every commit that moves a number states it; a budget that does not hold is
 stated, never rounded (`docs/plans/*.md`, each plan's Status ledger).
