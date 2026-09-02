@@ -600,12 +600,21 @@ fn cat_blobs(
     }
 }
 
-/// One `git cat-file --batch` answer header: `<oid> <type> <size>`, or
-/// `<spec> missing` for an object the rev cannot serve.
+/// One `git cat-file --batch` answer header: `<oid> <type> <size>`, or a
+/// one-word refusal for a spec the rev cannot serve.
 ///
-/// `Ok(None)` is missing and has no payload. `Ok(Some((size, is_blob)))` has
-/// `size` payload bytes to consume whatever the type — a gitlink answers with
-/// a commit, and skipping its payload is what keeps the stream aligned.
+/// The refusals are `missing` (no such object), `ambiguous` (the spec names
+/// more than one) and `submodule` (a gitlink, whose commit belongs to another
+/// repository) — git 2.50 answers a gitlink `missing` and later versions
+/// answer it `submodule`, so both are answers grid must expect. None of the
+/// three carries a payload; an unknown word is refused rather than skipped,
+/// because skipping an answer whose payload is real slides every later answer
+/// onto the wrong path.
+///
+/// `Ok(None)` is a refusal. `Ok(Some((size, is_blob)))` has `size` payload
+/// bytes to consume whatever the type — a gitlink whose commit this
+/// repository does hold answers with that commit, and skipping its payload is
+/// what keeps the stream aligned.
 fn batch_header(header: &[u8]) -> Result<Option<(usize, bool)>, SurveyError> {
     let bad = || {
         SurveyError::Git(format!(
@@ -617,7 +626,7 @@ fn batch_header(header: &[u8]) -> Result<Option<(usize, bool)>, SurveyError> {
         .map_err(|_| bad())?
         .trim_end_matches('\n');
     let (rest, last) = line.rsplit_once(' ').ok_or_else(bad)?;
-    if last == "missing" {
+    if matches!(last, "missing" | "ambiguous" | "submodule") {
         return Ok(None);
     }
     let size: usize = last.parse().map_err(|_| bad())?;
@@ -638,4 +647,49 @@ fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, SurveyError> {
         ));
     }
     Ok(out.stdout)
+}
+
+#[cfg(test)]
+mod batch_answers {
+    use super::batch_header;
+
+    /// The three words git uses for a spec it will not serve. A gitlink is
+    /// `missing` on git 2.50 and `submodule` on later versions, and grid runs
+    /// against whichever git the machine has.
+    #[test]
+    fn every_refusal_word_is_a_skip_and_never_an_error() {
+        for word in ["missing", "ambiguous", "submodule"] {
+            let line = format!("0000000000000000000000000000000000000001 {word}\n");
+            assert_eq!(
+                batch_header(line.as_bytes()).expect("a refusal is not an error"),
+                None,
+                "git answered {word} and the survey refused the whole rev"
+            );
+        }
+    }
+
+    /// Conservatism: an answer grid does not understand is refused, never
+    /// treated as payload-free. Skipping a real payload would slide every
+    /// later answer onto the wrong path — the failure this parser exists to
+    /// prevent.
+    #[test]
+    fn an_answer_grid_does_not_know_is_refused() {
+        let line = b"0000000000000000000000000000000000000001 sideways\n";
+        assert!(
+            batch_header(line).is_err(),
+            "an unknown answer word was skipped as if it carried no payload"
+        );
+    }
+
+    #[test]
+    fn a_served_object_carries_its_size_and_says_whether_it_is_a_blob() {
+        let blob = b"deadbeef blob 12\n";
+        assert_eq!(batch_header(blob).expect("a blob header"), Some((12, true)));
+        let commit = b"deadbeef commit 240\n";
+        assert_eq!(
+            batch_header(commit).expect("a commit header"),
+            Some((240, false)),
+            "a non-blob still reports its size, which is what keeps the stream aligned"
+        );
+    }
 }
