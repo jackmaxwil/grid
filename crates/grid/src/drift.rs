@@ -70,7 +70,7 @@ const DEPENDENCY_RELATIONS: [Relation; 4] = [
 /// *rejected*, never truncated: a truncated walk is indistinguishable from a
 /// smaller one, and drift would then report fewer suspects and look cleaner
 /// for it.
-const FUEL: u32 = grid_cache::FUEL;
+pub(crate) const FUEL: u32 = grid_cache::FUEL;
 
 /// The relation a covenant suspect carries. A covenant is a declared
 /// coupling across a serialization boundary — the serde struct and the dict
@@ -403,6 +403,7 @@ fn fire_covenants<B: AsRef<[u8]>>(
                     callsign: Some(Callsign(hit.moved.clone())),
                     lang: None,
                     signature: None,
+                    cfg: None,
                     materialization: None,
                 },
                 |d| def_ref(chart, d, Some(&hit.moved)),
@@ -582,17 +583,17 @@ pub(crate) fn fold_rows(
 
 /// One inbound dependency found for a changed definition, whatever proved it.
 pub(crate) struct Inbound {
-    datum: DatumId,
+    pub(crate) datum: DatumId,
     /// The name base knows this dependent by, or `None` when base does not
     /// intern it at all — which happens exactly on a decayed trace, where
     /// the caller was edited between the trace and base. Reported by datum
     /// handle rather than dropped: "something that was observed calling this
     /// has since been rewritten" is a real, weak answer, and dropping it
     /// would be the silence the report shape exists to prevent.
-    callsign: Option<String>,
-    relation: Relation,
-    grade: Grade,
-    reason: Option<String>,
+    pub(crate) callsign: Option<String>,
+    pub(crate) relation: Relation,
+    pub(crate) grade: Grade,
+    pub(crate) reason: Option<String>,
 }
 
 impl Inbound {
@@ -648,7 +649,7 @@ fn name_at<B: AsRef<[u8]>>(segments: &[Segment<B>], datum: DatumId) -> Option<St
 /// A `DefRef` with the location the live chart knows, when it knows one. The
 /// row is meant to be pasteable into an editor, so `file:line` matters more
 /// here than anywhere else in the report.
-fn def_ref(chart: &ChartDelta, datum: DatumId, callsign: Option<&str>) -> DefRef {
+pub(crate) fn def_ref(chart: &ChartDelta, datum: DatumId, callsign: Option<&str>) -> DefRef {
     let wire = wire_datum(datum);
     let materialization = chart.locate(&wire);
     DefRef {
@@ -656,6 +657,7 @@ fn def_ref(chart: &ChartDelta, datum: DatumId, callsign: Option<&str>) -> DefRef
         callsign: callsign.map(|c| Callsign(c.to_owned())),
         lang: None,
         signature: None,
+        cfg: None,
         materialization,
     }
 }
@@ -682,6 +684,7 @@ mod tests {
                 shape: [datum; 32],
                 complexity: 1,
                 sig: [sig; 32],
+                cfg: String::new(),
             }),
         }
     }

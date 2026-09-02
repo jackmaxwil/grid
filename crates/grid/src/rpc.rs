@@ -441,6 +441,7 @@ pub fn defs_in_file(
                 callsign: Some(grid_wire::Callsign(callsign.to_owned())),
                 lang: segment.lang(ord),
                 signature: None,
+                cfg: None,
                 materialization: Some(grid_wire::DefRefMaterialization {
                     file: loc.path.to_owned(),
                     line: u64::from(loc.line),
@@ -500,6 +501,7 @@ pub fn orphans(
                 callsign: Some(grid_wire::Callsign(callsign.to_owned())),
                 lang: segment.lang(ord),
                 signature: None,
+                cfg: None,
                 materialization: segment.location(ord).map(|loc| {
                     grid_wire::DefRefMaterialization {
                         file: loc.path.to_owned(),
@@ -1238,6 +1240,7 @@ pub fn scope(
                 callsign: Some(grid_wire::Callsign(callsign.clone())),
                 lang: *lang,
                 signature: None,
+                cfg: None,
                 materialization: materialization.clone(),
             },
         )

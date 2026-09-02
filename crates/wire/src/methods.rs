@@ -215,6 +215,8 @@ pub struct CheckParams {
     pub head: SnapshotOrRev,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace: Option<TraceId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compile: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

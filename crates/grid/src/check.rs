@@ -117,7 +117,20 @@ pub fn answer(params: &CheckParams, root: &Path) -> Result<CheckResult, Error> {
         })
         .collect();
 
+    // The compile record is read, never written, here: `--compile` wrote it
+    // before asking. No record is an absent section, not an empty one — a
+    // check that has no compile to speak of says nothing about compiles.
+    let compile = match (params.compile, crate::compile::load(root)) {
+        (Some(true), Ok(Some(record))) => Some(
+            crate::compile::report(root, &plan.base, &params.head, &record)
+                .map_err(|e| Error::Chart(chart_provider::Error::Config(e.to_string())))?,
+        ),
+        (Some(true), Err(e)) => return Err(Error::Chart(chart_provider::Error::Config(e))),
+        _ => None,
+    };
+
     Ok(CheckResult {
+        compile,
         why: Some(CheckWhy {
             surplus: verdict.surplus.clone(),
             coverage: coverage(&diff, params.trace.as_ref(), root)?,
@@ -284,6 +297,9 @@ pub fn porcelain(answer: &CheckResult, name: &crate::porcelain::NameOf) -> Strin
     }
     for datum in &why.coverage {
         record(&mut out, "miss", &[&show(datum), "unexecuted"]);
+    }
+    if let Some(compile) = answer.compile.as_ref() {
+        out.push_str(&crate::porcelain::compile(compile));
     }
     out
 }

@@ -193,6 +193,7 @@ dependencies = [
  "grid-chart",
  "grid-chart-io",
  "grid-gate",
+ "grid-lang-rs",
  "grid-survey",
  "grid-trace",
  "grid-walk",

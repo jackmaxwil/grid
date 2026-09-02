@@ -219,6 +219,7 @@ impl ChartDelta {
                         callsign: Some(Callsign(callsign.to_owned())),
                         lang: segment.lang(ord),
                         signature: None,
+                        cfg: segment.cfg(ord).map(str::to_owned),
                         materialization,
                     });
                 }

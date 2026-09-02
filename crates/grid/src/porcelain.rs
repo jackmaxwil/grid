@@ -13,7 +13,7 @@ use grid_wire::{
 };
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "2.2.0";
+pub const VERSION: &str = "2.3.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -387,6 +387,25 @@ pub fn drift(report: &grid_wire::DriftReport) -> String {
         record(&mut out, "warn", &[&warning.subject, &warning.message]);
     }
     out.push_str(&drift_unchecked(&report.unchecked));
+    out
+}
+
+/// The compile report (`grid check --compile`): a `drift` record per proven
+/// dependent the recorded compile did not see, reason `uncompiled:<cfg>`,
+/// then a `warn` per dependent whose cfg nobody can decide. Same columns as
+/// `grid drift` — a caller the compiler skipped is a dependent left behind,
+/// found by a different question.
+#[must_use]
+pub fn compile(report: &grid_wire::CompileReport) -> String {
+    let mut out = String::new();
+    for s in &report.uncompiled {
+        let columns = drift_columns(s);
+        let refs: Vec<&str> = columns.iter().map(String::as_str).collect();
+        record(&mut out, "drift", &refs);
+    }
+    for warning in &report.unknown {
+        record(&mut out, "warn", &[&warning.subject, &warning.message]);
+    }
     out
 }
 

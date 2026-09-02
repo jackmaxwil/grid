@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.2.0
+version: 2.3.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -27,7 +27,7 @@ document.
 | `hop` | relation, target, evidence |
 | `hit` | callsign, verdict, recorded time |
 | `fork` | caller, green callee (`-` if the trace had no hop there), red callee |
-| `drift` | evidence grade, dependent callsign, `<-relation-`, changed callsign, sig transition (`old4→new4`, or `sig?` when either side carries no sig), reason (`-` when the edge speaks for itself), dependent `file:line` (`-` when unknown) — `grid drift` |
+| `drift` | evidence grade, dependent callsign, `<-relation-`, changed callsign, sig transition (`old4→new4`, or `sig?` when either side carries no sig), reason (`-` when the edge speaks for itself; `uncompiled:<cfg>` from `grid check --compile`), dependent `file:line` (`-` when unknown) — `grid drift`, `grid check --compile` |
 | `covenant` | pattern A, pattern B, `via` word — one declared covenant (`grid covenant`) |
 | `delta` | `+` or `-`, then a `drift` record's columns — one signed change to the suspect set (`grid watch`) |
 | `miss` | callsign, reason |
@@ -112,6 +112,24 @@ in a `warn`), `1` when the runner could not be spawned, `0` otherwise —
 output goes to stderr; the horizon line on stderr says how many tests were
 selected out of how many, and what the plan and the survey cost.
 
+`grid check --compile [-- <cargo check args>]` runs `cargo check` with the
+given arguments from the worktree root, the compiler's output on stderr. A
+failed compile passes cargo's exit code through and prints nothing on
+stdout — the diagnostics are the answer, and no record is written. A green
+compile writes the compile record (`.grid/compile.json`) and then, for the
+same changed set `grid drift` would name (the worktree against `HEAD~1`,
+sig moved or unknown), prints one `drift` record per *proven* dependent
+sitting under a `cfg` the record decidably excluded — reason
+`uncompiled:<cfg>`, the dependent's `file:line` last, exit `3` — and one
+`warn <dependent>  cfg unknown: <text>` per dependent whose `cfg` cannot be
+decided (`cfg_attr`, a custom key, a target fact the record lacks, or
+`pre-epoch-4 snapshot` for a chart written before the cfg column), which
+never moves the exit. Compiled under `-- --tests`, `-- --features x` or
+`-- --all-features`, the same callers print nothing. With `--plan` the
+verdict prints first and the compile records follow; `--json` emits the
+`CompileReport` alone without a plan and the `CheckResult` with one. A tree
+with no `Cargo.toml` has no compile to wrap: one hint, exit `0`.
+
 `grid watch` emits `delta` records rather than a current list: `+` a suspect
 appeared, `-` it was retracted. A consumer holds a running sum, and the sum
 after any prefix of events is what a fresh `grid drift` would say — so
@@ -153,7 +171,9 @@ Semver. Adding a record type or a trailing column is minor — as is widening
 a record's message, which carried 2.0.0 to 2.1.0 (`grid survey`'s closing
 `miss`, and the declined split inside `grid drift`'s), and giving existing
 tags a new verb's meanings, which carried 2.1.0 to 2.2.0 (`grid test`'s
-`hit`/`miss` addressed by test id, and its `done` line) — changing column
+`hit`/`miss` addressed by test id, and its `done` line) and 2.2.0 to 2.3.0
+(`grid check --compile`'s `drift` reason `uncompiled:<cfg>` and its `warn`)
+— changing column
 order or meaning is major — and so is renaming a tag, which is what carried
 1.6.0 to 2.0.0 (`docs/plans/2026-09-01-naming.md`). The daemon reports this
 version via `grid version` and the wire contract's `x-porcelain` field.

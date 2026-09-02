@@ -71,6 +71,7 @@ impl DefIndex {
         defs: &[Definition],
         path: &str,
         source: &str,
+        inherited_cfg: &str,
     ) {
         if let Some(root) = module.split('.').next() {
             self.roots.insert(root.to_owned());
@@ -93,6 +94,7 @@ impl DefIndex {
                     shape: shape_bytes(def),
                     complexity: def.complexity,
                     sig: sig_bytes(def),
+                    cfg: grid_datum::cfg_join(&[inherited_cfg, &def.cfg]),
                 },
             };
             // The same datum under the same name twice is the same definition

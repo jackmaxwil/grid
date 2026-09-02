@@ -14,7 +14,7 @@
   },
   "x-porcelain": {
     "doc": "packages/grid/docs/PORCELAIN.md",
-    "version": "2.2.0",
+    "version": "2.3.0",
     "description": "Normative grammar for human-facing stdout records. --json emits wire results verbatim; the porcelain version is reported by grid.version."
   },
   "methods": [
@@ -27,7 +27,7 @@
         {
           "name": "current versions",
           "params": [],
-          "result": { "name": "version", "value": { "wire": "1.0.0", "engine": "grid 0.1.0", "porcelain": "2.2.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
+          "result": { "name": "version", "value": { "wire": "1.0.0", "engine": "grid 0.1.0", "porcelain": "2.3.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
         }
       ],
       "result": {
@@ -392,7 +392,8 @@
       "params": [
         { "name": "plan", "required": true, "schema": { "$ref": "#/components/schemas/PlanId" } },
         { "name": "head", "required": true, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } },
-        { "name": "trace", "required": false, "schema": { "$ref": "#/components/schemas/TraceId" } }
+        { "name": "trace", "required": false, "schema": { "$ref": "#/components/schemas/TraceId" } },
+        { "name": "compile", "required": false, "schema": { "type": "boolean" }, "description": "Read .grid/compile.json and report the changed set's proven dependents it did not compile, as CheckResult.compile. Absent from the result when no record exists." }
       ],
       "examples": [
         {
@@ -640,6 +641,7 @@
           "callsign": { "$ref": "#/components/schemas/Callsign" },
           "lang": { "$ref": "#/components/schemas/Lang" },
           "signature": { "type": "string", "description": "One-line declaration as surveyed, e.g. 'def validate(self, tags: list[Tag]) -> Receipt'. Lets grid.scope return signatures without bodies." },
+          "cfg": { "type": "string", "description": "The conjunction of every #[cfg(...)] predicate conditioning the definition — on the item, on each enclosing module, and on the cargo target directory — as written minus whitespace, all(...)-joined when nested; a cfg_attr(...) is recorded whole. Empty when nothing conditions it. Absent when the snapshot predates segment epoch 4 or the frontend has no such notion (Python)." },
           "materialization": {
             "type": "object",
             "required": ["file", "line"],
@@ -1184,10 +1186,39 @@
         "required": ["verdict"],
         "properties": {
           "verdict": { "$ref": "#/components/schemas/GateVerdict" },
-          "why": { "$ref": "#/components/schemas/CheckWhy" }
+          "why": { "$ref": "#/components/schemas/CheckWhy" },
+          "compile": { "$ref": "#/components/schemas/CompileReport", "description": "Present when the check was asked to read the compile record and one exists: the proven dependents of the changed set the recorded compile did not see." }
         },
         "additionalProperties": false,
         "description": "Is this change ok: the gate verdict, and the reasoning behind it. The verdict is grid.gate.check's own, so a reviewer and CI cannot disagree about whether the promise was kept."
+      },
+      "CompileRecord": {
+        "type": "object",
+        "required": ["snapshot", "features", "all_features", "no_default_features", "tests", "target", "host", "cfgs", "recorded_at"],
+        "properties": {
+          "snapshot": { "$ref": "#/components/schemas/SnapshotId", "description": "The head snapshot the compile ran over." },
+          "features": { "type": "array", "items": { "type": "string" }, "description": "Every feature the compile enabled: those named on the command line plus each workspace package's defaults, closed over the [features] table, unless --no-default-features." },
+          "all_features": { "type": "boolean", "description": "--all-features was given, so every feature = \"…\" predicate held." },
+          "no_default_features": { "type": "boolean" },
+          "tests": { "type": "boolean", "description": "--tests or --all-targets was given, so cfg(test) items and tests/ targets were compiled." },
+          "target": { "type": "string", "description": "The --target triple, else the host triple." },
+          "host": { "type": "string", "description": "The host triple from rustc -vV; empty when rustc could not be asked." },
+          "cfgs": { "type": "array", "items": { "type": "string" }, "description": "The target's cfg set exactly as rustc --print cfg reports it (unix, target_os=\"macos\", …). Empty when rustc could not be asked, and then every target_* predicate is unknown rather than false." },
+          "recorded_at": { "type": "string", "description": "RFC 3339 UTC." }
+        },
+        "additionalProperties": false,
+        "description": "The compile record: what one cargo check was asked for, written to .grid/compile.json by grid check --compile so a later check can re-evaluate cfg predicates against it."
+      },
+      "CompileReport": {
+        "type": "object",
+        "required": ["compiled_with", "uncompiled", "unknown"],
+        "properties": {
+          "compiled_with": { "$ref": "#/components/schemas/CompileRecord" },
+          "uncompiled": { "type": "array", "items": { "$ref": "#/components/schemas/DriftSuspect" }, "description": "Proven dependents of a changed interface whose cfg the record decidably excluded — the compile never saw them. Each carries reason uncompiled:<cfg>. Gates: exit 3." },
+          "unknown": { "type": "array", "items": { "$ref": "#/components/schemas/DriftWarning" }, "description": "Dependents whose cfg the evaluator could not decide (cfg_attr, a custom key, a target fact the record lacks) or whose snapshot predates the cfg column. Reported, never gated: an unproven exclusion does not hold." }
+        },
+        "additionalProperties": false,
+        "description": "What a compile did not compile: for every changed interface, the proven dependents sitting under a cfg the recorded cargo check excluded, and the ones nobody can decide."
       },
       "CheckWhy": {
         "type": "object",

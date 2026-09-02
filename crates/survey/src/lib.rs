@@ -255,6 +255,41 @@ fn extract_all<'s>(
     (per_file, reread)
 }
 
+/// The cfg every definition in a file inherits from outside the file: what
+/// a cargo target directory implies (`tests/`, `benches/`), plus the `#[cfg]`
+/// on each `mod x;` declaration up the module chain — an out-of-line
+/// module's file cannot see the attribute on its own declaration, so it is
+/// joined back on by module path here. Keyed by file path.
+fn inherited_cfgs(
+    per_file: &[(&SourceFile, FileFacts)],
+    module_for: &dyn Fn(&SourceFile) -> String,
+    roots: &files::CrateRoots,
+) -> HashMap<String, String> {
+    let mut mod_cfgs: HashMap<String, String> = HashMap::new();
+    for (file, facts) in per_file {
+        let module = module_for(file);
+        for (name, cfg) in &facts.refs.mod_cfgs {
+            mod_cfgs.insert(format!("{module}.{name}"), cfg.clone());
+        }
+    }
+    let mut out = HashMap::new();
+    for (file, _) in per_file {
+        let module = module_for(file);
+        let segs: Vec<&str> = module.split('.').collect();
+        let mut parts: Vec<&str> = files::target_cfg(&file.path, roots).into_iter().collect();
+        for end in 2..=segs.len() {
+            if let Some(cfg) = mod_cfgs.get(&segs.get(..end).unwrap_or_default().join(".")) {
+                parts.push(cfg);
+            }
+        }
+        let cfg = grid_datum::cfg_join(&parts);
+        if !cfg.is_empty() {
+            out.insert(file.path.clone(), cfg);
+        }
+    }
+    out
+}
+
 /// Survey an already-discovered file set.
 ///
 /// Discovery is the expensive part of [`run`] on a warm tree — `git ls-files`
@@ -294,6 +329,8 @@ pub fn run_sources(
             .unwrap_or_else(|| files::module_of(file.lang, &file.path, roots))
     };
 
+    let inherited = inherited_cfgs(&per_file, &module_for, roots);
+
     // Phase 2 — index the whole tree. Edges cannot be resolved before every
     // definition is known, which is the reason for two phases and the reason
     // the cache cannot hold edges.
@@ -305,6 +342,7 @@ pub fn run_sources(
             &facts.defs,
             &file.path,
             &file.source,
+            inherited.get(&file.path).map_or("", String::as_str),
         );
     }
     // Aliases go in after every definition, so a real name always wins over

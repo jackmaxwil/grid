@@ -38,6 +38,10 @@ pub struct DefFacts {
     /// Epoch-3 interface identity — the frontend's canonical sig hash.
     /// All-zero writes the absent sentinel, which reads back as `None`.
     pub sig: [u8; 32],
+    /// Epoch-4 cfg predicate, as written; empty when nothing conditions the
+    /// definition. Interned per segment, so predicates that repeat cost one
+    /// index each.
+    pub cfg: String,
 }
 
 /// An edge to store. Edges naming an unknown datum are dropped by [`build`]:
@@ -138,6 +142,30 @@ fn sections(
     fn path_of(d: &Def) -> &str {
         d.facts.as_ref().map_or("", |f| f.path.as_str())
     }
+    fn cfg_of(d: &Def) -> &str {
+        d.facts.as_ref().map_or("", |f| f.cfg.as_str())
+    }
+    // The cfg table: entry 0 is the empty predicate, the rest sorted and
+    // deduplicated so the image is a function of the predicate *set*.
+    let mut cfgs: Vec<&str> = defs.iter().map(|d| cfg_of(d)).collect();
+    cfgs.sort_unstable();
+    cfgs.dedup();
+    if cfgs.first() != Some(&"") {
+        cfgs.insert(0, "");
+    }
+    let cfg_index = |d: &Def| -> Result<u32, ChartError> {
+        cfgs.binary_search(&cfg_of(d))
+            .ok()
+            .and_then(|i| u32::try_from(i).ok())
+            .ok_or(ChartError::TooLarge)
+    };
+    let def_cfgs = defs
+        .iter()
+        .map(|d| cfg_index(d).map(u32::to_le_bytes))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect();
     Ok([
         defs.iter().flat_map(|d| d.datum.0).collect(),
         csr_offsets(def_count, out.iter().map(|r| r.0)),
@@ -184,6 +212,9 @@ fn sections(
         defs.iter()
             .flat_map(|d| d.facts.as_ref().map_or([0u8; 32], |f| f.sig))
             .collect(),
+        def_cfgs,
+        csr_byte_offsets(cfgs.iter().map(|c| c.len()))?,
+        cfgs.iter().flat_map(|c| c.bytes()).collect(),
     ])
 }
 
@@ -240,6 +271,9 @@ impl Section {
             Self::DefShapes => "def_shapes",
             Self::DefMetrics => "def_metrics",
             Self::DefSigs => "def_sigs",
+            Self::DefCfgs => "def_cfgs",
+            Self::CfgOffsets => "cfg_offsets",
+            Self::CfgBytes => "cfg_bytes",
         }
     }
 }

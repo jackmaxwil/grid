@@ -1051,6 +1051,58 @@ fn check_answers_with_a_check_result_the_contract_accepts() {
     );
 }
 
+/// Agent-loop step 3: the compile record is the CLI's to write and the
+/// daemon's to read. `compile: true` with no record is an absent section,
+/// not an empty one; with a record it is a `CompileReport` the contract
+/// accepts, and `DefRef.cfg` rides on every dependent it names.
+#[test]
+fn check_reads_the_compile_record_over_the_socket() {
+    let dir = repo_with_an_unused_import();
+    let daemon = Daemon::start(dir.path());
+    let base = daemon.call("grid.survey.run", &json!({}))["result"]["snapshot_id"].clone();
+    let plan = write_plan(
+        dir.path(),
+        "compile",
+        &json!({
+            "plan_id": "plan:compile/v1",
+            "base": {"snapshot": base},
+            "delta": {"defs": [], "edges": []}
+        }),
+    );
+    let response = daemon.call(
+        "grid.check",
+        &json!({"plan": plan, "head": {"snapshot": base}, "compile": true}),
+    );
+    assert!(response.get("error").is_none(), "check errored: {response}");
+    let answer: grid_wire::CheckResult =
+        serde_json::from_value(response["result"].clone()).expect("a wire CheckResult");
+    assert!(answer.compile.is_none(), "no record, no section");
+
+    // A record, written the way `grid check --compile` writes it.
+    std::fs::write(
+        dir.path().join(".grid/compile.json"),
+        serde_json::to_vec(&json!({
+            "snapshot": base, "features": ["default"], "all_features": false,
+            "no_default_features": false, "tests": false, "target": "x", "host": "x",
+            "cfgs": ["unix"], "recorded_at": "1970-01-01T00:00:00Z"
+        }))
+        .expect("record"),
+    )
+    .expect("write record");
+    let response = daemon.call(
+        "grid.check",
+        &json!({"plan": plan, "head": {"snapshot": base}, "compile": true}),
+    );
+    assert!(response.get("error").is_none(), "check errored: {response}");
+    let answer: grid_wire::CheckResult =
+        serde_json::from_value(response["result"].clone()).expect("a wire CheckResult");
+    let compile = answer.compile.expect("the record was read");
+    assert_eq!(compile.compiled_with.cfgs, ["unix"]);
+    // base == head: nothing changed, so nothing was left uncompiled.
+    assert!(compile.uncompiled.is_empty());
+    assert!(compile.unknown.is_empty());
+}
+
 /// A trace the log does not hold is the contract's unknown-trace error, not an
 /// answer computed as if coverage had been asked for and found empty.
 #[test]

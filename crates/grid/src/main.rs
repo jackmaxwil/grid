@@ -25,6 +25,7 @@
 mod bisect;
 mod chart_provider;
 mod check;
+mod compile;
 mod covenant;
 mod coverage;
 mod drift;
@@ -100,6 +101,7 @@ fn help() {
          plan lint <file>             validate a promise file\n  \
          todo <plan>                  the promise as a worklist\n  \
          check --plan <p> [--why]     gate verdict, and why it says so\n  \
+         check --compile [-- args]    wrap cargo check; the callers it did not compile; exit 3\n  \
          cache lookup|record ...      test verdicts keyed by identity closure\n  \
          edit apply <file>            compare-and-swap edits by datum\n  \
          trace ingest|diff ...        runtime traces -> observed edges\n  \
@@ -1489,7 +1491,7 @@ fn orphans(args: &[&str], json: bool) -> u8 {
     }
 }
 
-const CHECK_USAGE: &str = "usage: grid check --plan <plan> [<head-rev>] [--why] [--trace <id>]";
+const CHECK_USAGE: &str = "usage: grid check --plan <plan> [<head-rev>] [--why] [--trace <id>] [--compile [-- <cargo check args>]]\n       grid check --compile [-- <cargo check args>]";
 
 /// `grid check --plan <plan> [<head-rev|snap:id>] [--why] [--trace <id>]` —
 /// is this change ok: the gate verdict, and under `--why` the reasoning —
@@ -1504,11 +1506,23 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
     let mut head = None;
     let mut trace = None;
     let mut why = false;
+    let mut compile = None;
     let mut rest = args;
     while let Some((arg, tail)) = rest.split_first() {
         rest = tail;
         match *arg {
             "--why" => why = true,
+            "--compile" => compile = Some(Vec::new()),
+            "--" => {
+                let Some(cargo_args) = compile.as_mut() else {
+                    hint(&format!(
+                        "grid: `--` carries cargo check args and needs --compile\n{CHECK_USAGE}"
+                    ));
+                    return exit::BAD_INPUT;
+                };
+                cargo_args.extend(rest.iter().map(|a| (*a).to_owned()));
+                break;
+            }
             "--trace" | "--plan" => {
                 let Some((value, tail)) = rest.split_first() else {
                     hint(CHECK_USAGE);
@@ -1532,40 +1546,173 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
             }
         }
     }
+    // `--compile` wraps the compile and writes the record first; with a
+    // plan the check then reads it, without one the record's own report is
+    // the whole answer.
+    let mut compiled = None;
+    if let Some(cargo_args) = compile {
+        if head.is_some() {
+            hint(&format!(
+                "grid: --compile checks the worktree against {COMPILE_BASE}; a head rev does not apply\n{CHECK_USAGE}"
+            ));
+            return exit::BAD_INPUT;
+        }
+        match compile_wrap(&cargo_args) {
+            Ok(record) => compiled = Some(record),
+            Err(code) => return code,
+        }
+    }
     let Some(plan) = plan else {
-        hint(CHECK_USAGE);
-        return exit::BAD_INPUT;
+        // No plan: the report over drift's default endpoints, on its own.
+        let Some(record) = compiled else {
+            hint(CHECK_USAGE);
+            return exit::BAD_INPUT;
+        };
+        return compile_report(&record, json);
     };
     let params = grid_wire::methods::CheckParams {
         plan,
         head: head.unwrap_or_else(|| snapshot_or_rev("HEAD")),
         trace,
+        compile: compiled.is_some().then_some(true),
     };
     match check::answer(&params, root()) {
         Err(e) => {
             hint(&format!("grid: {e}"));
             exit::BAD_INPUT
         }
-        Ok(pack) => {
-            let code = if pack.verdict.gate == grid_wire::GateVerdictGate::Hold {
-                exit::DIVERGENCE
-            } else {
+        Ok(pack) => check_emit(&pack, why, json),
+    }
+}
+
+/// Print a check's answer and compute its exit. A proven caller the
+/// compile never saw diverges exactly as a hold does; a cfg nobody can
+/// decide only warns.
+fn check_emit(pack: &grid_wire::CheckResult, why: bool, json: bool) -> u8 {
+    let uncompiled = pack
+        .compile
+        .as_ref()
+        .is_some_and(|c| !c.uncompiled.is_empty());
+    let code = if pack.verdict.gate == grid_wire::GateVerdictGate::Hold || uncompiled {
+        exit::DIVERGENCE
+    } else {
+        exit::OK
+    };
+    if json {
+        // A serialization failure is internal (1) and outranks the
+        // verdict, exactly as `grid gate` treats it.
+        return match emit_json(pack) {
+            exit::OK => code,
+            failure => failure,
+        };
+    }
+    // Without `--why` the answer is the verdict alone — the same records
+    // `grid gate` prints, from the same computation — plus the compile
+    // report when one was asked for.
+    if why {
+        print!("{}", check::porcelain(pack, &namer()));
+    } else {
+        print!("{}", porcelain::verdict(&pack.verdict, &namer()));
+        if let Some(compile) = pack.compile.as_ref() {
+            print!("{}", porcelain::compile(compile));
+        }
+    }
+    code
+}
+
+/// The base a bare `grid check --compile` measures the worktree against:
+/// `grid drift`'s default, so the changed set is the one drift would name.
+const COMPILE_BASE: &str = "HEAD~1";
+
+/// Run the compile, survey both endpoints, write the record. `Err` is the
+/// exit code to leave with: cargo's own when the compile failed (grid then
+/// prints nothing on stdout), `0` with a hint when there is no compile to
+/// wrap, `1` when the survey or the record write failed.
+fn compile_wrap(cargo_args: &[String]) -> Result<grid_wire::CompileRecord, u8> {
+    if !root().join("Cargo.toml").exists() {
+        hint("grid: nothing to compile — no Cargo.toml in this tree, and a Python tree has no compile to wrap");
+        return Err(exit::OK);
+    }
+    let started = std::time::Instant::now();
+    let mut chart = rpc::Chart::new(root());
+    let head = chart
+        .survey_run(&grid_wire::methods::SurveyRunParams {
+            git_rev: None,
+            worktree: None,
+        })
+        .and_then(|(snapshot, _)| {
+            chart.ensure(&snapshot_or_rev(COMPILE_BASE))?;
+            Ok(snapshot.snapshot_id)
+        });
+    let snapshot = match head {
+        Ok(id) => id,
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            return Err(exit::INTERNAL);
+        }
+    };
+    let surveyed = started.elapsed();
+    let compiling = std::time::Instant::now();
+    let wrapped = match compile::wrap(root(), cargo_args, snapshot) {
+        Ok(w) => w,
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            return Err(exit::INTERNAL);
+        }
+    };
+    match wrapped {
+        compile::Wrapped::Failed(code) => Err(code),
+        compile::Wrapped::Compiled(record) => {
+            hint(&format!(
+                "grid: recorded {} — survey {}ms, cargo check and record {}ms",
+                compile::FILE,
+                surveyed.as_millis(),
+                compiling.elapsed().as_millis()
+            ));
+            Ok(record)
+        }
+    }
+}
+
+/// The compile report on its own: drift's default endpoints, the worktree
+/// against [`COMPILE_BASE`]. Exit 3 when the compile provably skipped a
+/// proven dependent of a changed interface.
+fn compile_report(record: &grid_wire::CompileRecord, json: bool) -> u8 {
+    let started = std::time::Instant::now();
+    // Head is the snapshot the record names — the one just surveyed — so
+    // resolving it costs no git spawn; base is the rev it is measured from.
+    let head = grid_wire::SnapshotOrRev::Snapshot {
+        snapshot: record.snapshot.clone(),
+    };
+    let report = compile::report(root(), &snapshot_or_rev(COMPILE_BASE), &head, record);
+    match report {
+        Err(e @ drift::Error::BudgetRejected(_)) => {
+            hint(&format!("grid: {e}"));
+            exit::INTERNAL
+        }
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            exit::BAD_INPUT
+        }
+        Ok(report) => {
+            hint(&format!(
+                "grid: compile check {}ms over cargo check",
+                started.elapsed().as_millis()
+            ));
+            let code = if report.uncompiled.is_empty() {
                 exit::OK
+            } else {
+                exit::DIVERGENCE
             };
             if json {
-                // A serialization failure is internal (1) and outranks the
-                // verdict, exactly as `grid gate` treats it.
-                return match emit_json(&pack) {
+                return match emit_json(&report) {
                     exit::OK => code,
                     failure => failure,
                 };
             }
-            // Without `--why` the answer is the verdict alone — the same
-            // records `grid gate` prints, from the same computation.
-            if why {
-                print!("{}", check::porcelain(&pack, &namer()));
-            } else {
-                print!("{}", porcelain::verdict(&pack.verdict, &namer()));
+            print!("{}", porcelain::compile(&report));
+            if code == exit::DIVERGENCE {
+                hint("grid: these proven callers sit under a cfg the compile excluded — re-run with `-- --tests` or the feature, or fix them");
             }
             code
         }

@@ -7,10 +7,12 @@
 //! a local moves the datum. That errs conservatively — a false "changed",
 //! never a false "same" — and a scope-aware alpha renamer is the upgrade.
 mod canon;
+mod cfg;
 mod extract;
 mod refs;
 mod sig;
 
+pub use cfg::{eval_cfg, CfgEnv};
 pub use extract::definitions;
 pub use refs::references;
 

@@ -91,6 +91,8 @@ pub struct DefRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cfg: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub materialization: Option<DefRefMaterialization>,
 }
 
@@ -736,6 +738,30 @@ pub struct CheckResult {
     pub verdict: GateVerdict,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<CheckWhy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compile: Option<CompileReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompileRecord {
+    pub snapshot: SnapshotId,
+    pub features: Vec<String>,
+    pub all_features: bool,
+    pub no_default_features: bool,
+    pub tests: bool,
+    pub target: String,
+    pub host: String,
+    pub cfgs: Vec<String>,
+    pub recorded_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompileReport {
+    pub compiled_with: CompileRecord,
+    pub uncompiled: Vec<DriftSuspect>,
+    pub unknown: Vec<DriftWarning>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

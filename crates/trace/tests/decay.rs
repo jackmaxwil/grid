@@ -23,6 +23,7 @@ fn def(callsign: &str, fill: u8) -> Def {
             shape: [fill; 32],
             complexity: 1,
             sig: [fill; 32],
+            cfg: String::new(),
         }),
     }
 }

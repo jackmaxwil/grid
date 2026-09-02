@@ -21,6 +21,7 @@ fn def(callsign: &str, fill: u8) -> Def {
             shape: [fill; 32],
             complexity: u16::from(fill),
             sig: [fill; 32],
+            cfg: String::new(),
         }),
     }
 }

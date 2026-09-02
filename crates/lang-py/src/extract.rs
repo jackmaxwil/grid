@@ -70,6 +70,7 @@ fn walk(body: &[Stmt], source: &str, prefix: &str, out: &mut Vec<Definition>) {
             span,
             shape: hash_of(&shaped),
             complexity: complexity_of(stmt),
+            cfg: String::new(),
         });
         walk(inner, source, &callsign, out);
     }

@@ -382,6 +382,22 @@ pub(crate) fn relocated(declaring: &str, declared: &str) -> String {
     segs.join("/")
 }
 
+/// The cfg a cargo target directory implies: `tests/` and `benches/` are
+/// compiled only under `--tests` / `--all-targets`, which is exactly
+/// `cfg(test)` from a compile record's point of view.
+///
+/// ponytail: `examples/` (compiled under `--examples`, not `--tests`) and
+/// custom `[[test]]` paths are not modeled; `cargo metadata`'s target list
+/// is the upgrade when they matter.
+#[must_use]
+pub fn target_cfg(path: &str, roots: &CrateRoots) -> Option<&'static str> {
+    let tail = match roots.nearest(path) {
+        Some((dir, _)) => path.get(dir.len()..)?.trim_start_matches('/'),
+        None => path,
+    };
+    (tail.starts_with("tests/") || tail.starts_with("benches/")).then_some("test")
+}
+
 fn module_of_rs(path: &str, roots: &CrateRoots) -> String {
     let (root, rest) = if let Some((dir, name)) = roots.nearest(path) {
         let tail = path.get(dir.len()..).unwrap_or("").trim_start_matches('/');

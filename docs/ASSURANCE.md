@@ -48,6 +48,7 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 | C33 | a rev survey reads every blob it needs through one `git cat-file --batch` child, byte-identical to `git show` per path; a path the listing names that the rev cannot serve is skipped, never fabricated as empty, and never shifts a later answer onto the wrong file | rev_blobs.rs determinism.rs | 10+ |
 | C35 | lcov and coverage.py reports describing the same executed lines produce the same observations and the same resolved hops, because they share one line-to-definition mapping; a file the chart does not hold and a line inside no definition are counted and reported; a report that does not parse is bad input, never a trace claiming the test reached nothing; and re-ingesting a report retains one trace, byte for byte | coverage.rs porcelain.rs | 10+ |
 | C36 | `grid test` skips a test only when its closure key at head is on record in this environment *and* a retained trace still describing code base holds watched its reach; a walk over fuel selects every test rather than a shorter list; a test with no live trace, no name in the chart, or no verdict on record is always run; over a seeded edit sequence every skipped test's recorded verdict equals a full run at head; and `uncovered` and `nondeterministic` are reported and never move the exit code | testplan.rs testrun.rs conformance.rs | 10+ |
+| C37 | a definition's `cfg` is the conjunction of every `#[cfg]` that conditions it, including the declaration of its module and its cargo target directory; `grid check --compile` gates only on a proven dependent whose `cfg` the compile record decidably excludes, warns on every predicate it cannot decide, and a snapshot that predates the cfg column answers *unknown*, never *compiled* | cfg.rs compile.rs epochs.rs adversarial.rs | 10+ |
 
 
 ## Maintained views
@@ -135,7 +136,8 @@ re-survey, never a reinterpretation — the same declared-epoch discipline the
 normalizer follows. The two halves of that rule differ by design:
 `Segment::parse` keeps reading *every* epoch ever shipped, answering the
 columns an older image does not declare with `None` (never a fabricated
-value), pinned by a committed fixture per epoch; a manifest from a past epoch
+value), pinned by a committed fixture per epoch (epochs 1, 2 and 3 as of
+epoch 4, which added the per-definition `cfg` column); a manifest from a past epoch
 is instead dropped, so `Store::open` yields the empty store and names the
 epoch it superseded (`Store::superseded`) — the recovery the rule prescribes
 is a re-survey, and a hard error there would take the re-survey down with
