@@ -317,6 +317,20 @@ plan).
   under `set -m` dies at once, and grid installs no signal handler of its
   own. Reproduced both ways against `grid serve`. Ctrl-C from a terminal
   abandons a long survey, and the store is crash-safe under it (C11).
+- **T-53 (P2, M) `nondeterministic` fires on a change the closure key cannot
+  see.** The verb sweep's green-on-red tree, replayed after the `unwatched`
+  rule: `Rect::area` is reached only through a declined method call, so the
+  test's closure key at head is unchanged; the test now runs (unwatched) and
+  fails, and the record step says `nondeterministic — same closure key, same
+  env`. The claim "the charted code did not change" is exactly what the
+  declined call hides. Suppress the warn when the plan selected the test
+  `unwatched`, or key the verdict on the trace's reach as well as the
+  closure. Heuristic today, so nothing gates on it.
+- **T-54 (P3, S) `grid trace ingest <json>` refuses a snapshot the store
+  never held at exit 1.** The refusal is right and names the snapshot; the
+  exit is the raw path's blanket `INTERNAL` because `rpc::trace_ingest`
+  returns a string. Type the error so bad input exits 2 like the coverage
+  path.
 
 ### Untested-live paths and platform
 

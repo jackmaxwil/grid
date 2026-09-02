@@ -225,11 +225,12 @@ impl Real {
     /// stderr: a run whose trace was lost is still a run, and its verdict is
     /// still a verdict — just an untraced one.
     fn ingest(&self, report: &str, test: &str, lcov: bool) -> Option<String> {
-        let callsign = crate::testplan::callsign_of(test);
+        // The runner's id goes in as is: the mapping spells it as a callsign
+        // itself, the same way for this loop and for `grid trace ingest`.
         let mapped = if lcov {
-            crate::coverage::trace_of_lcov(&self.root, report, &callsign)
+            crate::coverage::trace_of_lcov(&self.root, report, test)
         } else {
-            crate::coverage::trace_of_coverage_json(&self.root, report, &callsign)
+            crate::coverage::trace_of_coverage_json(&self.root, report, test)
         };
         let mapped = match mapped {
             Ok(mapped) => mapped,

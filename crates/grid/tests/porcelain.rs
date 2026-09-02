@@ -1243,7 +1243,7 @@ fn coverage_json_and_lcov_map_the_same_lines_to_the_same_observations() {
     std::fs::write(dir.path().join("cov.lcov"), lcov).expect("write");
     let out = grid(
         dir.path(),
-        &["trace", "ingest", "--lcov", "cov.lcov", "--test", "t"],
+        &["trace", "ingest", "--lcov", "cov.lcov", "--test", "a"],
     );
     assert_eq!(code(&out), 0, "stderr:\n{}", stderr(&out));
 
@@ -1256,7 +1256,7 @@ fn coverage_json_and_lcov_map_the_same_lines_to_the_same_observations() {
             "--coverage-json",
             "cov.json",
             "--test",
-            "t",
+            "a",
         ],
     );
     assert_eq!(code(&out), 0, "stderr:\n{}", stderr(&out));
@@ -1272,7 +1272,7 @@ fn coverage_json_and_lcov_map_the_same_lines_to_the_same_observations() {
     };
     // The ids differ by design — one names the format that produced it —
     // and everything the chart was asked about is identical.
-    let (lcov, cov) = (load("trace:lcov:t"), load("trace:cov:t"));
+    let (lcov, cov) = (load("trace:lcov:a"), load("trace:cov:a"));
     assert_eq!(
         lcov["trace"]["observations"], cov["trace"]["observations"],
         "the same executed lines are the same observations"
@@ -1314,7 +1314,7 @@ fn a_coverage_report_counts_what_the_chart_cannot_place() {
             "--coverage-json",
             "cov.json",
             "--test",
-            "t",
+            "a",
         ],
     );
     assert_eq!(code(&out), 0, "stderr:\n{}", stderr(&out));
@@ -1346,7 +1346,7 @@ fn a_malformed_coverage_report_is_bad_input_not_an_empty_trace() {
                 "--coverage-json",
                 "cov.json",
                 "--test",
-                "t",
+                "a",
             ],
         );
         assert_eq!(
@@ -1356,7 +1356,7 @@ fn a_malformed_coverage_report_is_bad_input_not_an_empty_trace() {
             stderr(&out)
         );
         assert!(
-            !retained_traces(dir.path()).contains_key("trace:cov:t"),
+            !retained_traces(dir.path()).contains_key("trace:cov:a"),
             "and retains nothing: {report}"
         );
     }
@@ -1379,7 +1379,7 @@ fn ingesting_the_same_coverage_report_twice_retains_one_trace() {
         "--coverage-json",
         "cov.json",
         "--test",
-        "t",
+        "a",
     ];
     assert_eq!(code(&grid(dir.path(), &args)), 0);
     let first = retained_traces(dir.path());
@@ -1827,7 +1827,7 @@ fn a_coverage_path_is_attributed_to_the_longest_charted_suffix() {
     std::fs::write(dir.path().join("cov.lcov"), lcov).expect("write");
     let out = grid(
         dir.path(),
-        &["trace", "ingest", "--lcov", "cov.lcov", "--test", "t"],
+        &["trace", "ingest", "--lcov", "cov.lcov", "--test", "a.x.f"],
     );
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let expected: Vec<serde_json::Value> = serde_json::from_str(&stdout(&grid(
@@ -1837,7 +1837,7 @@ fn a_coverage_path_is_attributed_to_the_longest_charted_suffix() {
     .expect("resolve --json");
     let retained = retained_traces(dir.path());
     let record: serde_json::Value =
-        serde_json::from_slice(retained.get("trace:lcov:t").expect("retained trace"))
+        serde_json::from_slice(retained.get("trace:lcov:a.x.f").expect("retained trace"))
             .expect("json");
     let callees: Vec<&serde_json::Value> = record["trace"]["observations"]
         .as_array()

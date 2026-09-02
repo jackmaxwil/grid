@@ -2073,15 +2073,13 @@ pub fn trace_ingest(
     root: &std::path::Path,
 ) -> Result<TraceIngestResult, String> {
     let epoch = epoch(root)?;
+    crate::coverage::refuse_unheld_snapshot(root, &params.trace)?;
     let ingested = grid_trace::ingest(epoch.segments(), &params.trace);
-    let store = trace_dir(root)
+    trace_dir(root)
         .and_then(grid_trace::Store::open)
+        .and_then(|store| store.put(&params.trace, &ingested))
         .map_err(|e| e.to_string())?;
-    store
-        .put(&params.trace, &ingested)
-        .map_err(|e| e.to_string())?;
-    #[allow(clippy::cast_possible_truncation)]
-    let observed_edges = ingested.edges.len() as u64;
+    let observed_edges = u64::try_from(ingested.edges.len()).unwrap_or(u64::MAX);
     Ok(TraceIngestResult {
         observed_edges,
         resolved: ingested.resolved,
