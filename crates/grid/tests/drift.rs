@@ -1332,3 +1332,42 @@ fn diff_head_on_a_dirty_tree_shows_the_edit() {
         stdout(&surveyed)
     );
 }
+
+/// Verb sweep B1, the documented hook path: `helper`'s signature moves and
+/// its only caller sits inside a `println!`. No proven suspect exists —
+/// right, a macro's tokens are its own grammar — so the honest report is
+/// exit 0 *plus* a closing `miss` that says one macro argument list went
+/// unread. Red before the fix with the miss record absent: `declined` was
+/// all zeros and the report was indistinguishable from a file with no
+/// references at all.
+#[test]
+fn a_caller_inside_a_macro_is_counted_as_unchecked_not_silently_absent() {
+    let dir = repo(
+        &[
+            ("Cargo.toml", "[package]\nname = \"probe\"\n"),
+            (
+                "src/main.rs",
+                "fn helper() -> i32 {\n    7\n}\nfn main() {\n    println!(\"{}\", helper());\n}\n",
+            ),
+        ],
+        &[(
+            "src/main.rs",
+            "fn helper(places: u32) -> i32 {\n    7\n}\nfn main() {\n    println!(\"{}\", helper());\n}\n",
+        )],
+    );
+    let out = grid(dir.path(), &["drift", "HEAD~1", "HEAD"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "nothing is proven, so nothing gates:\n{}",
+        stdout(&out)
+    );
+    let text = stdout(&out);
+    let miss = text
+        .lines()
+        .find(|l| l.starts_with("miss"))
+        .unwrap_or_else(|| panic!("a closing miss record naming the unread macro:\n{text}"));
+    assert!(miss.contains("macro 1"), "{miss}");
+    let json = grid(dir.path(), &["drift", "HEAD~1", "HEAD", "--json"]);
+    assert_eq!(report(&json)["unchecked"]["unresolved_macros"], 1);
+}

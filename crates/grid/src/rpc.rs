@@ -260,6 +260,7 @@ impl Chart {
             (survey, rev, dirty)
         });
         let survey = survey?;
+        let declined = crate::drift::Declined::of(&survey);
         // A damaged store is dropped here and nowhere else: the survey is
         // the recovery every read verb names, so it cannot refuse the store
         // it exists to rebuild. The publish itself is serialized by the
@@ -308,14 +309,6 @@ impl Chart {
                 .collect();
             let _unwritable = crate::history::append(&self.root, &edits);
         }
-        // The three add up to the survey's declined total by construction,
-        // which is the only place that identity can be guaranteed rather
-        // than asserted.
-        let declined = crate::drift::Declined {
-            external: survey.declined_external,
-            method: survey.declined_method,
-            internal: survey.declined_internal,
-        };
         Ok((
             Snapshot {
                 snapshot_id: SnapshotId(id.as_str().to_owned()),
@@ -332,6 +325,7 @@ impl Chart {
                     method: declined.method,
                     internal: declined.internal,
                     refused: Some(survey.declined_method_refused),
+                    macros: Some(declined.macros),
                 }),
             },
             Ran {

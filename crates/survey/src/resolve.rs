@@ -81,7 +81,7 @@ pub struct Resolved {
     /// References whose source definition resolved and whose *target* did
     /// not. Module-level references are not counted: they have no source
     /// definition, so they were never candidates for an edge. The sum of the
-    /// three splits below.
+    /// four populations below.
     pub declined: u32,
     /// Of [`Resolved::declined`]: a name that was never this tree's to hold —
     /// `std`/`core`/`alloc` or another crate in Rust, a top-level module the
@@ -100,6 +100,11 @@ pub struct Resolved {
     /// resolver could not bind — glob-supplied, ambiguous, an unresolved
     /// re-export. The population that is an actual hole in what grid claims.
     pub declined_internal: u32,
+    /// Of [`Resolved::declined`]: macro invocations inside definitions, each
+    /// counted once. A macro's tokens are never read, so this counts
+    /// invocations, not the names inside them — a hole of unstated size,
+    /// which is still a stated hole.
+    pub declined_macro: u32,
     /// The same counts per source definition, keyed by its datum — the
     /// per-definition fact segment epoch 5 stores. Every decline above is
     /// in exactly one row here, so the rows sum to the totals.
@@ -113,6 +118,9 @@ pub struct DefDeclined {
     pub method: u32,
     pub internal: u32,
     pub refused: u32,
+    /// Counted here, stored nowhere yet: segment epoch 5 has no column for
+    /// it (`docs/TODOS.md`), so the survey reports macros repo-wide only.
+    pub macros: u32,
 }
 
 /// Which population a declined reference belongs to.
@@ -129,6 +137,8 @@ pub(crate) enum Decline {
     Method,
     /// A name this tree could have held.
     Internal,
+    /// A macro invocation: tokens grid does not read.
+    Macro,
 }
 
 impl Resolved {
@@ -140,6 +150,7 @@ impl Resolved {
             Decline::External => (&mut self.declined_external, &mut row.external),
             Decline::Method => (&mut self.declined_method, &mut row.method),
             Decline::Internal => (&mut self.declined_internal, &mut row.internal),
+            Decline::Macro => (&mut self.declined_macro, &mut row.macros),
         };
         *slot = slot.saturating_add(1);
         *cell = cell.saturating_add(1);

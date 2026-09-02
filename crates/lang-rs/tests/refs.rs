@@ -129,10 +129,22 @@ fn a_method_call_on_an_expression_keeps_the_method_and_no_receiver() {
     );
 }
 
+/// Conservatism, verb sweep B1: a macro's tokens are not a place grid can
+/// bind names, so `g()` and `h()` are never references — and each
+/// invocation is recorded under its own kind, so the resolver can count
+/// what it did not read. Red before the fix with `r` empty: the omission
+/// was invisible, and `check --quick` passed a signature change whose only
+/// caller sat inside a `println!`.
 #[test]
-fn anything_inside_a_macro_invocation_produces_nothing() {
+fn a_macro_invocation_is_recorded_and_nothing_inside_it_is() {
     let r = refs("fn f() { println!(\"{}\", g()); vec![h()]; }");
-    assert!(r.is_empty());
+    assert_eq!(
+        r,
+        vec![
+            ("f".into(), RefKind::Macro, "println".into()),
+            ("f".into(), RefKind::Macro, "vec".into()),
+        ]
+    );
 }
 
 #[test]

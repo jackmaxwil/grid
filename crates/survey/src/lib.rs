@@ -120,6 +120,10 @@ pub struct Survey {
     /// Of [`Survey::declined_refs`]: names this tree could have held and the
     /// resolver could not bind. The population that is a hole.
     pub declined_internal: u64,
+    /// Of [`Survey::declined_refs`]: macro invocations inside definitions,
+    /// one each. The tokens are never read, so the size of what they name
+    /// is unknown; the number of places grid did not look is not.
+    pub declined_macro: u64,
     /// Definitions whose per-definition declined split (segment epoch 5,
     /// `u16` per column) saturated at `u16::MAX` — stated, never wrapped.
     /// The repo-wide counters above are exact regardless.
@@ -436,6 +440,7 @@ pub fn run_sources(
         declined_method: declined.method,
         declined_method_refused: declined.refused,
         declined_internal: declined.internal,
+        declined_macro: declined.macros,
         declined_saturated,
     })
 }
@@ -449,6 +454,7 @@ struct DeclinedTotals {
     method: u64,
     refused: u64,
     internal: u64,
+    macros: u64,
     per_def: HashMap<[u8; 32], resolve::DefDeclined>,
 }
 
@@ -461,17 +467,20 @@ impl DeclinedTotals {
             .refused
             .saturating_add(u64::from(r.declined_method_refused));
         self.internal = self.internal.saturating_add(u64::from(r.declined_internal));
+        self.macros = self.macros.saturating_add(u64::from(r.declined_macro));
         for (datum, row) in &r.per_def {
             let mine = self.per_def.entry(*datum).or_default();
             mine.external = mine.external.saturating_add(row.external);
             mine.method = mine.method.saturating_add(row.method);
             mine.internal = mine.internal.saturating_add(row.internal);
             mine.refused = mine.refused.saturating_add(row.refused);
+            mine.macros = mine.macros.saturating_add(row.macros);
         }
     }
 
     /// The rows as the segment stores them — `u16` per column, saturating —
-    /// and how many definitions saturated.
+    /// and how many definitions saturated. `macros` has no column at epoch
+    /// 5 and is not stored: the repo-wide counter is the whole claim.
     fn rows(&self) -> (HashMap<grid_chart::DatumId, grid_chart::Declined>, u64) {
         let narrow = |n: u32| u16::try_from(n).unwrap_or(u16::MAX);
         let mut saturated = 0u64;

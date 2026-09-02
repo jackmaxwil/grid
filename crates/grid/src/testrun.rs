@@ -887,6 +887,7 @@ mod tests {
                 unresolved_external: None,
                 unresolved_method: None,
                 unresolved_internal: None,
+                unresolved_macros: None,
                 budget_rejected: 0,
                 unattributed_entries: None,
                 weak_skipped: None,

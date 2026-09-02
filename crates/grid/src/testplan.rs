@@ -458,6 +458,7 @@ pub fn compute<B: AsRef<[u8]>>(inputs: &Inputs<'_, B>) -> TestPlan {
             unresolved_external: inputs.declined.map(|d| d.external),
             unresolved_method: inputs.declined.map(|d| d.method),
             unresolved_internal: inputs.declined.map(|d| d.internal),
+            unresolved_macros: inputs.declined.map(|d| d.macros),
             budget_rejected,
             unattributed_entries: None,
             weak_skipped: None,

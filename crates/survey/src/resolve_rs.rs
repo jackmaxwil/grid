@@ -27,6 +27,11 @@ pub(crate) fn resolve(
         let Some(src) = index.datum_of(module, &r.from) else {
             continue;
         };
+        if r.kind == RefKind::Macro {
+            // The tokens were never read: nothing to bind, one hole to count.
+            out.decline(src, Decline::Macro);
+            continue;
+        }
         let (target, grade) = if r.kind == RefKind::MethodCall {
             match method_call(index, &bindings, module, r) {
                 Ok(bound) => bound,

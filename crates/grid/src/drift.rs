@@ -253,15 +253,29 @@ pub struct Declined {
     pub method: u64,
     /// Names this tree could have held and the resolver could not bind.
     pub internal: u64,
+    /// Macro invocations inside definitions, whose argument lists were
+    /// never read — a caller inside one is a dependent drift cannot see.
+    pub macros: u64,
 }
 
 impl Declined {
+    /// The survey's four populations, as it counted them.
+    pub(crate) const fn of(survey: &grid_survey::Survey) -> Self {
+        Self {
+            external: survey.declined_external,
+            method: survey.declined_method,
+            internal: survey.declined_internal,
+            macros: survey.declined_macro,
+        }
+    }
+
     /// Every declined reference, however it was declined.
     #[must_use]
     pub fn total(self) -> u64 {
         self.external
             .saturating_add(self.method)
             .saturating_add(self.internal)
+            .saturating_add(self.macros)
     }
 }
 
@@ -441,6 +455,7 @@ pub(crate) fn compute_on(
             unresolved_external: declined.map(|d| d.external),
             unresolved_method: declined.map(|d| d.method),
             unresolved_internal: declined.map(|d| d.internal),
+            unresolved_macros: declined.map(|d| d.macros),
             budget_rejected: u64::from(budget_rejected),
             unattributed_entries: None,
             weak_skipped: None,

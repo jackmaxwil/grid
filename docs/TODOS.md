@@ -470,6 +470,31 @@ plan).
 - **R-4** Do `.ts` source and Bun/esbuild bundle output agree under a
   type-erased datum (T-40's gate)?
 
+## From the 2026-09-02 verb sweep
+
+Fixed on `fix/honesty`: B1 (a reference inside a macro argument was dropped
+*and* uncounted), B2/B3/B6 (a file that does not parse, or is not UTF-8, was
+charted as a file with nothing in it), B7 (per-file quadratic line lookup).
+What those fixes deliberately left:
+
+- **T-50 (P1, S)** `macro` has no per-definition column. Segment epoch 5
+  stores four `u16` per definition (external, method, internal, refused);
+  the `macro` population is counted repo-wide and per definition in memory
+  (`resolve::DefDeclined::macros`) but not stored, so `grid uses` and
+  `scope` cannot say "this definition has 3 unread argument lists". A fifth
+  column is a declared epoch bump with an epoch-5 fixture pinned first —
+  more than the sweep's finding was worth on its own; do it with the next
+  segment change.
+- **T-51 (P2, S)** Python decorator arguments — `@parameterized.expand([helper()])`
+  — are walked in the enclosing scope, which for a module-level definition
+  is module level, and module-level references are counted nowhere by the
+  standing rule (they have no source definition). That is Python's own
+  evaluation order, not a macro-shaped hole, but the coupling to `helper`
+  is real and unreported. Attributing decorator arguments to the decorated
+  definition is a one-line change in `lang-py/src/refs.rs::decorators` and
+  a claim (`deco` "calls" `helper`) the language does not quite make;
+  decide, and pin it either way.
+
 ## From the 2026-09-01 review
 
 Findings of the high-effort review of `claude/grid-agent-loop` that were
