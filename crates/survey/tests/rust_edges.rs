@@ -41,6 +41,69 @@ fn survey(root: &Path) -> grid_survey::Survey {
     run(root, &mut Cache::new()).expect("survey")
 }
 
+/// Every edge in a survey as `(src callsign, dst callsign)`, read back off
+/// the built segment — the chart a consumer sees, not the resolver's list.
+fn edges(s: &grid_survey::Survey) -> Vec<(String, String)> {
+    let seg = grid_chart::Segment::parse(s.image.as_slice()).expect("parse");
+    let mut out = Vec::new();
+    for i in 0..seg.def_count() {
+        let src = grid_chart::Ordinal(i);
+        for n in seg.out_edges(src) {
+            out.push((
+                seg.callsign(src).unwrap_or("?").to_owned(),
+                seg.callsign(n.other).unwrap_or("?").to_owned(),
+            ));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Conservatism, T-18 (seen red first): `self::x()` inside an inline module
+/// that shadows a top-level `x` yields the edge to the module's `x` and
+/// never the file's. Red today with the wrong edge `app.tests.t -> app.x` —
+/// the mutation is the fixture itself.
+#[test]
+fn self_in_an_inline_module_never_reaches_the_files_shadowed_item() {
+    let dir = repo(&[(
+        "crates/app/src/lib.rs",
+        "pub fn x() -> u32 { 1 }\n\
+         mod tests {\n    fn x() -> u32 { 2 }\n    fn t() -> u32 { self::x() }\n}\n",
+    )]);
+    let e = edges(&survey(dir.path()));
+    assert_eq!(e, vec![("app.tests.t".into(), "app.tests.x".into())]);
+}
+
+/// Ground truth, T-18: `use super::x;` and `super::x()` inside an inline
+/// module both reach the file's `x`; a nested module's `super::super::x`
+/// does too; and a `super` chain past the file's module climbs the file's
+/// module path as before.
+#[test]
+fn super_in_an_inline_module_reaches_the_files_item() {
+    let dir = repo(&[
+        (
+            "crates/app/src/lib.rs",
+            "pub mod foo;\npub fn top() -> u32 { 0 }\n",
+        ),
+        (
+            "crates/app/src/foo.rs",
+            "pub fn x() -> u32 { 1 }\n\
+             mod tests {\n    use super::x;\n    fn t() -> u32 { x() }\n    fn u() -> u32 { super::x() }\n}\n\
+             mod a {\n    mod b {\n        use super::super::x;\n        fn v() -> u32 { x() }\n        fn w() -> u32 { super::super::super::top() }\n    }\n}\n",
+        ),
+    ]);
+    let e = edges(&survey(dir.path()));
+    assert_eq!(
+        e,
+        vec![
+            ("app.foo.a.b.v".into(), "app.foo.x".into()),
+            ("app.foo.a.b.w".into(), "app.top".into()),
+            ("app.foo.tests.t".into(), "app.foo.x".into()),
+            ("app.foo.tests.u".into(), "app.foo.x".into()),
+        ]
+    );
+}
+
 #[test]
 fn same_module_and_use_bound_calls_resolve() {
     let dir = repo(&[

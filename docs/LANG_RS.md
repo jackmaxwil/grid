@@ -208,3 +208,14 @@ expansion, a `modeled` tier) is a later wave with its own evidence story.
   declaring file's module plus the mod name; a `#[path]` inside an inline
   mod (whose path is relative to the mod's own directory) still falls back
   to the directory-derived module path.
+- **`self::` and `super::` inside an inline module anchored against the
+  file, not the module — one wrong proven edge.** The resolver holds one
+  anchor per file, its module path, and the extractor recorded paths as
+  written; so `self::x()` inside `mod tests` named the *file's* `x` (a C14
+  violation whenever the module shadowed the name) and `use super::x;` in
+  the same module climbed to the file's parent and declined `internal`.
+  Fixed where the nesting is known: the extractor keeps the inline-module
+  stack and rewrites `self::r` to `self::{mods}::r` and `super^k::r` to
+  `self::{mods[..depth−k]}::r`, leaving any `super` past the nesting for
+  the resolver's own climb (T-18). On this repo the fix bound ~110 test-
+  module references that `use super::x` had left declined; on yi, 4.

@@ -71,7 +71,46 @@ struct Scan {
     /// Whether the innermost enclosing body is an impl or trait body — that
     /// is, whether `self` means anything here.
     in_receiver: Vec<bool>,
+    /// The inline modules enclosing the current node, outermost first. What
+    /// `self::` and `super::` anchor against: rustc resolves them from the
+    /// *module* a path sits in, and an inline module is one the file's
+    /// module path — the only anchor the resolver holds — does not spell.
+    mods: Vec<String>,
     out: FileRefs,
+}
+
+/// Re-anchor a `self::`/`super::` path written inside an inline module so a
+/// resolver anchoring against the file's module lands where rustc does:
+/// `self::r` is `self::{mods}::r`; `super^k::r` with `k ≤ depth` is
+/// `self::{mods[..depth−k]}::r`; a `super` chain deeper than the nesting
+/// climbs the file's own module by the remainder, which the resolver already
+/// handles. `crate::` and every bare path are untouched, so a file with no
+/// inline module extracts exactly as it did before.
+fn anchor_in_mod(mods: &[String], path: Vec<String>) -> Vec<String> {
+    if mods.is_empty() {
+        return path;
+    }
+    let supers = path.iter().take_while(|s| *s == "super").count();
+    let rest = |from: usize| path.get(from..).unwrap_or_default().iter().cloned();
+    match path.first().map(String::as_str) {
+        Some("self") => std::iter::once("self".to_owned())
+            .chain(mods.iter().cloned())
+            .chain(rest(1))
+            .collect(),
+        Some("super") if supers <= mods.len() => std::iter::once("self".to_owned())
+            .chain(
+                mods.get(..mods.len().saturating_sub(supers))
+                    .unwrap_or_default()
+                    .iter()
+                    .cloned(),
+            )
+            .chain(rest(supers))
+            .collect(),
+        Some("super") => std::iter::repeat_n("super".to_owned(), supers.saturating_sub(mods.len()))
+            .chain(rest(supers))
+            .collect(),
+        _ => path,
+    }
 }
 
 impl Scan {
@@ -85,6 +124,12 @@ impl Scan {
     }
 
     fn push(&mut self, kind: RefKind, path: Vec<String>) {
+        // A method path's head is a receiver, not an anchor; every other
+        // path is one rustc reads from the enclosing module.
+        let path = match kind {
+            RefKind::MethodCall | RefKind::SelfCall => path,
+            _ => anchor_in_mod(&self.mods, path),
+        };
         self.out.refs.push(Reference {
             from: self.scope.clone(),
             kind,
@@ -121,7 +166,10 @@ impl Scan {
         self.out.refs.push(Reference {
             from: owner.to_owned(),
             kind: RefKind::Decorator,
-            path: path.segments.iter().map(|s| s.ident.to_string()).collect(),
+            path: anchor_in_mod(
+                &self.mods,
+                path.segments.iter().map(|s| s.ident.to_string()).collect(),
+            ),
         });
     }
 }
@@ -196,7 +244,10 @@ impl<'ast> Visit<'ast> for Scan {
                 self.out.refs.push(Reference {
                     from: join(&self.scope, &ty),
                     kind: RefKind::Base,
-                    path: path.segments.iter().map(|s| s.ident.to_string()).collect(),
+                    path: anchor_in_mod(
+                        &self.mods,
+                        path.segments.iter().map(|s| s.ident.to_string()).collect(),
+                    ),
                 });
             }
         }
@@ -230,11 +281,13 @@ impl<'ast> Visit<'ast> for Scan {
             }
         }
         if let Some((_, items)) = &node.content {
+            self.mods.push(node.ident.to_string());
             self.nested(&node.ident.to_string(), false, |s| {
                 for item in items {
                     s.visit_item(item);
                 }
             });
+            self.mods.pop();
             return;
         }
         // `#[path = "..."] mod x;` relocates the module's file. Top-level
@@ -269,6 +322,14 @@ impl<'ast> Visit<'ast> for Scan {
             &self.scope,
             &mut self.out.imports,
         );
+        // A `use self::`/`use super::` inside an inline module anchors
+        // against that module, the same as a path does.
+        if !self.mods.is_empty() {
+            for import in self.out.imports.iter_mut().skip(before) {
+                let segs = import.target.split('.').map(str::to_owned).collect();
+                import.target = anchor_in_mod(&self.mods, segs).join(".");
+            }
+        }
         // Any visibility beyond inherited makes the binding reachable from
         // other files — the raw material of alias resolution.
         if !matches!(node.vis, syn::Visibility::Inherited) {
