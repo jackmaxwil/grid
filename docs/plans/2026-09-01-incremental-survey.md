@@ -654,7 +654,8 @@ incomplete", and it is the evidence for C47.
   path discovery does not hold, a whole-tree input, a burst, or a held
   snapshot that is not live each refuse the incremental path and re-
   survey in full, counted and named* → `incremental_sequence.rs
-  session.rs`. C48: *the invalidation set is a pure function of the
+  session.rs`. The next free claim number: *the invalidation set is a pure
+function of the
   previous per-file read sets and owned names and the touched files'
   new facts; a file is re-resolved iff a name it read changed its answer,
   hits and misses alike, and a name that gains or loses an owner, flips
