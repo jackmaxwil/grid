@@ -489,6 +489,11 @@ fn survey(args: &[&str], json: bool) -> u8 {
                      re-surveyed from cold, nothing was reinterpreted"
                 ));
             }
+            if let Some(what) = ran.dropped {
+                hint(&format!(
+                    "grid: dropped a damaged chart — {what} — and surveyed from cold"
+                ));
+            }
             if json {
                 return emit_json(&snapshot);
             }
@@ -1026,7 +1031,7 @@ fn resolve(args: &[&str], json: bool) -> u8 {
         return match rpc::defs_in_file(root(), name) {
             Err(e) => {
                 hint(&format!("grid: {e}"));
-                exit::INTERNAL
+                refused(&e)
             }
             Ok(defs) if defs.is_empty() => {
                 hint(&format!(
@@ -1064,7 +1069,7 @@ fn resolve(args: &[&str], json: bool) -> u8 {
     match rpc::resolve(&params, root()) {
         Err(e) => {
             hint(&format!("grid: {e}"));
-            exit::INTERNAL
+            refused(&e)
         }
         Ok(defs) => {
             if json {
@@ -1082,6 +1087,20 @@ fn resolve(args: &[&str], json: bool) -> u8 {
             print!("{}", porcelain::refs(&defs));
             exit::OK
         }
+    }
+}
+
+/// The exit code a chart refusal leaves with. A refusal a survey would fix
+/// — no snapshot, a damaged chart, a rev never surveyed — is bad input
+/// (`2`), the same code every verb gives it; a store that cannot be read
+/// for any other reason is internal (`1`).
+const fn refused(e: &chart_provider::Error) -> u8 {
+    use chart_provider::Error as E;
+    match e {
+        E::NoSnapshot(_) | E::NoSnapshotForRev(_) | E::NotLive(_) | E::Plan(_) | E::Config(_) => {
+            exit::BAD_INPUT
+        }
+        E::Store(_) | E::Survey(_) => exit::INTERNAL,
     }
 }
 

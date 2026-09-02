@@ -92,7 +92,7 @@ pub fn gate_check_on(
 /// What one survey *run* did, as opposed to what the snapshot *is*. Neither
 /// field is a wire field: they describe this execution, which is why they are
 /// returned beside the snapshot rather than inside it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ran {
     /// Files whose facts came from the cache rather than the parser.
     pub reread: u64,
@@ -101,6 +101,8 @@ pub struct Ran {
     /// how the caller gets to say so instead of the re-survey looking
     /// unexplained.
     pub superseded: Option<u32>,
+    /// What a damaged store said before this run dropped it and surveyed cold.
+    pub dropped: Option<String>,
     /// References the resolver declined to bind, so no edge exists for them.
     /// Every consumer that reads the edge set as "everything that reaches
     /// this" is wrong by at most this much, and can now say so — and, since
@@ -258,10 +260,13 @@ impl Chart {
             (survey, rev, dirty)
         });
         let survey = survey?;
-        // The daemon is the single writer (D6); `publish` takes `&mut self`,
-        // which is that rule in the type system.
-        let mut store = grid_chart_io::Store::open(chart_provider::store_dir(&self.root))
-            .map_err(chart_provider::Error::Store)?;
+        // A damaged store is dropped here and nowhere else: the survey is
+        // the recovery every read verb names, so it cannot refuse the store
+        // it exists to rebuild. The publish itself is serialized by the
+        // store's lock (D6), across the CLI and the daemon alike.
+        let (mut store, dropped) =
+            grid_chart_io::Store::open_or_reset(chart_provider::store_dir(&self.root))
+                .map_err(chart_provider::Error::Store)?;
         let superseded = store.superseded();
         let prev = store.load();
         let hash = dirty.map(|h| *h.as_bytes());
@@ -332,6 +337,7 @@ impl Chart {
             Ran {
                 reread: survey.reread,
                 superseded,
+                dropped,
                 declined,
             },
         ))

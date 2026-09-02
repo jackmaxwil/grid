@@ -89,6 +89,22 @@ impl std::fmt::Display for StoreError {
     }
 }
 
+impl StoreError {
+    /// Are the bytes on disk contradicting the manifest — a segment that no
+    /// longer hashes to its name, a manifest that does not parse, a named
+    /// segment that is gone? Nothing the store can do repairs that; the
+    /// recovery is to drop the chart and survey cold, which is what
+    /// [`Store::open_or_reset`] does and what a read verb must name.
+    #[must_use]
+    pub fn is_damage(&self) -> bool {
+        match self {
+            Self::ChecksumMismatch { .. } | Self::Chart(_) => true,
+            Self::Io(e) => e.kind() == std::io::ErrorKind::NotFound,
+            Self::UnknownSnapshot(_) => false,
+        }
+    }
+}
+
 impl std::error::Error for StoreError {}
 
 impl From<std::io::Error> for StoreError {
@@ -198,6 +214,30 @@ impl Store {
             epoch: ArcSwap::from(Arc::new(epoch)),
             superseded,
         })
+    }
+
+    /// Open a store, dropping it first if it is damaged.
+    ///
+    /// The survey's way in. A read verb refuses a damaged store and names
+    /// this as the recovery; the survey *is* the recovery, so it removes the
+    /// chart — every file in it is rebuilt by the survey that follows — and
+    /// opens the empty store, handing back what it dropped so the caller can
+    /// say so rather than let a cold survey look unexplained. Any other
+    /// failure to open is returned untouched: a store that cannot be read
+    /// for a reason a re-survey would not fix is not one to delete.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store cannot be opened for a reason other than
+    /// damage, or cannot be removed and reopened.
+    pub fn open_or_reset(dir: impl AsRef<Path>) -> Result<(Self, Option<String>), StoreError> {
+        let dir = dir.as_ref();
+        match Self::open(dir) {
+            Err(e) if e.is_damage() => {
+                fs::remove_dir_all(dir)?;
+                Ok((Self::open(dir)?, Some(e.to_string())))
+            }
+            other => other.map(|store| (store, None)),
+        }
     }
 
     /// The format epoch of a manifest this store refused to load, if it

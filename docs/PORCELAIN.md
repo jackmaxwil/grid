@@ -386,7 +386,11 @@ and a superseded store — which opens empty, and so looks exactly like a store
 nobody surveyed — says which format epoch it superseded before the same
 command. A refusal a survey does *not* fix (a rev git cannot name, a snapshot
 id that names content the store never held) carries no such line: a hint that
-would not work is worse than none.
+would not work is worse than none. A *damaged* chart — a segment that no
+longer hashes to its name, a manifest that does not parse — is a refusal a
+survey fixes: exit `2`, the same hint, and the refusal says the chart is
+damaged; `grid survey` then drops the chart, surveys cold, and says on stderr
+what it dropped, rather than refusing the thing it exists to rebuild.
 
 ## Versioning
 
