@@ -302,7 +302,10 @@ on stderr, and nothing at all on stdout, because a document with a heading, no
 gates and a footer is the same shape as a clean check and a reviewer skims
 shape. `--format md` and `--json` are two output forms and asking for both is
 bad input; an unknown format word is bad input rather than a silent fall back
-to records. `--quick`'s repeat filter is porcelain's alone: a review comment
+to records, and so is `--format md` beside `--compile` with no `--plan`,
+where the compile record's own report is the whole answer and has no
+document form. (`--quick` in that position is hinted rather than refused: it
+filters an output form instead of choosing one.) `--quick`'s repeat filter is porcelain's alone: a review comment
 that omitted a count because a hook had already seen it would be a comment
 about a different check.
 

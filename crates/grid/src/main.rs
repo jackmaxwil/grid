@@ -1784,17 +1784,14 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
             }
         }
     }
-    if markdown && json {
-        hint(&format!(
-            "grid: --format md and --json are two output forms; pick one\n{CHECK_USAGE}"
-        ));
-        return exit::BAD_INPUT;
-    }
-    if trace.is_some() && plan.is_none() {
-        hint(&format!(
-            "grid: --trace names the run a plan's coverage is read from and needs --plan\n{CHECK_USAGE}"
-        ));
-        return exit::BAD_INPUT;
+    if let Err(code) = check_conflicts(
+        markdown,
+        json,
+        trace.as_ref(),
+        compile.as_deref(),
+        plan.as_ref(),
+    ) {
+        return code;
     }
     // `--compile` wraps the compile and writes the record first; with a
     // plan the check then reads it, without one the record's own report is
@@ -1824,6 +1821,40 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
         Form::Records
     };
     check_run(&params, &form, why, quick)
+}
+
+/// The flag combinations `grid check` will not answer at all, refused before
+/// any work is done. `Err` is the exit code to leave with.
+///
+/// Each is a *form* the caller asked for and grid cannot produce, which is
+/// `is_markdown`'s rule: bad input, never a silent fall back to records. A
+/// flag that only filters an output form — `--quick` beside `--compile` with
+/// no `--plan` — is hinted at its site instead, because ignoring it still
+/// leaves the caller holding what they asked for.
+fn check_conflicts(
+    markdown: bool,
+    json: bool,
+    trace: Option<&grid_wire::TraceId>,
+    compile: Option<&[String]>,
+    plan: Option<&grid_wire::PlanId>,
+) -> Result<(), u8> {
+    let refuse = |why: &str| {
+        hint(&format!("grid: {why}\n{CHECK_USAGE}"));
+        Err(exit::BAD_INPUT)
+    };
+    if markdown && json {
+        return refuse("--format md and --json are two output forms; pick one");
+    }
+    if trace.is_some() && plan.is_none() {
+        return refuse("--trace names the run a plan's coverage is read from and needs --plan");
+    }
+    if markdown && compile.is_some() && plan.is_none() {
+        return refuse(
+            "--compile with no --plan answers with the compile report alone, and it has no \
+             `md` form — name a plan, or drop --format md",
+        );
+    }
+    Ok(())
 }
 
 /// Ask the composite and print it, or refuse whole with the section's own

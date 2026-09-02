@@ -1116,3 +1116,40 @@ fn format_md_carries_every_warn_the_records_carry() {
         "{doc}"
     );
 }
+
+/// T-11, conservatism: a format word grid will not honour is bad input.
+///
+/// `--compile` with no `--plan` short-circuits into the compile record's own
+/// report, which has no document form — so `--format md` in that position was
+/// parsed and dropped, and the caller who asked for a pull-request comment
+/// got padded porcelain columns to paste into one. That is the same sin
+/// `is_markdown` refuses on purpose for an unknown format word, and the same
+/// answer applies: exit 2, before the compile runs, rather than a silent fall
+/// back to records.
+///
+/// `--quick` in the same position keeps its hint. It filters an output form
+/// rather than choosing one, so ignoring it still hands the caller the thing
+/// they asked for; ignoring `--format md` does not.
+#[test]
+fn a_format_word_the_compile_report_cannot_honour_is_bad_input() {
+    let dir = loaded_repo();
+    let out = grid(dir.path(), &["check", "--compile", "--format", "md"]);
+    assert_eq!(
+        code(&out),
+        2,
+        "a format grid will not honour is refused, not dropped:\n{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert_eq!(
+        stdout(&out),
+        "",
+        "and nothing is printed in the form that was not asked for: {:?}",
+        stdout(&out)
+    );
+    assert!(
+        stderr(&out).contains("--compile") && stderr(&out).contains("--plan"),
+        "the refusal names both halves of the combination: {}",
+        stderr(&out)
+    );
+}
