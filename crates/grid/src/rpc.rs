@@ -83,8 +83,10 @@ pub struct Ran {
     pub superseded: Option<u32>,
     /// References the resolver declined to bind, so no edge exists for them.
     /// Every consumer that reads the edge set as "everything that reaches
-    /// this" is wrong by at most this much, and can now say so.
-    pub declined_refs: u64,
+    /// this" is wrong by at most this much, and can now say so — and, since
+    /// the three populations mean opposite things for an analysis, by how
+    /// much of each.
+    pub declined: crate::drift::Declined,
 }
 
 /// The repo's segment store, plus the survey cache that lives beside it.
@@ -204,6 +206,14 @@ impl Chart {
                 .collect();
             let _unwritable = crate::history::append(&self.root, &edits);
         }
+        // The three add up to the survey's declined total by construction,
+        // which is the only place that identity can be guaranteed rather
+        // than asserted.
+        let declined = crate::drift::Declined {
+            external: survey.declined_external,
+            method: survey.declined_method,
+            internal: survey.declined_internal,
+        };
         Ok((
             Snapshot {
                 snapshot_id: SnapshotId(id.as_str().to_owned()),
@@ -215,11 +225,16 @@ impl Chart {
                     edges: survey.edges,
                     langs: Some(survey.langs),
                 },
+                declined: Some(grid_wire::SnapshotDeclined {
+                    external: declined.external,
+                    method: declined.method,
+                    internal: declined.internal,
+                }),
             },
             Ran {
                 reread: survey.reread,
                 superseded,
-                declined_refs: survey.declined_refs,
+                declined,
             },
         ))
     }
@@ -252,7 +267,7 @@ pub fn drift(
                 git_rev: at,
                 worktree: None,
             })?;
-            Some(ran.declined_refs)
+            Some(ran.declined)
         }
         // Nobody re-surveyed head in this run, so nobody can say what its
         // survey declined. Unknown, not zero.
@@ -270,7 +285,7 @@ pub fn drift(
                 .unwrap_or(crate::drift::Query::new(&params.base, &params.head).floor),
             plan: params.plan.as_ref(),
             covenants: &covenants,
-            declined_refs: declined,
+            declined,
             ..crate::drift::Query::new(&params.base, &params.head)
         },
     )?;
@@ -682,6 +697,9 @@ pub fn snapshot_current(
         created_at: String::new(),
         worktree_diff_hash: None,
         stats: chart.stats(),
+        // Published, not re-surveyed here: nobody in this call can say what
+        // its survey declined, and unknown is not zero.
+        declined: None,
     }))
 }
 

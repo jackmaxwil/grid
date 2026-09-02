@@ -13,7 +13,7 @@ use grid_wire::{
 };
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "2.0.0";
+pub const VERSION: &str = "2.1.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -265,6 +265,28 @@ pub fn snapshot(s: &grid_wire::Snapshot, run: Option<(u64, std::time::Duration)>
         None => format!("defs {}  edges {}", s.stats.defs, s.stats.edges),
     };
     record(&mut out, "snapshot", &[&id, &stats]);
+    // A survey that says how much it charted without saying how much it
+    // declined is the same dishonest silence `grid drift` closes with a
+    // `miss`: same tag, same meaning, one record.
+    if let Some(d) = &s.declined {
+        let total = d
+            .external
+            .saturating_add(d.method)
+            .saturating_add(d.internal);
+        if total > 0 {
+            record(
+                &mut out,
+                "miss",
+                &[
+                    &total.to_string(),
+                    &format!(
+                        "references declined (external {}, method {}, internal {})",
+                        d.external, d.method, d.internal
+                    ),
+                ],
+            );
+        }
+    }
     out
 }
 
@@ -454,7 +476,24 @@ fn drift_unchecked(unchecked: &grid_wire::DriftUnchecked) -> String {
         Some(n) => record(
             &mut out,
             "miss",
-            &[&n.to_string(), "unresolved references unchecked"],
+            &[
+                &n.to_string(),
+                &match (
+                    unchecked.unresolved_external,
+                    unchecked.unresolved_method,
+                    unchecked.unresolved_internal,
+                ) {
+                    // The three populations mean opposite things for the
+                    // claim drift makes, so a bare total under-reports what
+                    // the reader needs to weigh.
+                    (Some(external), Some(method), Some(internal)) => {
+                        let split =
+                            format!("external {external}, method {method}, internal {internal}");
+                        format!("unresolved references unchecked ({split})")
+                    }
+                    _ => "unresolved references unchecked".to_owned(),
+                },
+            ],
         ),
         None => record(
             &mut out,

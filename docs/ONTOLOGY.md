@@ -43,6 +43,10 @@ rows are `| \`token\` | one answer, at most three lines when printed |`.
 | `modeled` | established by a bridge (registry, schema, route unification), not by the language. |
 | `heuristic` | name or shape match. Never blocks a gate by itself. |
 | `stale-trace` | why an observed edge was demoted to `heuristic`: an endpoint of the trace is not in the chart being asked about, so the observation describes code that no longer exists there. The retained trace is never rewritten — decay is a property of the question. |
+| `declined` | a reference the resolver would not bind to a definition, so no edge exists for it. Reported as a count, never as an absence of coupling, and split three ways because the three mean opposite things for any claim about this repo. |
+| `external` | a declined reference whose name was never this tree's to hold: `std`/`core`/`alloc` or another crate in Rust, a top-level module the tree does not root in Python. Harmless to intra-repo soundness. |
+| `method` | a declined reference whose callee sits behind a receiver with no type — `x.m(...)`. Types are `modeled` and a survey emits none, so a method call is counted and never guessed. On a Rust tree this is the largest population. |
+| `internal` | a declined reference to a name this tree could have held and the resolver could not bind: supplied by a glob import, an ambiguous callsign, an unresolved re-export. The population that is an actual hole in what `grid drift` claims. |
 
 ## Verdicts and records
 

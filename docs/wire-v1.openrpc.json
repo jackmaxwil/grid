@@ -14,7 +14,7 @@
   },
   "x-porcelain": {
     "doc": "packages/grid/docs/PORCELAIN.md",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "description": "Normative grammar for human-facing stdout records. --json emits wire results verbatim; the porcelain version is reported by grid.version."
   },
   "methods": [
@@ -27,7 +27,7 @@
         {
           "name": "current versions",
           "params": [],
-          "result": { "name": "version", "value": { "wire": "1.0.0", "engine": "grid 0.1.0", "porcelain": "2.0.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
+          "result": { "name": "version", "value": { "wire": "1.0.0", "engine": "grid 0.1.0", "porcelain": "2.1.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
         }
       ],
       "result": {
@@ -662,6 +662,17 @@
               "langs": { "type": "array", "items": { "$ref": "#/components/schemas/Lang" } }
             },
             "additionalProperties": false
+          },
+          "declined": {
+            "type": "object",
+            "description": "What the survey declined to bind, split by why. Absent from a snapshot nobody re-surveyed in this run, so an unknown count is never reported as zero. The three add up to the survey's declined total.",
+            "required": ["external", "method", "internal"],
+            "properties": {
+              "external": { "type": "integer", "minimum": 0, "description": "Names that were never this tree's to hold — std/core/alloc or another crate in Rust, a top-level module the tree does not root in Python." },
+              "method": { "type": "integer", "minimum": 0, "description": "Calls through a receiver whose type would have to be known. Counted, never resolved." },
+              "internal": { "type": "integer", "minimum": 0, "description": "Names this tree could have held and the resolver could not bind: glob-supplied, ambiguous, an unresolved re-export. The hole." }
+            },
+            "additionalProperties": false
           }
         },
         "additionalProperties": false
@@ -1254,6 +1265,9 @@
         "required": ["budget_rejected"],
         "properties": {
           "unresolved_refs": { "type": "integer", "minimum": 0, "description": "References the head survey declined to bind, so no edge exists for them and no dependent could be found through them. Absent means head was a published snapshot nobody re-surveyed in this run, so the count is unknown — never reported as zero." },
+          "unresolved_external": { "type": "integer", "minimum": 0, "description": "Of unresolved_refs: names that were never this tree's to hold — std/core/alloc or another crate in Rust, a top-level module the tree does not root in Python. They cost a claim about this repo nothing. Absent whenever unresolved_refs is." },
+          "unresolved_method": { "type": "integer", "minimum": 0, "description": "Of unresolved_refs: calls through a receiver whose type would have to be known. Never resolved and never guessed, because types are modeled and a survey emits none. Absent whenever unresolved_refs is." },
+          "unresolved_internal": { "type": "integer", "minimum": 0, "description": "Of unresolved_refs: names this tree could have held and the resolver could not bind — glob-supplied, ambiguous, an unresolved re-export. The population that is an actual hole in what drift claims. Absent whenever unresolved_refs is." },
           "budget_rejected": { "type": "integer", "minimum": 0, "description": "Definitions whose inbound walk ran past its budget. The walk is rejected whole, never truncated: a truncated walk is indistinguishable from a smaller one." },
           "unattributed_entries": { "type": "integer", "minimum": 0, "description": "Recorded verdicts no retained trace claims, so no test owns them and no test-staleness check covered them. Present when the report was asked for tests." },
           "weak_skipped": { "type": "integer", "minimum": 0, "description": "Weak-test checks declined because their coverage came from a decayed trace. A heuristic built on a demoted heuristic is noise, so grid declines it and says how often." }

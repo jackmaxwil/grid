@@ -56,6 +56,10 @@ pub struct DefIndex {
     /// `grid_chart` may mean `grid_chart.build.build` or an external path,
     /// and only the index as a whole can tell.
     aliases: HashMap<String, (String, String)>,
+    /// First segment of every module a definition was filed under: the names
+    /// this tree's own callsigns are rooted in. What makes "outside the tree"
+    /// decidable without reading a lockfile or a `site-packages`.
+    roots: std::collections::HashSet<String>,
 }
 
 impl DefIndex {
@@ -68,6 +72,9 @@ impl DefIndex {
         path: &str,
         source: &str,
     ) {
+        if let Some(root) = module.split('.').next() {
+            self.roots.insert(root.to_owned());
+        }
         for def in defs {
             let absolute = format!("{module}.{}", def.callsign);
             let symbol = Symbol {
@@ -113,6 +120,16 @@ impl DefIndex {
     ///
     /// The depth cap bounds alias cycles (`pub use` loops do not compile,
     /// but the index must not trust that) — past it, refuse.
+    /// Is `name` a root this tree's own callsigns hang under?
+    ///
+    /// The discriminator between a name grid could have charted and did not
+    /// (a hole) and a name from outside the tree entirely (harmless to what
+    /// grid claims about this repo).
+    #[must_use]
+    pub fn is_root(&self, name: &str) -> bool {
+        self.roots.contains(name)
+    }
+
     #[must_use]
     pub fn lookup_absolute(&self, absolute: &str) -> Option<&Symbol> {
         let mut name = absolute.to_owned();

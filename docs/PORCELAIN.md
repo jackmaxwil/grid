@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.0.0
+version: 2.1.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -13,6 +13,7 @@ document.
 | tag | columns |
 |---|---|
 | `snapshot` | id, stats (`defs N  edges N  reread N  <duration>`) |
+| `miss` (survey) | count, `references declined (external N, method N, internal N)` — the one record `grid survey` closes with when the resolver declined anything |
 | `def` | glyph, callsign, hash transition (`old→new` or new hash), `sig` when the interface identity also moved (absent when it held, and absent when a pre-epoch-3 snapshot means nobody can say) |
 | `ref` | callsign, datum prefix, `file:line` when the snapshot carries locations (`grid resolve` — a definition that exists, not one that changed) |
 | `orphan` | callsign, datum prefix, `file:line` — a definition with no *proven* caller (`grid orphans`); not the same as dead |
@@ -51,12 +52,24 @@ are not production-history claims.
 
 Verdict roles on `edge` records: `match`, `miss`, `surplus`, `tolerated`.
 
+`grid survey` closes with one `miss` record when the resolver declined any
+reference — `miss 8413  references declined (external 1272, method 6091,
+internal 1050)` — the existing tag and its existing "what could not be
+checked" meaning. The three add up to the total by construction. They mean
+opposite things: `external` costs a claim about this repo nothing, `method`
+is a hole no static rule closes, and `internal` is a hole in exactly what
+`grid drift` claims. A survey that declined nothing prints no such record.
+
 `grid drift` closes its output with `miss` records for what it could not
-check: `miss <n>  unresolved references unchecked` when the head survey
-declined names, and `miss ?  unresolved references uncounted (head was not
-surveyed)` when head was a published snapshot nobody re-surveyed, so the
-count is unknown rather than zero. A drift report with no suspects and
-nothing unchecked prints nothing and exits `0`; suspects exit `3`. An inbound
+check: `miss <n>  unresolved references unchecked (external N, method N,
+internal N)` when the head survey declined names, and `miss ?  unresolved
+references uncounted (head was not surveyed)` when head was a published
+snapshot nobody re-surveyed, so the count is unknown rather than zero. The
+split is omitted, and the message is the bare `unresolved references
+unchecked`, only when a report predates the split.
+
+A drift report with no suspects and nothing unchecked prints nothing and
+exits `0`; suspects exit `3`. An inbound
 walk that runs past its fuel is refused whole — exit `1` with the reason on
 stderr — never served as a shorter list. A declared covenant whose pattern
 matches nothing at drift time closes the output as a `warn` record: a rule
@@ -116,7 +129,9 @@ conclusion grid never licenses.
 
 ## Versioning
 
-Semver. Adding a record type or a trailing column is minor; changing column
+Semver. Adding a record type or a trailing column is minor — as is widening
+a record's message, which carried 2.0.0 to 2.1.0 (`grid survey`'s closing
+`miss`, and the declined split inside `grid drift`'s) — changing column
 order or meaning is major — and so is renaming a tag, which is what carried
 1.6.0 to 2.0.0 (`docs/plans/2026-09-01-naming.md`). The daemon reports this
 version via `grid version` and the wire contract's `x-porcelain` field.

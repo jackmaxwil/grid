@@ -289,18 +289,26 @@ impl<'ast> Visit<'ast> for Scan {
     }
 
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
-        if let Some(head) = dotted(&node.receiver).as_deref() {
-            if head == ["self"]
-                && self
-                    .in_receiver
-                    .iter()
-                    .rev()
-                    .nth(1)
-                    .copied()
-                    .unwrap_or(false)
-            {
-                self.push(RefKind::SelfCall, vec![node.method.to_string()]);
-            }
+        let receiver = dotted(&node.receiver).unwrap_or_default();
+        if receiver == ["self"]
+            && self
+                .in_receiver
+                .iter()
+                .rev()
+                .nth(1)
+                .copied()
+                .unwrap_or(false)
+        {
+            self.push(RefKind::SelfCall, vec![node.method.to_string()]);
+        } else {
+            // Every other receiver needs a type to resolve, and this frontend
+            // has none (LANG_RS.md). Recorded anyway, so the call is a
+            // *declined* reference rather than an invisible one — which is
+            // the difference between a chart that knows what it missed and a
+            // chart that reports a hole as an absence.
+            let mut path = receiver;
+            path.push(node.method.to_string());
+            self.push(RefKind::MethodCall, path);
         }
         syn::visit::visit_expr_method_call(self, node);
     }

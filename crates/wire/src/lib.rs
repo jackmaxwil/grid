@@ -172,6 +172,8 @@ pub struct Snapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_diff_hash: Option<String>,
     pub stats: SnapshotStats,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declined: Option<SnapshotDeclined>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -181,6 +183,14 @@ pub struct SnapshotStats {
     pub edges: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub langs: Option<Vec<Lang>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotDeclined {
+    pub external: u64,
+    pub method: u64,
+    pub internal: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -839,6 +849,12 @@ pub struct DriftSuspect {
 pub struct DriftUnchecked {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unresolved_refs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unresolved_external: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unresolved_method: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unresolved_internal: Option<u64>,
     pub budget_rejected: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unattributed_entries: Option<u64>,

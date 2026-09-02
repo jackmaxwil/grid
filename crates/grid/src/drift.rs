@@ -223,13 +223,41 @@ pub struct Query<'a> {
     /// none, which is not the same as one whose declaration file is
     /// unreadable — that is the caller's error to raise.
     pub covenants: &'a [Covenant],
-    /// The head survey's count of references it declined to bind, or `None`
-    /// when nobody surveyed head in this run — unknown, never zero.
-    pub declined_refs: Option<u64>,
+    /// The head survey's count of references it declined to bind, split by
+    /// why, or `None` when nobody surveyed head in this run — unknown, never
+    /// zero.
+    pub declined: Option<Declined>,
     /// Per-changed-definition inbound-walk budget. A real parameter, not a
     /// constant, because the honest thing to do when it runs out is only
     /// testable if a test can make it run out.
     pub fuel: u32,
+}
+
+/// What a survey declined to bind, split by why it declined.
+///
+/// One number for three populations was the honesty gap: a path into `std`
+/// costs a claim about this repo nothing, a call through an untyped receiver
+/// is a hole no static rule closes, and a name the tree could have held is a
+/// hole in exactly what drift claims. The total is the sum, so the split can
+/// never disagree with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Declined {
+    /// Names that were never this tree's to hold.
+    pub external: u64,
+    /// Calls through a receiver whose type would have to be known.
+    pub method: u64,
+    /// Names this tree could have held and the resolver could not bind.
+    pub internal: u64,
+}
+
+impl Declined {
+    /// Every declined reference, however it was declined.
+    #[must_use]
+    pub fn total(self) -> u64 {
+        self.external
+            .saturating_add(self.method)
+            .saturating_add(self.internal)
+    }
 }
 
 impl<'a> Query<'a> {
@@ -244,7 +272,7 @@ impl<'a> Query<'a> {
             floor: Grade::Observed,
             plan: None,
             covenants: &[],
-            declined_refs: None,
+            declined: None,
             fuel: FUEL,
         }
     }
@@ -262,7 +290,7 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
         floor,
         plan,
         covenants,
-        declined_refs,
+        declined,
         fuel: budget,
     } = *query;
     let chart = ChartDelta::open(root)?;
@@ -321,7 +349,10 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
         head: SnapshotId(head_epoch.snapshot_id().as_str().to_owned()),
         suspects: suspects.into_values().collect(),
         unchecked: DriftUnchecked {
-            unresolved_refs: declined_refs,
+            unresolved_refs: declined.map(Declined::total),
+            unresolved_external: declined.map(|d| d.external),
+            unresolved_method: declined.map(|d| d.method),
+            unresolved_internal: declined.map(|d| d.internal),
             budget_rejected: u64::from(budget_rejected),
             unattributed_entries: None,
             weak_skipped: None,

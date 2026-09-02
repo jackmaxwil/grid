@@ -89,10 +89,14 @@ fn a_called_decorator_names_the_decorator_not_the_call_result() {
 
 #[test]
 fn a_dotted_call_keeps_its_whole_path() {
+    // An attribute call is a `MethodCall`: `a` may be an imported module, in
+    // which case the resolver binds the whole path, or a value, in which case
+    // the callee sits behind a type nobody here has. Extraction cannot tell
+    // them apart, so it records the shape and keeps the whole path.
     let src = "def f():\n    a.b.c()\n";
     assert_eq!(
         refs(src),
-        [("f".to_string(), RefKind::Call, "a.b.c".to_string())]
+        [("f".to_string(), RefKind::MethodCall, "a.b.c".to_string())]
     );
 }
 
@@ -114,8 +118,9 @@ fn self_outside_a_method_is_an_ordinary_name() {
     let src = "self.b()\n";
     assert_eq!(
         refs("self.b()\n"),
-        [(String::new(), RefKind::Call, "self.b".to_string())],
-        "module-level `self` is a plain name: {src}"
+        [(String::new(), RefKind::MethodCall, "self.b".to_string())],
+        "module-level `self` is a plain name, so the call is an ordinary \
+         attribute call and never a `SelfCall`: {src}"
     );
 }
 

@@ -11,7 +11,7 @@ use grid_datum::{Import, RefKind, Reference};
 use grid_wire::Grade;
 
 use crate::index::{DefIndex, Symbol};
-use crate::resolve::{relation_of, Bindings, Resolved, ResolvedEdge};
+use crate::resolve::{relation_of, Bindings, Decline, Resolved, ResolvedEdge};
 
 /// Resolve one Rust file's references against the whole-tree index.
 #[must_use]
@@ -27,10 +27,17 @@ pub(crate) fn resolve(
         let Some(src) = index.datum_of(module, &r.from) else {
             continue;
         };
+        // A method call needs the receiver's type, which this frontend does
+        // not have (`docs/LANG_RS.md`). Declined unconditionally — no
+        // attempt, no guess — and now counted rather than invisible.
+        if r.kind == RefKind::MethodCall {
+            out.decline(Decline::Method);
+            continue;
+        }
         let Some(target) = target_of(index, &bindings, module, r) else {
             // A name a glob import would have supplied was never bound by
             // extraction, so it falls through to here. Counted, not guessed.
-            out.declined = out.declined.saturating_add(1);
+            out.decline(decline_of(index, &bindings, r));
             continue;
         };
         if src == target.datum {
@@ -44,6 +51,32 @@ pub(crate) fn resolve(
         });
     }
     out
+}
+
+/// Which population a declined Rust reference belongs to.
+///
+/// A `use` moves the question to the binding's own head, which is where the
+/// crate name actually is: `HashMap::new()` under `use std::collections::…`
+/// is a path into `std`, not a bare name this tree lost. An anchor or a name
+/// the tree roots is inside it; a bare unbound name is one a glob import
+/// would have supplied, which is inside it too — and therefore a hole.
+fn decline_of(index: &DefIndex, bindings: &Bindings, r: &Reference) -> Decline {
+    let Some(head) = r.path.first() else {
+        return Decline::Internal;
+    };
+    let bound = bindings.lookup(&r.from, head);
+    let head = bound.map_or(head.as_str(), |t| t.split('.').next().unwrap_or(t));
+    if matches!(head, "std" | "core" | "alloc") {
+        return Decline::External;
+    }
+    if matches!(head, "crate" | "super" | "self" | "Self") || index.is_root(head) {
+        return Decline::Internal;
+    }
+    if r.path.len() == 1 && bound.is_none() {
+        Decline::Internal
+    } else {
+        Decline::External
+    }
 }
 
 fn target_of<'a>(

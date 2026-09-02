@@ -355,6 +355,40 @@ fn survey_emits_one_snapshot_record() {
     assert!(text.contains("defs "), "stats are on the record: {text}");
 }
 
+/// A survey that says how much it charted without saying how much it declined
+/// reports a hole as an absence. One `miss`, split three ways, because the
+/// three mean opposite things for any claim about this repo.
+#[test]
+fn survey_closes_with_the_declined_split() {
+    let dir = repo();
+    // Two declines the fixture otherwise has none of: a path out of the tree
+    // and a call through a receiver with no type.
+    std::fs::write(
+        dir.path().join("c.py"),
+        "import os\n\ndef c(x):\n    os.getcwd()\n    x.frob()\n",
+    )
+    .expect("write");
+    let add = Command::new("git")
+        .args(["add", "c.py"])
+        .current_dir(dir.path())
+        .output()
+        .expect("git add");
+    assert!(add.status.success());
+    let out = grid(dir.path(), &["survey"]);
+    assert_eq!(code(&out), 0);
+    let text = stdout(&out);
+    let miss = text
+        .lines()
+        .find(|l| l.starts_with("miss"))
+        .unwrap_or_else(|| panic!("a closing miss record:\n{text}"));
+    let c = columns(miss);
+    let total: u64 = c[1].parse().expect("a count");
+    assert!(total > 0, "the fixture declines something: {miss}");
+    for word in ["references declined", "external", "method", "internal"] {
+        assert!(miss.contains(word), "`{word}` missing from: {miss}");
+    }
+}
+
 #[test]
 fn diff_records_the_definition_that_changed() {
     let dir = repo();

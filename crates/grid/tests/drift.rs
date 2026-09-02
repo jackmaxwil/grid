@@ -420,6 +420,10 @@ fn a_glob_import_dependent_is_declined_and_counted_not_claimed() {
         }),
         "the declined reference is counted, not silent:\n{text}"
     );
+    assert!(
+        text.contains("external ") && text.contains("method ") && text.contains("internal "),
+        "the count says what it declined, not just how much:\n{text}"
+    );
 }
 
 /// Conservatism: a head nobody re-surveyed cannot report a declined count,

@@ -108,6 +108,14 @@ pub struct Survey {
     /// that reads the edge set as "everything that reaches this" is wrong by
     /// at most this much — and can say so.
     pub declined_refs: u64,
+    /// Of [`Survey::declined_refs`]: names that were never this tree's to
+    /// hold. Harmless to any claim grid makes about this repo.
+    pub declined_external: u64,
+    /// Of [`Survey::declined_refs`]: calls through a receiver with no type.
+    pub declined_method: u64,
+    /// Of [`Survey::declined_refs`]: names this tree could have held and the
+    /// resolver could not bind. The population that is a hole.
+    pub declined_internal: u64,
 }
 
 /// The definitions the frontend `lang` names finds in `source`. This is the
@@ -316,6 +324,7 @@ pub fn run_sources(
     // resolver dispatches exactly where extraction does.
     let mut edges = Vec::new();
     let mut declined_refs = 0u64;
+    let (mut declined_external, mut declined_method, mut declined_internal) = (0u64, 0u64, 0u64);
     for (file, facts) in &per_file {
         let module = module_for(file);
         let resolved = match file.lang {
@@ -324,6 +333,9 @@ pub fn run_sources(
             Lang::Ts | Lang::Js => Resolved::default(),
         };
         declined_refs = declined_refs.saturating_add(u64::from(resolved.declined));
+        declined_external = declined_external.saturating_add(u64::from(resolved.declined_external));
+        declined_method = declined_method.saturating_add(u64::from(resolved.declined_method));
+        declined_internal = declined_internal.saturating_add(u64::from(resolved.declined_internal));
         edges.extend(resolved.edges);
     }
 
@@ -370,5 +382,8 @@ pub fn run_sources(
         langs,
         ambiguous: index.ambiguous_count() as u64,
         declined_refs,
+        declined_external,
+        declined_method,
+        declined_internal,
     })
 }
