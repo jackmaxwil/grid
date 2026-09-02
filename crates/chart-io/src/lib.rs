@@ -13,6 +13,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -108,6 +109,11 @@ pub const MANIFEST: &str = "manifest";
 /// data — deletable, and rebuilt from the retained chain by the next publish.
 pub const MEMBERSHIP: &str = "membership";
 const MANIFEST_TMP: &str = "manifest.tmp";
+/// The publish lock. Held, exclusively, for the whole of a publish.
+const LOCK: &str = "lock";
+/// Per-process sequence for temp names, so two writes in one process — two
+/// threads, or one thread twice — never share one.
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// One immutable epoch of the chart: a manifest and the segments it names.
 ///
@@ -222,8 +228,10 @@ impl Store {
     /// id (D5: a pure function of the manifest, so republishing an identical
     /// state is idempotent).
     ///
-    /// The daemon serializes all calls to this (D6, two writers total); a
-    /// `&mut self` receiver is that rule expressed in the type system.
+    /// `&mut self` serializes publishers within a process; across processes
+    /// — the CLI beside the daemon, two surveys in one tree — the publish
+    /// holds an exclusive lock on the store for its whole window, so no two
+    /// publishers ever interleave their writes.
     ///
     /// # Errors
     /// [`StoreError`] on I/O failure or an image that does not validate.
@@ -263,6 +271,7 @@ impl Store {
         images: &[Vec<u8>],
         live: bool,
     ) -> Result<SnapshotId, StoreError> {
+        let _publishing = self.lock()?;
         let mut segments = Vec::with_capacity(images.len());
         for (i, image) in images.iter().enumerate() {
             // Validate first: the store never contains bytes we would refuse
@@ -342,9 +351,10 @@ impl Store {
     /// first sight, with the sort kept as a separate index). Worth doing when
     /// a chain is long enough for the rewrite to show up in a survey.
     ///
-    /// # Errors
-    /// [`StoreError`] on I/O failure or an image that does not build.
-    pub fn extend_membership(&self, epoch: &Epoch) -> Result<(), StoreError> {
+    /// Called under the publish lock, which is what keeps the read-back and
+    /// the rewrite one step: two publishers extending at once would each
+    /// lose the other's snapshot.
+    fn extend_membership(&self, epoch: &Epoch) -> Result<(), StoreError> {
         let mut chain = match self.membership()? {
             Some(existing) => existing.chain(),
             None => Vec::new(),
@@ -363,6 +373,7 @@ impl Store {
     /// # Errors
     /// [`StoreError`] if the store cannot be read or the image cannot build.
     pub fn rebuild_membership(&self) -> Result<(), StoreError> {
+        let _publishing = self.lock()?;
         let mut chain = Vec::new();
         for id in self.retained_snapshots()? {
             let epoch = self.epoch_of(&id)?;
@@ -380,6 +391,25 @@ impl Store {
             "membership.tmp",
         )?;
         Ok(())
+    }
+
+    /// The publish lock: exclusive, across processes, released on drop.
+    ///
+    /// An advisory `flock` on one file in the store, taken for the whole of
+    /// a publish. The temp names are unique per process and per call, so
+    /// this is not what keeps two writers from renaming each other's bytes;
+    /// it is what keeps the membership image's read-modify-write whole, and
+    /// what makes "the daemon is the single writer" (D6) a fact rather than
+    /// a comment once the CLI writes beside it. Readers never take it.
+    fn lock(&self) -> std::io::Result<fs::File> {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.dir.join(LOCK))?;
+        file.lock()?;
+        Ok(file)
     }
 
     /// Every snapshot id the store retains, ascending — the chain, as a set.
@@ -560,7 +590,14 @@ fn hex(bytes: &[u8; 32]) -> String {
 /// Whatever the create, write, fsync or rename returned. On any of them the
 /// file at `path` is untouched — that is the point.
 pub fn write_atomic(dir: &Path, path: &Path, bytes: &[u8], tmp_name: &str) -> std::io::Result<()> {
-    let tmp = dir.join(tmp_name);
+    // The temp name is unique per process and per call. Two writers in one
+    // directory — two surveys, the CLI beside the daemon — sharing a temp
+    // name is how one renames the other's bytes under its own content hash.
+    let tmp = dir.join(format!(
+        "{tmp_name}.{}.{}",
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     {
         let mut f = fs::File::create(&tmp)?;
         f.write_all(bytes)?;
