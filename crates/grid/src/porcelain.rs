@@ -15,7 +15,7 @@ use grid_wire::{
 };
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "2.10.0";
+pub const VERSION: &str = "2.11.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -295,14 +295,21 @@ pub fn snapshot(s: &grid_wire::Snapshot, run: Option<(u64, std::time::Duration)>
             .saturating_add(d.method)
             .saturating_add(d.internal);
         if total > 0 {
+            // The refused share is the typed receivers the rule declined
+            // with a reason; a snapshot from before it was counted says
+            // nothing rather than `0 refused`.
+            let method = match d.refused {
+                Some(refused) => format!("method {} of which {refused} refused", d.method),
+                None => format!("method {}", d.method),
+            };
             record(
                 &mut out,
                 "miss",
                 &[
                     &total.to_string(),
                     &format!(
-                        "references declined (external {}, method {}, internal {})",
-                        d.external, d.method, d.internal
+                        "references declined (external {}, {method}, internal {})",
+                        d.external, d.internal
                     ),
                 ],
             );

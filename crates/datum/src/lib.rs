@@ -299,6 +299,10 @@ pub struct FileRefs {
     /// named field whose type is a path. What lets a resolver type
     /// `x.field` when `x` is typed and the struct lives in another file.
     pub field_types: Vec<(String, String, TypeRef)>,
+    /// The name of every method every trait in this file declares, default
+    /// or required. The tree-wide union is the resolver's over-approximation
+    /// of "a trait in scope supplies `m`": a maybe is a refusal.
+    pub trait_methods: Vec<String>,
 }
 
 /// The conjunction of cfg predicates as one predicate: nothing for none,

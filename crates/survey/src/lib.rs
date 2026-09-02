@@ -111,8 +111,12 @@ pub struct Survey {
     /// Of [`Survey::declined_refs`]: names that were never this tree's to
     /// hold. Harmless to any claim grid makes about this repo.
     pub declined_external: u64,
-    /// Of [`Survey::declined_refs`]: calls through a receiver with no type.
+    /// Of [`Survey::declined_refs`]: calls through a receiver the file could
+    /// not type, or typed and the rule refused.
     pub declined_method: u64,
+    /// Of [`Survey::declined_method`]: the calls whose receiver was typed to
+    /// a charted type and the rule refused, with a reason. A sub-count.
+    pub declined_method_refused: u64,
     /// Of [`Survey::declined_refs`]: names this tree could have held and the
     /// resolver could not bind. The population that is a hole.
     pub declined_internal: u64,
@@ -357,6 +361,11 @@ pub fn run_sources(
             &file.source,
             inherited.get(&file.path).map_or("", String::as_str),
         );
+        index.insert_types(
+            &module_for(file),
+            &facts.refs.field_types,
+            &facts.refs.trait_methods,
+        );
     }
     // Aliases go in after every definition, so a real name always wins over
     // a re-export of the same spelling. A reexport inside a function body
@@ -373,22 +382,7 @@ pub fn run_sources(
     // Phase 3 — resolve names to datums, under each file's own language
     // rules: what "this name binds to" means is per-language, so the
     // resolver dispatches exactly where extraction does.
-    let mut edges = Vec::new();
-    let mut declined_refs = 0u64;
-    let (mut declined_external, mut declined_method, mut declined_internal) = (0u64, 0u64, 0u64);
-    for (file, facts) in &per_file {
-        let module = module_for(file);
-        let resolved = match file.lang {
-            Lang::Py => resolve::resolve(&index, &module, &facts.refs.imports, &facts.refs.refs),
-            Lang::Rs => resolve_rs::resolve(&index, &module, &facts.refs.imports, &facts.refs.refs),
-            Lang::Ts | Lang::Js => Resolved::default(),
-        };
-        declined_refs = declined_refs.saturating_add(u64::from(resolved.declined));
-        declined_external = declined_external.saturating_add(u64::from(resolved.declined_external));
-        declined_method = declined_method.saturating_add(u64::from(resolved.declined_method));
-        declined_internal = declined_internal.saturating_add(u64::from(resolved.declined_internal));
-        edges.extend(resolved.edges);
-    }
+    let (edges, declined) = resolve_all(&index, &per_file, &module_for);
 
     let chart_defs: Vec<grid_chart::Def> = index
         .symbols()
@@ -432,9 +426,53 @@ pub fn run_sources(
         reread,
         langs,
         ambiguous: index.ambiguous_count() as u64,
-        declined_refs,
-        declined_external,
-        declined_method,
-        declined_internal,
+        declined_refs: declined.refs,
+        declined_external: declined.external,
+        declined_method: declined.method,
+        declined_method_refused: declined.refused,
+        declined_internal: declined.internal,
     })
+}
+
+/// The declined counters summed over every file's [`Resolved`].
+#[derive(Default)]
+struct DeclinedTotals {
+    refs: u64,
+    external: u64,
+    method: u64,
+    refused: u64,
+    internal: u64,
+}
+
+impl DeclinedTotals {
+    fn add(&mut self, r: &Resolved) {
+        self.refs = self.refs.saturating_add(u64::from(r.declined));
+        self.external = self.external.saturating_add(u64::from(r.declined_external));
+        self.method = self.method.saturating_add(u64::from(r.declined_method));
+        self.refused = self
+            .refused
+            .saturating_add(u64::from(r.declined_method_refused));
+        self.internal = self.internal.saturating_add(u64::from(r.declined_internal));
+    }
+}
+
+/// Phase 3 over every file: the edges and the declined totals.
+fn resolve_all(
+    index: &DefIndex,
+    per_file: &[(&SourceFile, FileFacts)],
+    module_for: &dyn Fn(&SourceFile) -> String,
+) -> (Vec<ResolvedEdge>, DeclinedTotals) {
+    let mut edges = Vec::new();
+    let mut declined = DeclinedTotals::default();
+    for (file, facts) in per_file {
+        let module = module_for(file);
+        let resolved = match file.lang {
+            Lang::Py => resolve::resolve(index, &module, &facts.refs.imports, &facts.refs.refs),
+            Lang::Rs => resolve_rs::resolve(index, &module, &facts.refs.imports, &facts.refs.refs),
+            Lang::Ts | Lang::Js => Resolved::default(),
+        };
+        declined.add(&resolved);
+        edges.extend(resolved.edges);
+    }
+    (edges, declined)
 }

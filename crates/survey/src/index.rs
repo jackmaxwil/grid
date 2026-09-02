@@ -35,6 +35,9 @@ pub struct Symbol {
     pub lang: Lang,
     /// The stored per-definition columns: location, shape, complexity, sig.
     pub facts: grid_chart::DefFacts,
+    /// The callee facts of a function, for the method-call rule; `None`
+    /// for a type, a trait method, or a Python definition.
+    pub method: Option<grid_datum::MethodFacts>,
 }
 
 /// Every definition in a tree, addressable by absolute dotted name.
@@ -60,6 +63,18 @@ pub struct DefIndex {
     /// this tree's own callsigns are rooted in. What makes "outside the tree"
     /// decidable without reading a lockfile or a `site-packages`.
     roots: std::collections::HashSet<String>,
+    /// Declared field types: absolute struct name -> field -> type. What
+    /// types `x.field` when `x` is typed and the struct is another file's.
+    field_types: HashMap<String, HashMap<String, grid_datum::TypeRef>>,
+    /// Every method name any trait in the tree declares — the over-
+    /// approximation of "a trait in scope supplies `m`".
+    trait_methods: std::collections::HashSet<String>,
+    /// Method names supplied by trait impls, keyed by the implementing
+    /// type's last segment: `impl T for Foo { fn m }` files `Foo -> m`.
+    /// Answers "does any `Foo@*.m` exist", for the in-tree candidate check
+    /// and for the guard on a `std` type the tree implements its own trait
+    /// for.
+    impl_methods: HashMap<String, std::collections::HashSet<String>>,
 }
 
 impl DefIndex {
@@ -78,11 +93,22 @@ impl DefIndex {
         }
         for def in defs {
             let absolute = format!("{module}.{}", def.callsign);
+            // `prefix.Foo@Trait.m`: the type's last segment and the method.
+            if let Some((owner, method)) = def.callsign.rsplit_once('.') {
+                if let Some((ty, _trait)) = owner.rsplit_once('@') {
+                    let ty = ty.rsplit('.').next().unwrap_or(ty);
+                    self.impl_methods
+                        .entry(ty.to_owned())
+                        .or_default()
+                        .insert(method.to_owned());
+                }
+            }
             let symbol = Symbol {
                 datum: datum_bytes(def),
                 absolute: absolute.clone(),
                 is_class: def.kind == DefKind::Class,
                 lang,
+                method: def.method.clone(),
                 facts: grid_chart::DefFacts {
                     path: path.to_owned(),
                     line: line_of(source, def.span.start),
@@ -108,6 +134,44 @@ impl DefIndex {
                 }
             }
         }
+    }
+
+    /// Add one file's type facts: its structs' declared field types and the
+    /// method names its traits declare.
+    pub fn insert_types(
+        &mut self,
+        module: &str,
+        field_types: &[(String, String, grid_datum::TypeRef)],
+        trait_methods: &[String],
+    ) {
+        for (callsign, field, ty) in field_types {
+            self.field_types
+                .entry(format!("{module}.{callsign}"))
+                .or_default()
+                .insert(field.clone(), ty.clone());
+        }
+        self.trait_methods.extend(trait_methods.iter().cloned());
+    }
+
+    /// The declared type of `field` on the struct filed as `absolute`.
+    #[must_use]
+    pub fn field_type(&self, absolute: &str, field: &str) -> Option<&grid_datum::TypeRef> {
+        self.field_types.get(absolute)?.get(field)
+    }
+
+    /// Does any trait in the tree declare a method named `method`?
+    #[must_use]
+    pub fn trait_declares(&self, method: &str) -> bool {
+        self.trait_methods.contains(method)
+    }
+
+    /// Does any trait impl on a type whose last segment is `ty` supply
+    /// `method` — is there a `{ty}@*.{method}`?
+    #[must_use]
+    pub fn impl_supplies(&self, ty: &str, method: &str) -> bool {
+        self.impl_methods
+            .get(ty)
+            .is_some_and(|methods| methods.contains(method))
     }
 
     /// Record one re-export: `absolute` reaches whatever `target` names in

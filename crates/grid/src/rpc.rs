@@ -307,6 +307,7 @@ impl Chart {
                     external: declined.external,
                     method: declined.method,
                     internal: declined.internal,
+                    refused: Some(survey.declined_method_refused),
                 }),
             },
             Ran {

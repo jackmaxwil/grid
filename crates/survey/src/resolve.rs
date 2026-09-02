@@ -87,9 +87,15 @@ pub struct Resolved {
     /// `std`/`core`/`alloc` or another crate in Rust, a top-level module the
     /// tree does not root in Python. Costs intra-repo soundness nothing.
     pub declined_external: u32,
-    /// Of [`Resolved::declined`]: a call through a receiver whose type would
-    /// have to be known. Never resolved, always counted.
+    /// Of [`Resolved::declined`]: a call through a receiver the file could
+    /// not type, or typed and the rule refused. Counted, never guessed.
     pub declined_method: u32,
+    /// Of [`Resolved::declined_method`]: the calls whose receiver *was*
+    /// typed to a charted type and the rule refused — a trait candidate, a
+    /// generic impl, no inherent method, a wrapper. A sub-count, not a
+    /// fourth population: the sum identity stays external + method +
+    /// internal.
+    pub declined_method_refused: u32,
     /// Of [`Resolved::declined`]: a name this tree could have held and the
     /// resolver could not bind — glob-supplied, ambiguous, an unresolved
     /// re-export. The population that is an actual hole in what grid claims.
@@ -122,6 +128,13 @@ impl Resolved {
         };
         *slot = slot.saturating_add(1);
     }
+
+    /// A method call whose receiver was typed to a charted type and the
+    /// rule refused: counted `method`, and counted refused.
+    pub(crate) fn refuse(&mut self) {
+        self.decline(Decline::Method);
+        self.declined_method_refused = self.declined_method_refused.saturating_add(1);
+    }
 }
 
 /// Resolve one file's references against the whole-tree index.
@@ -138,7 +151,16 @@ pub fn resolve(index: &DefIndex, module: &str, imports: &[Import], refs: &[Refer
         let Some(src) = index.datum_of(module, &r.from) else {
             continue;
         };
-        let Some(target) = target_of(index, &bindings, module, r) else {
+        // `x.m()` on a parameter annotated with a class the tree charts:
+        // the annotation is what was written, and the method is looked up
+        // on that class — never on a subclass, which Python's rules let
+        // override it. That is why the edge is modeled, never proven, and
+        // why nothing else about the receiver is guessed.
+        let (target, grade) = if let Some(target) = target_of(index, &bindings, module, r) {
+            (target, Grade::Proven)
+        } else if let Some(target) = annotated_method(index, &bindings, module, r) {
+            (target, Grade::Modeled)
+        } else {
             out.decline(decline_of(index, &bindings, module, r));
             continue;
         };
@@ -151,10 +173,44 @@ pub fn resolve(index: &DefIndex, module: &str, imports: &[Import], refs: &[Refer
             src,
             dst: target.datum,
             relation: relation_of(r.kind, target.is_class),
-            grade: Grade::Proven,
+            grade,
         });
     }
     out
+}
+
+/// The method a method call on an annotated parameter names: the annotated
+/// class, resolved by the same rules a call of it would be, then its
+/// `{class}.{m}`. `None` unless the hint is a parameter annotation, the
+/// class is charted and unambiguous, and the method is its own.
+fn annotated_method<'a>(
+    index: &'a DefIndex,
+    bindings: &Bindings,
+    module: &str,
+    r: &Reference,
+) -> Option<&'a Symbol> {
+    if r.kind != RefKind::MethodCall {
+        return None;
+    }
+    let hint = r.receiver.as_ref()?;
+    if hint.origin != grid_datum::ReceiverOrigin::Param {
+        return None;
+    }
+    let class = target_of(
+        index,
+        bindings,
+        module,
+        &Reference {
+            from: r.from.clone(),
+            kind: RefKind::Call,
+            path: hint.ty.path.clone(),
+            receiver: None,
+        },
+    )?;
+    if !class.is_class {
+        return None;
+    }
+    index.lookup_absolute(&format!("{}.{}", class.absolute, r.path.last()?))
 }
 
 /// The relation a reference position implies, once the target's kind is known.

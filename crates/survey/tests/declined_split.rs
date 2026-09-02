@@ -47,9 +47,10 @@ fn split(s: &Survey) -> (u64, u64, u64) {
     (s.declined_external, s.declined_method, s.declined_internal)
 }
 
-/// Ground truth, Rust: one call into `std`, one method call on a typed local,
-/// one name only a glob import could have supplied, one call to a sibling.
-/// One edge, and one of each decline.
+/// Ground truth, Rust: one call into `std`, one method call on a receiver
+/// the file cannot type (a `for` binding), one name only a glob import
+/// could have supplied, one call to a sibling. One edge, and one of each
+/// decline.
 #[test]
 fn rust_declines_split_into_external_method_and_internal() {
     let dir = repo(&[
@@ -62,9 +63,9 @@ fn rust_declines_split_into_external_method_and_internal() {
              pub struct Local;\n\
              impl Local {\n  pub fn frob(&self) {}\n}\n\
              pub fn sibling() {}\n\
-             pub fn caller(x: &Local) {\n\
+             pub fn caller(v: Vec<Local>) {\n\
              \x20   HashMap::<u8, u8>::new();\n\
-             \x20   x.frob();\n\
+             \x20   for x in v { x.frob(); }\n\
              \x20   glob_supplied();\n\
              \x20   sibling();\n\
              }\n",
@@ -144,11 +145,12 @@ fn an_imported_modules_function_still_resolves_in_python() {
     );
 }
 
-/// Conservatism, exactly as the plan states it: a method call on a receiver
-/// whose type is syntactically obvious still yields **no edge**, and is
-/// counted as `method`. Types are `modeled`; this survey emits none.
+/// A method call on a receiver the file *inferred* — `Foo::new().m()` —
+/// yields an edge graded **modeled**, never proven: the type is grid's
+/// reading of syntax, not the language's binding rule. It is no longer
+/// counted `method`, and the sub-count `refused` never exceeds `method`.
 #[test]
-fn a_syntactically_obvious_receiver_still_yields_no_edge() {
+fn an_inferred_receiver_yields_a_modeled_edge_never_a_proven_one() {
     let dir = repo(&[
         ("Cargo.toml", "[package]\nname = \"fixture\"\n"),
         (
@@ -162,14 +164,21 @@ fn a_syntactically_obvious_receiver_still_yields_no_edge() {
         ),
     ]);
     let s = survey(dir.path());
-    // `Foo::new()` is a plain path call and is proven; `.m()` is not.
+    let seg = grid_chart::Segment::parse(s.image.as_slice()).expect("parse");
+    let mut grades: Vec<grid_wire::Grade> = (0..seg.def_count())
+        .flat_map(|i| seg.out_edges(grid_chart::Ordinal(i)).map(|n| n.grade))
+        .collect();
+    grades.sort_by_key(|g| format!("{g:?}"));
+    // `Foo::new()` is a plain path call and is proven; `.m()` is modeled.
     assert_eq!(
-        s.edges, 1,
-        "only `Foo::new()` is proven — `.m()` would need the receiver's type"
+        grades,
+        [grid_wire::Grade::Modeled, grid_wire::Grade::Proven]
     );
+    assert_eq!(s.declined_method, 0, "the call resolved: {s:?}");
+    assert!(s.declined_method_refused <= s.declined_method);
     assert_eq!(
-        s.declined_method, 1,
-        "the method call must be counted, not invisible"
+        s.declined_refs,
+        s.declined_external + s.declined_method + s.declined_internal
     );
 }
 

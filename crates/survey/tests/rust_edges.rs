@@ -149,9 +149,16 @@ fn glob_names_macro_bodies_and_typed_receivers_resolve_to_nothing() {
         ),
     ]);
     let s = survey(dir.path());
-    // Every reference in lib.rs needs the glob, a macro body, or a typed
-    // receiver — all declined. Zero edges is the assertion that matters.
-    assert_eq!(s.edges, 0);
+    // The glob's supply and the macro body are declined. The typed receiver
+    // — `x: Thing` by value calling `frob(&self)`, a later lookup step —
+    // resolves *modeled*, never proven: one edge, and it does not gate.
+    assert_eq!(s.edges, 1);
+    let seg = grid_chart::Segment::parse(s.image.as_slice()).expect("parse");
+    let grades: Vec<_> = (0..seg.def_count())
+        .flat_map(|i| seg.out_edges(grid_chart::Ordinal(i)).map(|n| n.grade))
+        .collect();
+    assert_eq!(grades, [grid_wire::Grade::Modeled]);
+    assert_eq!(s.declined_internal, 1, "the glob-supplied name: {s:?}");
 }
 
 #[test]

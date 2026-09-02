@@ -65,7 +65,13 @@ pub(crate) fn references_of(file: &syn::File) -> FileRefs {
     let mut scan = Scan::default();
     // The same-file tables first: a chain may be typed by a return written
     // further down the file.
-    types::collect(&file.items, "", &mut scan.types, &mut scan.out.field_types);
+    types::collect(
+        &file.items,
+        "",
+        &mut scan.types,
+        &mut scan.out.field_types,
+        &mut scan.out.trait_methods,
+    );
     for item in &file.items {
         scan.visit_item(item);
     }

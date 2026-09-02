@@ -7,7 +7,7 @@
 //! and items in scope. A name a glob import would have supplied was never
 //! bound by extraction, so it falls through and resolves to nothing — the
 //! omission `docs/LANG_RS.md` promises, never a guess.
-use grid_datum::{Import, RefKind, Reference};
+use grid_datum::{Import, ReceiverForm, ReceiverOrigin, RefKind, Reference, TypeRef};
 use grid_wire::Grade;
 
 use crate::index::{DefIndex, Symbol};
@@ -27,18 +27,27 @@ pub(crate) fn resolve(
         let Some(src) = index.datum_of(module, &r.from) else {
             continue;
         };
-        // A method call needs the receiver's type, which this frontend does
-        // not have (`docs/LANG_RS.md`). Declined unconditionally — no
-        // attempt, no guess — and now counted rather than invisible.
-        if r.kind == RefKind::MethodCall {
-            out.decline(Decline::Method);
-            continue;
-        }
-        let Some(target) = target_of(index, &bindings, module, r) else {
-            // A name a glob import would have supplied was never bound by
-            // extraction, so it falls through to here. Counted, not guessed.
-            out.decline(decline_of(index, &bindings, r));
-            continue;
+        let (target, grade) = if r.kind == RefKind::MethodCall {
+            match method_call(index, &bindings, module, r) {
+                Ok(bound) => bound,
+                Err(Refusal::Declined(which)) => {
+                    out.decline(which);
+                    continue;
+                }
+                Err(Refusal::Refused(_reason)) => {
+                    out.refuse();
+                    continue;
+                }
+            }
+        } else {
+            let Some(target) = target_of(index, &bindings, module, r) else {
+                // A name a glob import would have supplied was never bound
+                // by extraction, so it falls through to here. Counted, not
+                // guessed.
+                out.decline(decline_of(index, &bindings, r));
+                continue;
+            };
+            (target, Grade::Proven)
         };
         if src == target.datum {
             continue;
@@ -47,10 +56,185 @@ pub(crate) fn resolve(
             src,
             dst: target.datum,
             relation: relation_of(r.kind, target.is_class),
-            grade: Grade::Proven,
+            grade,
         });
     }
     out
+}
+
+/// Why a method call bound to nothing.
+enum Refusal {
+    /// The receiver could not be typed to a charted type: no hint, an
+    /// unresolvable type path, or a type outside the tree. Counted in the
+    /// population the variant names.
+    Declined(Decline),
+    /// The receiver *was* typed to a charted type and the rule refused, for
+    /// the stated reason. Counted `method`, and counted refused.
+    Refused(&'static str),
+}
+
+/// The method names the Rust 2021 prelude's traits provide. An inherent
+/// method of one of these names matched only at a later lookup step is a
+/// refusal, never a proven edge: the prelude trait is in scope in every
+/// module, and its method may outrank the inherent one there.
+///
+/// ponytail: the prelude, not `std`. An inherent `fn map` beside a
+/// `Foo: Iterator` at a later step is caught by the `Foo@Iterator.next`
+/// guard when the impl is in the tree; beside a blanket external impl it
+/// is the modeled tier's stated residual.
+const PRELUDE_METHODS: &[&str] = &[
+    "clone",
+    "clone_from",
+    "to_string",
+    "to_owned",
+    "into",
+    "try_into",
+    "from",
+    "try_from",
+    "eq",
+    "ne",
+    "cmp",
+    "partial_cmp",
+    "lt",
+    "le",
+    "gt",
+    "ge",
+    "max",
+    "min",
+    "clamp",
+    "default",
+    "as_ref",
+    "as_mut",
+    "drop",
+    "next",
+    "fmt",
+    "hash",
+    "borrow",
+    "borrow_mut",
+    "deref",
+    "deref_mut",
+    "into_iter",
+    "extend",
+    "from_iter",
+    "size_hint",
+];
+
+/// Bind `x.m(..)` by rustc's own lookup order, or say why not.
+///
+/// The receiver type is resolved exactly as a `Call` path resolves; the
+/// inherent method `{type}.{m}` is looked up under it; then the grade rule:
+/// a written receiver type whose form matches the inherent method's at the
+/// first lookup step is **proven** — at that step an inherent method
+/// outranks every trait, in the tree or out of it; a written type matched at
+/// a later step, or an inferred type, is **modeled** unless a trait grid can
+/// see supplies `m`; everything else is refused with its reason.
+fn method_call<'a>(
+    index: &'a DefIndex,
+    bindings: &Bindings,
+    module: &str,
+    r: &Reference,
+) -> Result<(&'a Symbol, Grade), Refusal> {
+    let Some(hint) = r.receiver.as_ref() else {
+        return Err(Refusal::Declined(Decline::Method));
+    };
+    let method = r.path.last().ok_or(Refusal::Declined(Decline::Method))?;
+    let mut ty = hint.ty.clone();
+    let mut origin = hint.origin;
+    // `x.field` with the struct in another file: the base resolves first,
+    // then the field's declared type is read off the index.
+    if let Some(field) = &hint.field {
+        let base = type_symbol(index, bindings, module, r, &ty)
+            .map_err(|_| Refusal::Declined(Decline::Method))?;
+        let declared = index
+            .field_type(&base.absolute, field)
+            .ok_or(Refusal::Declined(Decline::Method))?;
+        ty = declared.clone();
+        origin = ReceiverOrigin::TypedField;
+    }
+    let receiver = match type_symbol(index, bindings, module, r, &ty) {
+        Ok(sym) => sym,
+        // A type outside the tree is never this tree's hole — unless the
+        // tree implements one of its own traits for it, when `Vec@Tally.m`
+        // is charted and a call of `m` stays what it is.
+        Err(Decline::External) => {
+            let last = ty.path.last().map_or("", String::as_str);
+            return Err(Refusal::Declined(if index.impl_supplies(last, method) {
+                Decline::Method
+            } else {
+                Decline::External
+            }));
+        }
+        Err(_) => return Err(Refusal::Declined(Decline::Method)),
+    };
+    if ty.args {
+        // The callsign erased the argument; whether `impl Foo<u8>` serves
+        // this `Foo<u16>` is invisible to the rule.
+        return Err(Refusal::Refused("wrapper or instantiated"));
+    }
+    let inherent = index
+        .lookup_absolute(&format!("{}.{method}", receiver.absolute))
+        .ok_or(Refusal::Refused("no inherent method"))?;
+    let facts = inherent
+        .method
+        .as_ref()
+        .ok_or(Refusal::Refused("no inherent method"))?;
+    let recv = facts.recv.ok_or(Refusal::Refused("no inherent method"))?;
+    if !facts.plain_impl {
+        return Err(Refusal::Refused("generic impl"));
+    }
+    let type_name = receiver.absolute.rsplit('.').next().unwrap_or("");
+    let candidate = index.trait_declares(method)
+        || index.impl_supplies(type_name, method)
+        || PRELUDE_METHODS.contains(&method.as_str());
+    let first_step = match (ty.form, recv) {
+        (ReceiverForm::Value, ReceiverForm::Value)
+        | (ReceiverForm::Ref, ReceiverForm::Ref)
+        | (ReceiverForm::RefMut, ReceiverForm::RefMut) => true,
+        // Autoref, or a `&mut` reborrowed shared: a later step.
+        (ReceiverForm::Value, ReceiverForm::Ref | ReceiverForm::RefMut)
+        | (ReceiverForm::RefMut, ReceiverForm::Ref) => false,
+        // `&Foo` cannot reach `&mut self`, and neither reference can reach
+        // a by-value `self` without a move out of it: if this compiles, a
+        // trait supplied `m`.
+        (ReceiverForm::Ref, ReceiverForm::RefMut | ReceiverForm::Value)
+        | (ReceiverForm::RefMut, ReceiverForm::Value) => {
+            return Err(Refusal::Refused("trait candidate"));
+        }
+    };
+    // At the first step the inherent method outranks every trait, so a
+    // written type is proven there and an inferred one modeled; at a later
+    // step a visible candidate refuses, and no candidate is modeled either
+    // way — an invisible blanket impl is the stated residual.
+    let grade = if first_step && origin.written() {
+        Grade::Proven
+    } else if first_step || !candidate {
+        Grade::Modeled
+    } else {
+        return Err(Refusal::Refused("trait candidate"));
+    };
+    Ok((inherent, grade))
+}
+
+/// The charted type a receiver hint names, resolved as a `Call` path from
+/// the same definition would be; or which population its path falls in.
+fn type_symbol<'a>(
+    index: &'a DefIndex,
+    bindings: &Bindings,
+    module: &str,
+    r: &Reference,
+    ty: &TypeRef,
+) -> Result<&'a Symbol, Decline> {
+    let path = Reference {
+        from: r.from.clone(),
+        kind: RefKind::Call,
+        path: ty.path.clone(),
+        receiver: None,
+    };
+    match target_of(index, bindings, module, &path) {
+        Some(sym) if sym.is_class => Ok(sym),
+        Some(_) => Err(Decline::Internal),
+        None => Err(decline_of(index, bindings, &path)),
+    }
 }
 
 /// The names the Rust 2021 prelude puts in every module without a `use`:

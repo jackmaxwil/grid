@@ -169,16 +169,25 @@ fn put<V>(map: &mut HashMap<String, Option<V>>, key: String, value: Option<V>) {
     }
 }
 
-/// Collect the same-file tables and the declared field types of every
-/// named-field struct, `(struct callsign, field, type)`.
+/// Collect the same-file tables, the declared field types of every
+/// named-field struct, `(struct callsign, field, type)`, and the name of
+/// every method every trait declares.
 pub(crate) fn collect(
     items: &[Item],
     prefix: &str,
     types: &mut FileTypes,
     field_types: &mut Vec<(String, String, TypeRef)>,
+    trait_methods: &mut Vec<String>,
 ) {
     for item in items {
         match item {
+            Item::Trait(t) => {
+                for ti in &t.items {
+                    if let syn::TraitItem::Fn(m) = ti {
+                        trait_methods.push(m.sig.ident.to_string());
+                    }
+                }
+            }
             Item::Fn(f) => {
                 let generics = generic_names(&f.sig.generics);
                 put(
@@ -228,6 +237,7 @@ pub(crate) fn collect(
                         &crate::extract::join(prefix, &m.ident.to_string()),
                         types,
                         field_types,
+                        trait_methods,
                     );
                 }
             }
