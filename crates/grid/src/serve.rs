@@ -138,6 +138,10 @@ fn chart_error(e: &crate::chart_provider::Error) -> (i32, String) {
         E::Survey(_) => WireError::SurveyFailed.code(),
         E::Config(_) => WireError::InvalidPlan.code(),
         E::Plan(_) => WireError::UnknownPlan.code(),
+        // A filter that selects nothing is a fact about the caller's
+        // argument, not about the store, so it is JSON-RPC's own
+        // invalid-params rather than one of the eight chart codes.
+        E::NoSuchPath(_) => -32602,
     };
     (code, e.to_string())
 }
