@@ -585,19 +585,61 @@ impl DeclinedTotals {
 }
 
 /// Phase 3 over every file: the edges and the declined totals.
+///
+/// A file's resolution is a pure function of its own facts and the finished
+/// index, so the files resolve on scoped threads, each taking the next index
+/// from one shared counter; the fold below then runs in source order, so
+/// the edge list and the declined rows are what the serial loop produced.
+/// A file a panicked worker dropped is resolved in the fold, in place.
 fn resolve_all(
     index: &DefIndex,
     per_file: &[(&SourceFile, FileFacts)],
     module_for: &dyn Fn(&SourceFile) -> String,
 ) -> (Vec<ResolvedEdge>, DeclinedTotals) {
+    let modules: Vec<String> = per_file.iter().map(|(file, _)| module_for(file)).collect();
+    let one = |i: usize| -> Option<Resolved> {
+        let (file, facts) = per_file.get(i)?;
+        let module = modules.get(i)?;
+        Some(match file.lang {
+            Lang::Py => resolve::resolve(index, module, &facts.refs.imports, &facts.refs.refs),
+            Lang::Rs => resolve_rs::resolve(index, module, &facts.refs.imports, &facts.refs.refs),
+            Lang::Ts | Lang::Js => Resolved::default(),
+        })
+    };
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut slots: Vec<Option<Resolved>> = per_file.iter().map(|_| None).collect();
+    let done: Vec<(usize, Resolved)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads.min(per_file.len()))
+            .map(|_| {
+                let (next, one) = (&next, &one);
+                scope.spawn(move || {
+                    let mut out = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(resolved) = one(i) else { break };
+                        out.push((i, resolved));
+                    }
+                    out
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok())
+            .flatten()
+            .collect()
+    });
+    for (i, resolved) in done {
+        if let Some(slot) = slots.get_mut(i) {
+            *slot = Some(resolved);
+        }
+    }
     let mut edges = Vec::new();
     let mut declined = DeclinedTotals::default();
-    for (file, facts) in per_file {
-        let module = module_for(file);
-        let resolved = match file.lang {
-            Lang::Py => resolve::resolve(index, &module, &facts.refs.imports, &facts.refs.refs),
-            Lang::Rs => resolve_rs::resolve(index, &module, &facts.refs.imports, &facts.refs.refs),
-            Lang::Ts | Lang::Js => Resolved::default(),
+    for (i, slot) in slots.into_iter().enumerate() {
+        let Some(resolved) = slot.or_else(|| one(i)) else {
+            continue;
         };
         declined.add(&resolved);
         edges.extend(resolved.edges);
