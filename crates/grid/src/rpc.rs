@@ -579,10 +579,7 @@ pub fn interfere(
 /// [`chart_provider::Error::NoSnapshot`] when nothing has been surveyed;
 /// [`chart_provider::Error`] if the store cannot be opened.
 pub fn matching(root: &std::path::Path, pattern: &str) -> Result<usize, chart_provider::Error> {
-    let chart = ChartDelta::open(root)?;
-    if chart.current().is_none() {
-        return Err(chart.no_snapshot());
-    }
+    let chart = ChartDelta::live(root)?;
     Ok(live_defs(&chart)
         .into_iter()
         .filter(|(_, callsign, _, _, _)| grid_gate::pattern::matches(pattern, callsign))
@@ -642,12 +639,14 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// order: the "what is in here" opener, half of `scope` for a whole file.
 ///
 /// # Errors
-/// [`chart_provider::Error`] if the store cannot be opened.
+/// [`chart_provider::Error::NoSnapshot`] when nothing has been surveyed — a
+/// file with no chart behind it is not a file with nothing in it; other
+/// variants if the store cannot be opened.
 pub fn defs_in_file(
     root: &std::path::Path,
     path: &str,
 ) -> Result<Vec<grid_wire::DefRef>, chart_provider::Error> {
-    let chart = ChartDelta::open(root)?;
+    let chart = ChartDelta::live(root)?;
     let mut out = Vec::new();
     for segment in chart.head().segments() {
         for i in 0..segment.def_count() {
@@ -691,17 +690,45 @@ fn in_subtree(under: Option<&str>, path: Option<&str>) -> bool {
     })
 }
 
+/// Refuse an `--under` prefix no charted definition sits below.
+///
+/// The filter and the answer are two different claims and the empty list
+/// conflates them: `--under grid_walk` (a callsign, not a path) and `--under
+/// zzzz` (a path that is not there) both used to read as "there are no
+/// orphans in that subtree". A prefix that selects nothing is bad input —
+/// the same rule `grid invariant` applies to a pattern that matches nothing,
+/// for the same reason: it reads as a narrowed answer and is not one.
+fn under_charted(chart: &ChartDelta, under: Option<&str>) -> Result<(), chart_provider::Error> {
+    let Some(prefix) = under else { return Ok(()) };
+    let any = chart.head().segments().iter().any(|segment| {
+        (0..segment.def_count()).any(|i| {
+            in_subtree(
+                Some(prefix),
+                segment.location(grid_chart::Ordinal(i)).map(|loc| loc.path),
+            )
+        })
+    });
+    if any {
+        Ok(())
+    } else {
+        Err(chart_provider::Error::NoSuchPath(prefix.to_owned()))
+    }
+}
+
 /// `grid.orphans` — every definition with no proven inbound edge, in
 /// callsign order, optionally one language's or one subtree's.
 ///
 /// # Errors
-/// [`chart_provider::Error`] if the store cannot be opened.
+/// [`chart_provider::Error::NoSnapshot`] when nothing has been surveyed,
+/// [`chart_provider::Error::NoSuchPath`] when `under` selects nothing;
+/// other variants if the store cannot be opened.
 pub fn orphans(
     root: &std::path::Path,
     lang: Option<grid_wire::Lang>,
     under: Option<&str>,
 ) -> Result<Vec<grid_wire::DefRef>, chart_provider::Error> {
-    let chart = ChartDelta::open(root)?;
+    let chart = ChartDelta::live(root)?;
+    under_charted(&chart, under)?;
     let mut out = Vec::new();
     for segment in chart.head().segments() {
         for i in 0..segment.def_count() {
@@ -815,13 +842,16 @@ pub enum ChurnSource {
 /// fresh checkout still ranks by both axes.
 ///
 /// # Errors
-/// [`chart_provider::Error`] if the store cannot be opened.
+/// [`chart_provider::Error::NoSnapshot`] when nothing has been surveyed,
+/// [`chart_provider::Error::NoSuchPath`] when `under` selects nothing;
+/// other variants if the store cannot be opened.
 pub fn hotspots(
     root: &std::path::Path,
     limit: usize,
     under: Option<&str>,
 ) -> Result<(Vec<Hotspot>, ChurnSource), chart_provider::Error> {
-    let chart = ChartDelta::open(root)?;
+    let chart = ChartDelta::live(root)?;
+    under_charted(&chart, under)?;
     // Union edits into identity components by plain map-merging: the log is
     // small (one row per recorded modification), so O(edits · chain) is fine.
     // ponytail: replace with union-find when a real log makes this slow.
@@ -998,16 +1028,20 @@ pub fn delta(
 
 /// `grid.resolve` — a locator to the definitions it names.
 ///
-/// An unknown locator resolves to an empty list, not an error: "nothing is
-/// called that" is an answer, and the wire contract says so.
+/// An unknown locator resolves to an empty list, not an error, and the CLI
+/// turns that empty list into its own refusal with the closest callsigns —
+/// the wire result stays a list, the exit code is where the judgment lives.
+/// A store with no chart at all is a different thing and refuses here.
 ///
 /// # Errors
-/// [`chart_provider::Error`] if the store cannot be opened.
+/// [`chart_provider::Error::NoSnapshot`] when nothing has been surveyed:
+/// answering "nothing is called that" from a store with no chart is a claim
+/// about the code, not about the store. Other variants if it cannot open.
 pub fn resolve(
     params: &ResolveParams,
     root: &std::path::Path,
 ) -> Result<ResolveResult, chart_provider::Error> {
-    Ok(ChartDelta::open(root)?.resolve(&params.locator))
+    Ok(ChartDelta::live(root)?.resolve(&params.locator))
 }
 
 /// `grid.query.walk` — the walk engine over the live chart.
@@ -2019,12 +2053,13 @@ pub fn todo(
 /// later; the filter does not move.
 ///
 /// # Errors
-/// [`chart_provider::Error`] if the store cannot be opened.
+/// [`chart_provider::Error::NoSnapshot`] when nothing has been surveyed;
+/// other variants if the store cannot be opened.
 pub fn uses(
     params: &ResolveParams,
     root: &std::path::Path,
 ) -> Result<(ResolveResult, Vec<grid_wire::Edge>), chart_provider::Error> {
-    let chart = ChartDelta::open(root)?;
+    let chart = ChartDelta::live(root)?;
     let defs = chart.resolve(&params.locator);
     let mut edges = Vec::new();
     for def in &defs {

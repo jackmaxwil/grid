@@ -1072,17 +1072,21 @@ fn resolve(args: &[&str], json: bool) -> u8 {
             refused(&e)
         }
         Ok(defs) => {
+            // A miss used to be a silent exit 0, and agents read silence as
+            // "does not exist". Bad input plus the near misses instead — and
+            // *before* the `--json` branch, because `--json` is an output
+            // form and not a second contract about what grid knows: serving
+            // the refusal as `[]` at exit 0 is exactly the silence the
+            // porcelain form refuses.
+            if defs.is_empty() {
+                hint(&miss(name));
+                return exit::BAD_INPUT;
+            }
             if json {
                 return emit_json(&defs);
             }
             if defs.len() > 1 {
                 hint(&format!("grid: {name} names {} definitions", defs.len()));
-            }
-            // A miss used to be a silent exit 0, and agents read silence as
-            // "does not exist". Bad input plus the near misses instead.
-            if defs.is_empty() {
-                hint(&miss(name));
-                return exit::BAD_INPUT;
             }
             print!("{}", porcelain::refs(&defs));
             exit::OK
@@ -1092,14 +1096,18 @@ fn resolve(args: &[&str], json: bool) -> u8 {
 
 /// The exit code a chart refusal leaves with. A refusal a survey would fix
 /// — no snapshot, a damaged chart, a rev never surveyed — is bad input
-/// (`2`), the same code every verb gives it; a store that cannot be read
-/// for any other reason is internal (`1`).
+/// (`2`), the same code every verb gives it; so is a filter that selects
+/// nothing, which is a fact about the caller's argument. A store that
+/// cannot be read for any other reason is internal (`1`).
 const fn refused(e: &chart_provider::Error) -> u8 {
     use chart_provider::Error as E;
     match e {
-        E::NoSnapshot(_) | E::NoSnapshotForRev(_) | E::NotLive(_) | E::Plan(_) | E::Config(_) => {
-            exit::BAD_INPUT
-        }
+        E::NoSnapshot(_)
+        | E::NoSnapshotForRev(_)
+        | E::NotLive(_)
+        | E::NoSuchPath(_)
+        | E::Plan(_)
+        | E::Config(_) => exit::BAD_INPUT,
         E::Store(_) | E::Survey(_) => exit::INTERNAL,
     }
 }
@@ -1212,6 +1220,29 @@ fn scope(args: &[&str], json: bool) -> u8 {
         sigs = sigs.or(Some(preset_sigs));
     }
     let tiers = bodies.is_some() || sigs.is_some();
+    // A budget is spent on *text*, in whole hop layers, and the record form
+    // packs no text — so `--budget` there had nothing to bind on and was
+    // silently ignored, which is the one thing a budget must never be.
+    // Budgets are rejected whole (README), and a budget that cannot bind is
+    // rejected before any work rather than after.
+    if budget.is_some() && !tiers {
+        hint(&format!(
+            "grid: --budget is spent on bodies and signatures in whole hop layers; the \
+             record form packs no text, so there is nothing for it to bind on — add \
+             --bodies/--sigs (or --orient/--edit), or drop --budget\n{USAGE}"
+        ));
+        return exit::BAD_INPUT;
+    }
+    // A pattern that names nothing is bad input, exactly as it is for
+    // `resolve`, `covenant` and `invariant`: an empty pack under a banner
+    // saying it is complete is silence read as "does not exist". This also
+    // carries the no-chart refusal, so `scope` never packs from a store
+    // nobody surveyed.
+    for pattern in &patterns {
+        if let Err(code) = charted(&pattern.0) {
+            return code;
+        }
+    }
     let params = grid_wire::methods::ScopeParams {
         callsigns: patterns,
         depth,
@@ -1564,7 +1595,7 @@ fn log(args: &[&str], json: bool) -> u8 {
         Ok(defs) => defs,
         Err(e) => {
             hint(&format!("grid: {e}"));
-            return exit::INTERNAL;
+            return refused(&e);
         }
     };
     let Some(def) = defs.first() else {

@@ -108,6 +108,11 @@ pub enum Error {
     /// A snapshot other than the live one was named. The engine holds
     /// exactly one live epoch; anything else cannot be answered from it.
     NotLive(String),
+    /// An `--under` prefix no charted definition sits below. A filter that
+    /// selects nothing is bad input, not an empty answer: the empty list
+    /// reads as "there is nothing here", which is a claim about the code and
+    /// not about the filter that was typed.
+    NoSuchPath(String),
     /// A named plan does not exist or does not parse.
     Plan(String),
 }
@@ -130,6 +135,11 @@ impl std::fmt::Display for Error {
             }
             Self::NoSnapshot(how) => write!(f, "no snapshot published — {how}"),
             Self::NotLive(id) => write!(f, "snapshot {id} is not the live epoch"),
+            Self::NoSuchPath(prefix) => write!(
+                f,
+                "no charted definition under `{prefix}` — `--under` takes a repo-relative \
+                 path prefix, not a callsign"
+            ),
         }
     }
 }
@@ -224,6 +234,29 @@ impl ChartDelta {
             names,
             head,
         })
+    }
+
+    /// Open the store for a verb that reads the chart, and refuse a store
+    /// that holds none.
+    ///
+    /// The whole of the "no chart" refusal, in one place because every read
+    /// verb needs the same one. A store nobody surveyed says nothing about
+    /// any name, so answering *from* it — an empty orphan list, an empty
+    /// pack, `nothing is called X` for code that is plainly there — reports
+    /// the code absent on the strength of grid's own silence. That is the
+    /// one conclusion PORCELAIN says grid never licenses, and the recovery
+    /// is a survey, not an edit.
+    ///
+    /// # Errors
+    /// [`Error::NoSnapshot`] when nothing has been surveyed, carrying the
+    /// [`Recovery`] that names the command and the tree; [`Error::Store`] if
+    /// the store cannot be opened at all.
+    pub fn live(root: &Path) -> Result<Self, Error> {
+        let chart = Self::open(root)?;
+        if chart.current().is_none() {
+            return Err(chart.no_snapshot());
+        }
+        Ok(chart)
     }
 
     /// The live snapshot id, or `None` for a store that has never been

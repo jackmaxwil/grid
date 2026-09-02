@@ -393,6 +393,37 @@ orphans, zero edges) exits `0` with no records; a name that resolves to
 callsigns — silence was read as "does not exist", which is the one
 conclusion grid never licenses.
 
+That rule generalises, and the generalisation is the whole of the refusal
+class. **An empty answer is an answer about a chart**, so a verb with no
+chart to answer from, a filter that selects nothing, and a budget with
+nothing to bind on are all bad input (`2`) with nothing on stdout, never
+exit `0` over the empty set:
+
+- **No chart.** Every verb that reads the published chart — `resolve`,
+  `uses`, `log`, `orphans`, `hotspots`, `scope` — refuses a store nobody
+  has surveyed with `no snapshot published` and the `hint:` line that names
+  the survey and the tree. It does *not* answer `nothing is called X`,
+  which is a claim about the code, nor an empty list, which is the same
+  claim written quietly. (`grid roots` is the documented exception: it
+  reads manifests, not the chart, and so answers before the first survey.)
+- **A filter that selects nothing.** `--under` is a repo-relative *path*
+  prefix; one no charted definition sits below — a callsign, a typo, a
+  directory that is not there — is bad input, because an empty list under a
+  hint that reads as an answer is worse than no filter. Likewise a `scope`
+  pattern that matches nothing, refused exactly as `resolve` refuses it,
+  with the closest charted callsigns.
+- **A budget that cannot bind.** Budgets are rejected whole, never
+  truncated — and never ignored. `--budget` is spent on bodies and
+  signatures in whole hop layers, so asking for one where no text is packed
+  (`grid scope` without `--bodies`/`--sigs`) is bad input rather than a flag
+  that quietly does nothing.
+
+**`--json` is an output form, never a second contract about what grid
+knows.** A refusal in the record form is the same refusal under `--json`:
+the same exit code, the same stderr, and nothing at all on stdout. `[]` at
+exit `0` where the porcelain form exits `2` is the silence this section
+forbids, arrived at by adding a flag.
+
 A refusal a survey would fix says so, in one hint line that names the
 command **and the tree to run it in** — `hint: run \`grid survey\` in <root>`,
 or `hint: run \`grid survey <rev>\` in <root>`. It is one line because it is
