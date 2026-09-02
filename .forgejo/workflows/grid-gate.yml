@@ -98,13 +98,13 @@ jobs:
         run: ./scripts/check-assurance-links.sh
 
   # From wave 3 on, grid gates its own PRs: the plan's ground rule, and the
-  # best corpus we own. The track is hand-written in .grid/tracks and names
+  # best corpus we own. The plan is hand-written in .grid/plans and names
   # what this branch promised to change; exit 3 means the diff diverged from
   # it. Self-hosting is a bootstrap hazard by design — the buildhost gate keeps
   # its human override producer for the case where a grid bug blocks a grid
   # fix.
   self-gate:
-    # A grid PR carries a track; a push to main carries none, so this job
+    # A grid PR carries a plan; a push to main carries none, so this job
     # only means something on pull requests.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -117,7 +117,22 @@ jobs:
           toolchain: "1.94.0"
       - uses: Swatinem/rust-cache@v2
       - name: grid gates grid
+        # No `ls`: the step shell is `bash -e -o pipefail`, so a glob that
+        # matches nothing reaches GNU ls as a literal, ls exits 2, and the
+        # script dies at the assignment — before the guard below can speak.
+        # grid charts .rs/.py/.pyi (survey::files::lang_of); a diff naming
+        # none of them has no delta to gate, so it needs no plan.
         run: |
-          track=$(ls .grid/tracks/*.json 2>/dev/null | head -1)
-          [ -n "$track" ] || { echo "no track: a grid PR carries one"; exit 1; }
-          cargo run -q -p grid -- gate "$track" HEAD
+          set -- .grid/plans/*.json
+          src=$(git diff --name-only "origin/$BASE...HEAD" |
+                grep -cE '\.(rs|py|pyi)$' || true)
+          if [ -f "$1" ]; then
+            cargo run -q -p grid -- gate "$1" HEAD
+          elif [ "$src" = 0 ]; then
+            echo "no charted source in the diff: nothing for grid to gate"
+          else
+            echo "no plan: a grid PR that changes source carries one in .grid/plans/"
+            exit 1
+          fi
+        env:
+          BASE: ${{ github.base_ref }}
