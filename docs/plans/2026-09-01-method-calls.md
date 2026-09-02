@@ -1,6 +1,96 @@
 # Method-call resolution for typed receivers (T-06, with T-17 and T-18)
 
-Status: **planned**, 2026-09-01. Written after the agent-loop plan landed
+Status: **implemented** (steps 4, 1, 2, 3 — in the plan's own sequencing
+order), 2026-09-02, on `claude/grid-methods`. Every step landed as its
+own commit with the gates green — `cargo fmt --all --check`, `cargo clippy
+--workspace --all-targets` under pedantic deny, `cargo test --workspace`,
+`cargo deny check`, `scripts/check-assurance-links.sh`,
+`scripts/check-unsafe-confined.sh` — its conservatism test seen red first
+with the mutation named in the commit body, its perf row re-measured and
+stated, and its deviations listed. No new dependencies; `Cargo.lock`
+gained nothing. ASSURANCE.md gained C44–C46 and the epoch sentence moved
+to "epochs 1–4 as of epoch 5". Step 5's surface landed inside the steps
+that changed each word, and this header.
+
+Deviations from this document, one line each; the reasoning is in the
+commit that made each one.
+
+- **Step 4 (T-18, faa5629).** None. The differential harness
+  `crates/survey/tests/edge_dump.rs` (ignored; chart as text) landed here
+  because step 2 needs it.
+- **Step 1 (30f41e0).** `Receiver` carries one `TypeRef` (path, args,
+  form, inner) rather than the plan's flattened `ty`/`args`/`form` — one
+  type for one idea, shared with `MethodFacts.ret` and `field_types`.
+  `FileRefs` also gained `trait_methods`, the names every trait declares,
+  because a required trait method is not a `Definition` and the resolver's
+  candidate set needs it.
+- **Step 2 (3819612).** `DriftUnchecked.unresolved_method_refused` is not
+  on the wire and `grid uses`' refused hint is not printed: both live in
+  files a sibling branch was editing this session; the refused share rides
+  `Snapshot.declined.refused` and `grid survey`'s `miss` line. Refusal
+  reasons are one `refused` counter, not itemized per reason. Porcelain is
+  2.11.0, not 2.2.0 — the plan predates the agent-loop bumps.
+- **Step 3 (6b71bcb, 6fc7855).** The counts ride `build_declined`'s map
+  keyed by datum, not `DefFacts.declined`: no `DefFacts {` literal moves,
+  and two definitions interning to one datum sum rather than drop.
+  `DefRef.declined`, `declined_within`, and the four consumers (`suspects
+  --closure`, `check`, `scope --bodies`, `grid uses`) are not wired — every
+  one sits in the sibling's files; the column, its accessor, and the sum
+  identity are in, the consumer-level conservatism test is pinned one
+  layer down at `Segment::declined` (T-46). Saturation is stated on
+  `Survey.declined_saturated`, not as a porcelain `warn`.
+
+### The ledger, re-measured
+
+Same tree (6fc7855), the pre-plan binary against the final one, Apple M4
+Max, release. `grid survey` timings were taken interleaved with the
+previous binary under a sibling build's load (load average 5–13) and are
+pairwise within noise; idle, both binaries measured 90ms / 170ms.
+
+| | grid before | grid after | yi before | yi after |
+|---|---:|---:|---:|---:|
+| defs | 1,943 | 1,943 | 5,176 | 5,176 |
+| edges | 3,648 | 3,840 | 6,876 | 7,678 |
+| proven | 3,648 | 3,769 | 6,876 | 7,159 |
+| modeled | 0 | 71 | 0 | 519 |
+| declined | 12,848 | 12,574 | 36,879 | 35,758 |
+| external | 2,534 | 4,303 | 10,062 | 14,670 |
+| method | 9,549 | 7,599 | 23,871 | 18,146 |
+| of which refused | — | 64 | — | 338 |
+| internal | 765 | 672 | 2,946 | 2,942 |
+| segment bytes (epoch 4 → 5) | 438,170 (1,932 defs) | 456,436 | 1,150,811 | 1,205,953 |
+| `grid survey`, warm, interleaved | 100–140ms | 110–140ms | 180–320ms | 190–320ms |
+
+Against Part I's targets: `external` rose by 1,769 / 4,608 (predicted
+~1,800 / ~5,400); edges emitted 121 proven + 71 modeled on this repo (of
+which ~93 proven are T-18's inline-module references, so step 2's own are
+~28 proven), 279 proven + 519 modeled on yi (predicted 68 / 221 and 578 /
+1,004). R-1's walker counted call sites; this counts distinct edges after
+the builder's dedup, follows no cross-file chain, and refuses where the
+walker counted a `self.field` place as first-step. `method` fell 20% on
+this repo and 24% on yi; the half is the residual only a type checker
+moves (R-5).
+
+Corrected after the review of PR #22 (same tree, same method), in two
+steps. First, three receivers that looked written and first-step were
+not — a trait's own type parameter, a double reference, a field of a
+same-named type written as `other::Foo` — and each now records no hint:
+the edge set is unchanged on both trees and three references moved
+population on this repo (`external` 4,100 → 4,099, `method` 7,802 →
+7,803, refused 66 → 64: `rpc::cache_record` and `rpc::cache_check` had
+typed `grid_cache::Chart::new(..)` by rpc.rs's own `Chart`,
+`serde_shape::field_of` had typed `syn::Field.ty` by that file's own
+`Field`); yi unchanged to the reference. Second, a receiver typed by a
+primitive (`&str`, `u32`, `bool`, …) is `external`, not `method`: this
+repo 4,099 → 4,303 / 7,803 → 7,599 across 137 definitions, yi 13,742 →
+14,670 / 19,074 → 18,146 across 540, refused and internal unchanged. The
+table above holds the final figures.
+
+Original plan follows, unchanged.
+
+---
+
+Status (as planned): **planned**, 2026-09-01. Written after the agent-loop plan landed
 (`docs/plans/2026-09-01-agent-loop.md`, whose shape this follows) and after
 R-1 was measured — the measurement is in Part I and it changes the goal.
 Every step is one commit with the gates green (`cargo fmt --all --check`,

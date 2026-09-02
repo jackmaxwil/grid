@@ -12,6 +12,7 @@ mod extract;
 mod refs;
 mod serde_shape;
 mod sig;
+mod types;
 
 pub use cfg::{eval_cfg, CfgEnv};
 pub use extract::definitions;

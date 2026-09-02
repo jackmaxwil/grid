@@ -193,6 +193,8 @@ pub struct SnapshotDeclined {
     pub external: u64,
     pub method: u64,
     pub internal: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

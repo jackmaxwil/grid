@@ -279,6 +279,22 @@ fn invalid_utf8_cfg_is_refused() {
     assert_eq!(err(image), ChartError::BadUtf8);
 }
 
+/// The epoch-5 declined column: exactly eight bytes per definition. A
+/// length that is not — one row short, one byte over — is refused before
+/// any accessor can read a half row.
+#[test]
+fn declined_column_of_the_wrong_length_is_refused() {
+    let mut image = sample();
+    let at = section_offset_field(Section::DefDeclined);
+    let len = u64::from_le_bytes(image[at + 8..at + 16].try_into().unwrap());
+    assert_eq!(len, 6 * 8, "six defs, eight bytes each");
+    poke_u64(&mut image, at + 8, len - 8);
+    assert_eq!(err(image), ChartError::BadSectionSize(Section::DefDeclined));
+    let mut image = sample();
+    poke_u64(&mut image, at + 8, len - 1);
+    assert_eq!(err(image), ChartError::BadSectionSize(Section::DefDeclined));
+}
+
 #[test]
 fn accessors_are_total_on_wild_ordinals() {
     let seg = Segment::parse(sample()).unwrap();
@@ -289,6 +305,7 @@ fn accessors_are_total_on_wild_ordinals() {
         let _ = seg.callsign(ord);
         let _ = seg.lang(ord);
         let _ = seg.cfg(ord);
+        let _ = seg.declined(ord);
         assert!(seg.out_edges(ord).all(|n| n.other.0 < seg.def_count()));
         assert!(seg.in_edges(ord).all(|n| n.other.0 < seg.def_count()));
     }

@@ -99,6 +99,38 @@ fn incremental_equals_full_after_editing_one_file() {
 }
 
 #[test]
+fn incremental_equals_full_with_an_inline_module_anchor() {
+    // The re-anchored `use super::x` is a per-file fact and rides the cache;
+    // the edge it buys is recomputed. Editing the *callee's* file must not
+    // leave the test module's edge behind.
+    const FOO: &str =
+        "pub fn x() -> u32 { 1 }\nmod tests {\n    use super::x;\n    fn t() -> u32 { x() }\n}\n";
+    let dir = repo(&[
+        ("crates/app/src/lib.rs", "pub mod foo;\n"),
+        ("crates/app/src/foo.rs", FOO),
+    ]);
+    let mut cache = Cache::new();
+    let before = run(dir.path(), &mut cache).expect("cold survey");
+    assert_eq!(before.edges, 1, "tests.t -> x through `use super::x`");
+
+    write(
+        dir.path(),
+        &[(
+            "crates/app/src/lib.rs",
+            "pub mod foo;\npub fn y() -> u32 { 2 }\n",
+        )],
+    );
+    readd(dir.path());
+    let warm = run(dir.path(), &mut cache).expect("warm survey");
+    assert_eq!(
+        warm.image,
+        cold(dir.path()).image,
+        "incremental must equal full"
+    );
+    assert_eq!(warm.reread, 1, "foo.rs came from the cache");
+}
+
+#[test]
 fn incremental_equals_full_when_a_callee_is_removed() {
     // The hard direction: an edge's *target* disappears. The caller's own
     // bytes did not change, so a cache holding edges would keep an edge to a

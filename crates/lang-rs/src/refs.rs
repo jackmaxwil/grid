@@ -5,11 +5,17 @@
 //! Method calls on non-`self` receivers need types and are dropped; macro
 //! bodies are opaque token streams syn's visitor never descends into, so
 //! everything inside one is dropped — omissions, never invented edges.
-use grid_datum::{FileRefs, Import, ParseError, RefKind, Reference};
+use std::collections::HashMap;
+
+use grid_datum::{
+    FileRefs, Import, ParseError, Receiver, ReceiverForm, ReceiverOrigin, RefKind, Reference,
+    TypeRef,
+};
 use syn::visit::Visit;
 use syn::{Expr, ImplItem, TraitItem, UseTree};
 
 use crate::extract::{path_dots, type_callsign};
+use crate::types;
 
 /// Attributes that are language furniture, not references: emitting them
 /// would let a local definition named `test` or `Clone` capture a false
@@ -57,10 +63,29 @@ pub fn references(source: &str) -> Result<FileRefs, ParseError> {
 
 pub(crate) fn references_of(file: &syn::File) -> FileRefs {
     let mut scan = Scan::default();
+    // The same-file tables first: a chain may be typed by a return written
+    // further down the file.
+    types::collect(
+        &file.items,
+        "",
+        &mut scan.types,
+        &mut scan.out.field_types,
+        &mut scan.out.trait_methods,
+    );
     for item in &file.items {
         scan.visit_item(item);
     }
     scan.out
+}
+
+/// One local's type, as the file states it or as the extractor read it off
+/// the initializer, plus — for a field read the same file cannot type — the
+/// field's name, for the resolver to look up against the base type.
+#[derive(Debug, Clone)]
+struct Binding {
+    ty: TypeRef,
+    origin: ReceiverOrigin,
+    field: Option<String>,
 }
 
 #[derive(Default)]
@@ -71,7 +96,57 @@ struct Scan {
     /// Whether the innermost enclosing body is an impl or trait body — that
     /// is, whether `self` means anything here.
     in_receiver: Vec<bool>,
+    /// The inline modules enclosing the current node, outermost first. What
+    /// `self::` and `super::` anchor against: rustc resolves them from the
+    /// *module* a path sits in, and an inline module is one the file's
+    /// module path — the only anchor the resolver holds — does not spell.
+    mods: Vec<String>,
+    /// Same-file written returns and declared field types, for chains.
+    types: types::FileTypes,
+    /// The enclosing impl's own type — what `Self` and `self` mean.
+    self_ty: Option<TypeRef>,
+    /// Generic type parameter names in force: the impl's, then the fn's.
+    generics: Vec<String>,
+    /// Local bindings, innermost scope last: parameters and `let`s with the
+    /// type the file states or the extractor inferred. `None` is a name
+    /// bound by a pattern, a closure parameter or a `for` — no syntax here
+    /// states its type — which shadows an outer binding and yields nothing.
+    locals: Vec<HashMap<String, Option<Binding>>>,
     out: FileRefs,
+}
+
+/// Re-anchor a `self::`/`super::` path written inside an inline module so a
+/// resolver anchoring against the file's module lands where rustc does:
+/// `self::r` is `self::{mods}::r`; `super^k::r` with `k ≤ depth` is
+/// `self::{mods[..depth−k]}::r`; a `super` chain deeper than the nesting
+/// climbs the file's own module by the remainder, which the resolver already
+/// handles. `crate::` and every bare path are untouched, so a file with no
+/// inline module extracts exactly as it did before.
+fn anchor_in_mod(mods: &[String], path: Vec<String>) -> Vec<String> {
+    if mods.is_empty() {
+        return path;
+    }
+    let supers = path.iter().take_while(|s| *s == "super").count();
+    let rest = |from: usize| path.get(from..).unwrap_or_default().iter().cloned();
+    match path.first().map(String::as_str) {
+        Some("self") => std::iter::once("self".to_owned())
+            .chain(mods.iter().cloned())
+            .chain(rest(1))
+            .collect(),
+        Some("super") if supers <= mods.len() => std::iter::once("self".to_owned())
+            .chain(
+                mods.get(..mods.len().saturating_sub(supers))
+                    .unwrap_or_default()
+                    .iter()
+                    .cloned(),
+            )
+            .chain(rest(supers))
+            .collect(),
+        Some("super") => std::iter::repeat_n("super".to_owned(), supers.saturating_sub(mods.len()))
+            .chain(rest(supers))
+            .collect(),
+        _ => path,
+    }
 }
 
 impl Scan {
@@ -85,11 +160,222 @@ impl Scan {
     }
 
     fn push(&mut self, kind: RefKind, path: Vec<String>) {
+        // A method path's head is a receiver, not an anchor; every other
+        // path is one rustc reads from the enclosing module.
+        let path = match kind {
+            RefKind::MethodCall | RefKind::SelfCall => path,
+            _ => anchor_in_mod(&self.mods, path),
+        };
         self.out.refs.push(Reference {
             from: self.scope.clone(),
             kind,
             path,
+            receiver: None,
         });
+    }
+
+    /// Walk `f` inside one more binding scope — a function body, a block, a
+    /// closure, a match arm — so a name bound inside it shadows only inside
+    /// it, which is the language's own rule.
+    fn scoped(&mut self, f: impl FnOnce(&mut Self)) {
+        self.locals.push(HashMap::new());
+        f(self);
+        self.locals.pop();
+    }
+
+    fn bind(&mut self, name: String, binding: Option<Binding>) {
+        if let Some(scope) = self.locals.last_mut() {
+            scope.insert(name, binding);
+        }
+    }
+
+    fn local(&self, name: &str) -> Option<Binding> {
+        self.locals
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name))
+            .and_then(Clone::clone)
+    }
+
+    /// A function body under its own parameters: `self` binds to the impl's
+    /// type in the method's own receiver form, a simply named parameter to
+    /// its annotation, and any other parameter pattern to nothing.
+    fn body(&mut self, sig: &syn::Signature, block: &syn::Block) {
+        let outer = self.generics.len();
+        self.generics.extend(types::generic_names(&sig.generics));
+        self.scoped(|s| {
+            for input in &sig.inputs {
+                match input {
+                    syn::FnArg::Receiver(_) => {
+                        let bound = s.self_ty.clone().zip(types::receiver_form(sig)).map(
+                            |(mut ty, form)| {
+                                ty.form = form;
+                                Binding {
+                                    ty,
+                                    origin: ReceiverOrigin::Param,
+                                    field: None,
+                                }
+                            },
+                        );
+                        s.bind("self".to_owned(), bound);
+                    }
+                    syn::FnArg::Typed(t) => {
+                        if let syn::Pat::Ident(pi) = &*t.pat {
+                            let bound = s.type_ref(&t.ty).map(|ty| Binding {
+                                ty,
+                                origin: ReceiverOrigin::Param,
+                                field: None,
+                            });
+                            s.bind(pi.ident.to_string(), bound);
+                        } else {
+                            s.visit_pat(&t.pat);
+                        }
+                    }
+                }
+            }
+            s.visit_block(block);
+        });
+        self.generics.truncate(outer);
+    }
+
+    fn type_ref(&self, ty: &syn::Type) -> Option<TypeRef> {
+        types::type_ref(ty, self.self_ty.as_ref(), &self.generics)
+    }
+
+    /// `base.field` on a typed base: the field's declared type when the
+    /// struct is in this file, else the base and the field's name for the
+    /// resolver to look up in the index.
+    fn field_of(&self, f: &syn::ExprField) -> Option<Binding> {
+        let base = self.type_of(&f.base)?;
+        let syn::Member::Named(id) = &f.member else {
+            return None;
+        };
+        if base.field.is_some() || base.ty.args {
+            return None;
+        }
+        let is_self = matches!(&*f.base, Expr::Path(p) if p.path.is_ident("self"));
+        let field = id.to_string();
+        // Keyed by the written path: `other::Foo` is never this file's `Foo`.
+        match self.types.fields.get(&base.ty.path.join(".")) {
+            // The struct is in this file: its declared type, or nothing for
+            // a field no path spells.
+            Some(Some(fields)) => fields.get(&field).map(|ty| Binding {
+                ty: ty.clone(),
+                origin: if is_self {
+                    ReceiverOrigin::SelfField
+                } else {
+                    ReceiverOrigin::TypedField
+                },
+                field: None,
+            }),
+            Some(None) => None,
+            // Elsewhere: the resolver reads the declared type off the
+            // index, so the hint carries the base and the name.
+            None => Some(Binding {
+                ty: TypeRef {
+                    form: ReceiverForm::Value,
+                    ..base.ty
+                },
+                origin: ReceiverOrigin::TypedField,
+                field: Some(field),
+            }),
+        }
+    }
+
+    /// What the file says an expression's type is, by the rules
+    /// `docs/LANG_RS.md` names and no others: a local's binding, a field of
+    /// a typed base, a method or associated-function call whose return is
+    /// written in this file, a struct literal, `?`/`unwrap`/`expect` on a
+    /// written `Option`/`Result`, and `&`/`&mut` around any of those.
+    /// Everything else is `None` — a literal, an index, a macro, a tuple
+    /// field, a chain through an unwritten return.
+    fn type_of(&self, e: &Expr) -> Option<Binding> {
+        match e {
+            Expr::Paren(p) => self.type_of(&p.expr),
+            Expr::Reference(r) => {
+                let mut b = self.type_of(&r.expr)?;
+                // `&` around a reference is a double reference, whose first
+                // lookup step the form cannot spell; `&` around a field the
+                // index will type composes with a form not known here.
+                if b.field.is_some() || b.ty.form != ReceiverForm::Value {
+                    return None;
+                }
+                b.ty.form = if r.mutability.is_some() {
+                    ReceiverForm::RefMut
+                } else {
+                    ReceiverForm::Ref
+                };
+                Some(b)
+            }
+            Expr::Path(p) if p.qself.is_none() => {
+                let name = p.path.get_ident()?.to_string();
+                self.local(&name)
+            }
+            Expr::Field(f) => self.field_of(f),
+            Expr::MethodCall(mc) => {
+                let base = self.type_of(&mc.receiver)?;
+                if base.field.is_some() {
+                    return None;
+                }
+                let method = mc.method.to_string();
+                if method == "unwrap" || method == "expect" {
+                    return unwrapped(base);
+                }
+                let key = format!("{}.{method}", base.ty.path.join("."));
+                let ret = self.types.returns.get(&key)?.clone()?;
+                Some(Binding {
+                    ty: ret,
+                    origin: ReceiverOrigin::ChainReturn,
+                    field: None,
+                })
+            }
+            Expr::Try(t) => unwrapped(self.type_of(&t.expr)?),
+            Expr::Call(c) => {
+                let path = dotted(&c.func)?;
+                let key = match path.as_slice() {
+                    [f] => f.clone(),
+                    [ty @ .., f] => {
+                        let ty = if matches!(ty, [only] if only == "Self") {
+                            self.self_ty.as_ref()?.path.join(".")
+                        } else {
+                            ty.join(".")
+                        };
+                        format!("{ty}.{f}")
+                    }
+                    [] => return None,
+                };
+                let ret = self.types.returns.get(&key)?.clone()?;
+                Some(Binding {
+                    ty: ret,
+                    origin: ReceiverOrigin::LocalCtor,
+                    field: None,
+                })
+            }
+            Expr::Struct(s) if s.qself.is_none() => {
+                let path: Vec<String> = s
+                    .path
+                    .segments
+                    .iter()
+                    .map(|p| p.ident.to_string())
+                    .collect();
+                let ty = if path.first().is_some_and(|h| h == "Self") {
+                    (path.len() == 1).then(|| self.self_ty.clone()).flatten()?
+                } else {
+                    TypeRef {
+                        path,
+                        args: false,
+                        form: ReceiverForm::Value,
+                        inner: None,
+                    }
+                };
+                Some(Binding {
+                    ty,
+                    origin: ReceiverOrigin::LocalLiteral,
+                    field: None,
+                })
+            }
+            _ => None,
+        }
     }
 
     /// Attribute and derive references, attributed to the decorated
@@ -121,7 +407,11 @@ impl Scan {
         self.out.refs.push(Reference {
             from: owner.to_owned(),
             kind: RefKind::Decorator,
-            path: path.segments.iter().map(|s| s.ident.to_string()).collect(),
+            path: anchor_in_mod(
+                &self.mods,
+                path.segments.iter().map(|s| s.ident.to_string()).collect(),
+            ),
+            receiver: None,
         });
     }
 }
@@ -132,6 +422,23 @@ fn join(prefix: &str, name: &str) -> String {
     } else {
         format!("{prefix}.{name}")
     }
+}
+
+/// `T` out of a written `Option<T>` / `Result<T, _>`, for `?`, `unwrap`
+/// and `expect`; nothing for any other wrapper, which is not unwrapped.
+fn unwrapped(base: Binding) -> Option<Binding> {
+    if base.field.is_some() {
+        return None;
+    }
+    let last = base.ty.path.last()?;
+    if last != "Option" && last != "Result" {
+        return None;
+    }
+    base.ty.inner.map(|inner| Binding {
+        ty: *inner,
+        origin: ReceiverOrigin::Unwrapped,
+        field: None,
+    })
 }
 
 /// A qself-free path as dotted segments, or `None` for anything without a
@@ -154,9 +461,65 @@ fn dotted(expr: &Expr) -> Option<Vec<String>> {
 impl<'ast> Visit<'ast> for Scan {
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
         self.decorators(&node.sig.ident.to_string(), &node.attrs);
+        // A free function nested in a method sees no `Self`.
+        let self_ty = self.self_ty.take();
         self.nested(&node.sig.ident.to_string(), false, |s| {
-            s.visit_block(&node.block);
+            s.body(&node.sig, &node.block);
         });
+        self.self_ty = self_ty;
+    }
+
+    fn visit_block(&mut self, node: &'ast syn::Block) {
+        self.scoped(|s| syn::visit::visit_block(s, node));
+    }
+
+    fn visit_local(&mut self, node: &'ast syn::Local) {
+        // The initializer sees the *outer* binding of the name it rebinds.
+        if let Some(init) = &node.init {
+            self.visit_expr(&init.expr);
+            if let Some((_, diverge)) = &init.diverge {
+                self.visit_expr(diverge);
+            }
+        }
+        match &node.pat {
+            syn::Pat::Ident(pi) if pi.subpat.is_none() => {
+                let bound = node.init.as_ref().and_then(|i| self.type_of(&i.expr));
+                self.bind(pi.ident.to_string(), bound);
+            }
+            syn::Pat::Type(pt) => {
+                if let syn::Pat::Ident(pi) = &*pt.pat {
+                    let bound = self.type_ref(&pt.ty).map(|ty| Binding {
+                        ty,
+                        origin: ReceiverOrigin::LetAnnotated,
+                        field: None,
+                    });
+                    self.bind(pi.ident.to_string(), bound);
+                } else {
+                    self.visit_pat(&pt.pat);
+                }
+            }
+            other => self.visit_pat(other),
+        }
+    }
+
+    fn visit_pat_ident(&mut self, node: &'ast syn::PatIdent) {
+        // A pattern binding — a closure parameter, a `for`, a `match` arm,
+        // a destructuring `let` — has a type no syntax here states. It
+        // shadows, and what it shadows yields nothing.
+        self.bind(node.ident.to_string(), None);
+        syn::visit::visit_pat_ident(self, node);
+    }
+
+    fn visit_expr_closure(&mut self, node: &'ast syn::ExprClosure) {
+        self.scoped(|s| syn::visit::visit_expr_closure(s, node));
+    }
+
+    fn visit_arm(&mut self, node: &'ast syn::Arm) {
+        self.scoped(|s| syn::visit::visit_arm(s, node));
+    }
+
+    fn visit_expr_for_loop(&mut self, node: &'ast syn::ExprForLoop) {
+        self.scoped(|s| syn::visit::visit_expr_for_loop(s, node));
     }
 
     fn visit_item_struct(&mut self, node: &'ast syn::ItemStruct) {
@@ -174,15 +537,20 @@ impl<'ast> Visit<'ast> for Scan {
     fn visit_item_trait(&mut self, node: &'ast syn::ItemTrait) {
         let name = node.ident.to_string();
         self.decorators(&name, &node.attrs);
+        // The trait's own type parameters shadow same-named types inside
+        // its default bodies, exactly as an impl's do inside its methods.
+        let outer_generics = self.generics.len();
+        self.generics.extend(types::generic_names(&node.generics));
         for ti in &node.items {
             if let TraitItem::Fn(m) = ti {
                 if let Some(block) = &m.default {
                     self.nested(&name, true, |s| {
-                        s.nested(&m.sig.ident.to_string(), false, |s| s.visit_block(block));
+                        s.nested(&m.sig.ident.to_string(), false, |s| s.body(&m.sig, block));
                     });
                 }
             }
         }
+        self.generics.truncate(outer_generics);
     }
 
     fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {
@@ -196,7 +564,11 @@ impl<'ast> Visit<'ast> for Scan {
                 self.out.refs.push(Reference {
                     from: join(&self.scope, &ty),
                     kind: RefKind::Base,
-                    path: path.segments.iter().map(|s| s.ident.to_string()).collect(),
+                    path: anchor_in_mod(
+                        &self.mods,
+                        path.segments.iter().map(|s| s.ident.to_string()).collect(),
+                    ),
+                    receiver: None,
                 });
             }
         }
@@ -204,15 +576,25 @@ impl<'ast> Visit<'ast> for Scan {
             Some((_, path, _)) => format!("{ty}@{}", path_dots(path)),
             None => ty,
         };
+        let outer_generics = self.generics.len();
+        self.generics.extend(types::generic_names(&node.generics));
+        let self_ty = std::mem::replace(
+            &mut self.self_ty,
+            types::type_ref(&node.self_ty, None, &self.generics),
+        );
         for ii in &node.items {
             if let ImplItem::Fn(m) = ii {
                 let owner = format!("{receiver}.{}", m.sig.ident);
                 self.decorators(&owner, &m.attrs);
                 self.nested(&receiver, true, |s| {
-                    s.nested(&m.sig.ident.to_string(), false, |s| s.visit_block(&m.block));
+                    s.nested(&m.sig.ident.to_string(), false, |s| {
+                        s.body(&m.sig, &m.block);
+                    });
                 });
             }
         }
+        self.self_ty = self_ty;
+        self.generics.truncate(outer_generics);
     }
 
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
@@ -230,11 +612,13 @@ impl<'ast> Visit<'ast> for Scan {
             }
         }
         if let Some((_, items)) = &node.content {
+            self.mods.push(node.ident.to_string());
             self.nested(&node.ident.to_string(), false, |s| {
                 for item in items {
                     s.visit_item(item);
                 }
             });
+            self.mods.pop();
             return;
         }
         // `#[path = "..."] mod x;` relocates the module's file. Top-level
@@ -269,6 +653,14 @@ impl<'ast> Visit<'ast> for Scan {
             &self.scope,
             &mut self.out.imports,
         );
+        // A `use self::`/`use super::` inside an inline module anchors
+        // against that module, the same as a path does.
+        if !self.mods.is_empty() {
+            for import in self.out.imports.iter_mut().skip(before) {
+                let segs = import.target.split('.').map(str::to_owned).collect();
+                import.target = anchor_in_mod(&self.mods, segs).join(".");
+            }
+        }
         // Any visibility beyond inherited makes the binding reachable from
         // other files — the raw material of alias resolution.
         if !matches!(node.vis, syn::Visibility::Inherited) {
@@ -314,14 +706,25 @@ impl<'ast> Visit<'ast> for Scan {
         {
             self.push(RefKind::SelfCall, vec![node.method.to_string()]);
         } else {
-            // Every other receiver needs a type to resolve, and this frontend
-            // has none (LANG_RS.md). Recorded anyway, so the call is a
-            // *declined* reference rather than an invisible one — which is
-            // the difference between a chart that knows what it missed and a
+            // Every other receiver needs a type to resolve. What the file
+            // states about it rides beside the reference as a hint; a call
+            // the file says nothing about is recorded all the same, so it is
+            // a *declined* reference rather than an invisible one — the
+            // difference between a chart that knows what it missed and a
             // chart that reports a hole as an absence.
+            let hint = self.type_of(&node.receiver).map(|b| Receiver {
+                ty: b.ty,
+                origin: b.origin,
+                field: b.field,
+            });
             let mut path = receiver;
             path.push(node.method.to_string());
-            self.push(RefKind::MethodCall, path);
+            self.out.refs.push(Reference {
+                from: self.scope.clone(),
+                kind: RefKind::MethodCall,
+                path,
+                receiver: hint,
+            });
         }
         syn::visit::visit_expr_method_call(self, node);
     }

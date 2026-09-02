@@ -112,6 +112,99 @@ pub struct Definition {
     /// Empty when nothing conditions it. A frontend with no such notion
     /// leaves it empty.
     pub cfg: String,
+    /// What a method-call resolver needs to know about this definition as
+    /// a callee: its receiver form, whether its impl is plain, its written
+    /// return. `None` for a type, a trait method, or a frontend with no
+    /// such notion. Rides beside the identities and enters none of them.
+    pub method: Option<MethodFacts>,
+}
+
+/// How a receiver is passed: by value, by shared reference, by mutable
+/// reference. The form of a method's own `self`, and the form of a receiver
+/// expression at a call site — rustc's method lookup matches the two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiverForm {
+    Value,
+    Ref,
+    RefMut,
+}
+
+/// Where a receiver's type came from. The written origins are the
+/// language's own binding rule; the inferred ones are the frontend's reading
+/// of syntax, which is why a resolver grades them differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiverOrigin {
+    /// A parameter annotation, `x: &Foo`.
+    Param,
+    /// A `let` annotation, `let x: Foo = …`.
+    LetAnnotated,
+    /// `self.field` where the field's declared type is known.
+    SelfField,
+    /// `x.field` on a typed `x`; the field's type may be another file's,
+    /// in which case [`Receiver::field`] names it for the resolver.
+    TypedField,
+    /// A local bound by `Type::f(..)` or `f(..)` with a written return.
+    LocalCtor,
+    /// A local bound by a struct literal `Foo { .. }`.
+    LocalLiteral,
+    /// A chain through a written return type, `x.g().m()`.
+    ChainReturn,
+    /// `?`, `.unwrap()` or `.expect(..)` on a written `Option<T>` /
+    /// `Result<T, _>`.
+    Unwrapped,
+}
+
+impl ReceiverOrigin {
+    /// Whether the programmer wrote the type, as opposed to the frontend
+    /// reading it off an initializer.
+    #[must_use]
+    pub const fn written(self) -> bool {
+        matches!(
+            self,
+            Self::Param | Self::LetAnnotated | Self::SelfField | Self::TypedField
+        )
+    }
+}
+
+/// A type as a path, the way a resolver can look it up: the outermost
+/// path, whether it carries generic arguments, the reference form around
+/// it, and — for one level of wrapper — the first argument's own type, so
+/// `Result<Foo, E>` unwraps to `Foo`. Wrappers are never looked through
+/// here: `Option<Foo>` is `["Option"]` with `args`, and only an explicit
+/// `?`/`unwrap` reaches `inner`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeRef {
+    pub path: Vec<String>,
+    pub args: bool,
+    pub form: ReceiverForm,
+    pub inner: Option<Box<TypeRef>>,
+}
+
+/// What a file says about the receiver of one method call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Receiver {
+    /// The receiver's type, as written or as inferred, `Self` replaced by
+    /// the impl's own type.
+    pub ty: TypeRef,
+    pub origin: ReceiverOrigin,
+    /// For [`ReceiverOrigin::TypedField`]: the field read off `ty`, whose
+    /// declared type the resolver finds in the index. `None` when `ty` is
+    /// already the receiver's own type.
+    pub field: Option<String>,
+}
+
+/// A callee's facts for the method-call rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodFacts {
+    /// The method's own `self` form; `None` for an associated function or
+    /// a free function.
+    pub recv: Option<ReceiverForm>,
+    /// True for `impl Foo` and `impl<T> Foo<T>` with no bounds and no
+    /// where clause — the impls whose methods apply to every `Foo`. False
+    /// for `impl Foo<u8>`, `impl<T: Bound> Foo<T>`, `impl<T> Foo<T> where …`.
+    pub plain_impl: bool,
+    /// The written return type, `Self` substituted, wrapper kept.
+    pub ret: Option<TypeRef>,
 }
 
 /// How a name was reached for. The kind decides the edge relation once the
@@ -155,6 +248,11 @@ pub struct Reference {
     /// The dotted name as written: `["a", "b", "c"]` for `a.b.c`. Never
     /// empty. For [`RefKind::SelfCall`] the leading receiver is stripped.
     pub path: Vec<String>,
+    /// For [`RefKind::MethodCall`]: what the file says about the
+    /// receiver's type, when it says anything. `None` is the honest answer
+    /// for a closure parameter, a pattern binding, a chain through an
+    /// unwritten return — and the call then stays declined.
+    pub receiver: Option<Receiver>,
 }
 
 /// One `import` binding: the local name a module or symbol was bound to.
@@ -197,6 +295,14 @@ pub struct FileRefs {
     /// cannot see the attribute on its declaration, so the survey joins it
     /// back on by module path.
     pub mod_cfgs: Vec<(String, String)>,
+    /// Declared field types: `(struct callsign, field, type)`, for every
+    /// named field whose type is a path. What lets a resolver type
+    /// `x.field` when `x` is typed and the struct lives in another file.
+    pub field_types: Vec<(String, String, TypeRef)>,
+    /// The name of every method every trait in this file declares, default
+    /// or required. The tree-wide union is the resolver's over-approximation
+    /// of "a trait in scope supplies `m`": a maybe is a refusal.
+    pub trait_methods: Vec<String>,
 }
 
 /// The conjunction of cfg predicates as one predicate: nothing for none,

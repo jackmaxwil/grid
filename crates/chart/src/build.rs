@@ -1,9 +1,11 @@
 //! Building a segment image. Deterministic by construction (claim C2): the
 //! input is treated as a *set*, sorted by content, so two surveys that found
 //! the same graph write byte-identical bytes regardless of discovery order.
+use std::collections::HashMap;
+
 use crate::{
-    checksum, grade_tag, lang_tag, relation_tag, ChartError, DatumId, Section, FORMAT_EPOCH,
-    HEADER_LEN, MAGIC, SECTION_COUNT, SECTION_ENTRY_LEN,
+    checksum, grade_tag, lang_tag, relation_tag, ChartError, DatumId, Declined, Section,
+    FORMAT_EPOCH, HEADER_LEN, MAGIC, SECTION_COUNT, SECTION_ENTRY_LEN,
 };
 
 /// A definition to intern: identity, name, and the adapter that found it.
@@ -67,6 +69,22 @@ pub struct Edge {
 /// # Errors
 /// [`ChartError::TooLarge`] if the graph exceeds what u32 ordinals address.
 pub fn build(defs: &[Def], edges: &[Edge]) -> Result<Vec<u8>, ChartError> {
+    build_declined(defs, edges, &HashMap::new())
+}
+
+/// [`build`], with the epoch-5 per-definition declined split, keyed by
+/// datum: a definition the map does not name writes zeros — nothing was
+/// declined inside it. Keyed by datum rather than carried on the def so
+/// two definitions that intern to one datum sum into the one row the
+/// image holds, and the sum over every row stays the survey's own count.
+///
+/// # Errors
+/// [`ChartError::TooLarge`] if the graph exceeds what u32 ordinals address.
+pub fn build_declined<S: std::hash::BuildHasher>(
+    defs: &[Def],
+    edges: &[Edge],
+    declined: &HashMap<DatumId, Declined, S>,
+) -> Result<Vec<u8>, ChartError> {
     let mut defs: Vec<&Def> = defs.iter().collect();
     defs.sort_unstable_by(|a, b| {
         a.datum
@@ -99,7 +117,7 @@ pub fn build(defs: &[Def], edges: &[Edge]) -> Result<Vec<u8>, ChartError> {
     let mut inc: Vec<(u32, u32, u16)> = rows.iter().map(|&(s, d, a)| (d, s, a)).collect();
     inc.sort_unstable();
 
-    let sections = sections(&defs, out, &inc, def_count)?;
+    let sections = sections(&defs, out, &inc, def_count, declined)?;
 
     let table_len = SECTION_COUNT * SECTION_ENTRY_LEN;
     let mut image = Vec::with_capacity(HEADER_LEN + table_len);
@@ -133,11 +151,12 @@ pub fn build(defs: &[Def], edges: &[Edge]) -> Result<Vec<u8>, ChartError> {
 /// The section payloads, in table order. Split out of [`build`] so the one
 /// place that decides what a section *contains* is one screen long: adding a
 /// column is an entry here and an arm in [`Section`], nothing else.
-fn sections(
+fn sections<S: std::hash::BuildHasher>(
     defs: &[&Def],
     out: &[(u32, u32, u16)],
     inc: &[(u32, u32, u16)],
     def_count: u32,
+    declined: &HashMap<DatumId, Declined, S>,
 ) -> Result<[Vec<u8>; SECTION_COUNT], ChartError> {
     fn path_of(d: &Def) -> &str {
         d.facts.as_ref().map_or("", |f| f.path.as_str())
@@ -215,6 +234,13 @@ fn sections(
         def_cfgs,
         csr_byte_offsets(cfgs.iter().map(|c| c.len()))?,
         cfgs.iter().flat_map(|c| c.bytes()).collect(),
+        defs.iter()
+            .flat_map(|d| {
+                let z = declined.get(&d.datum).copied().unwrap_or_default();
+                [z.external, z.method, z.internal, z.refused]
+            })
+            .flat_map(u16::to_le_bytes)
+            .collect(),
     ])
 }
 
@@ -274,6 +300,7 @@ impl Section {
             Self::DefCfgs => "def_cfgs",
             Self::CfgOffsets => "cfg_offsets",
             Self::CfgBytes => "cfg_bytes",
+            Self::DefDeclined => "def_declined",
         }
     }
 }

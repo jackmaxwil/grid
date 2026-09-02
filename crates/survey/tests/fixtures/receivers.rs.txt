@@ -1,0 +1,272 @@
+//! Ground truth for the method-call rule, with rustc as the oracle.
+//!
+//! Every inherent and trait method returns its own callsign; every call
+//! site is its own function, named for the grade the rule must assign it:
+//! `c_p_*` proven, `c_m_*` modeled, `r_*` refused or declined (no edge).
+//! `main` prints `<function>\t<callsign the call actually reached>`, so
+//! the survey's edges can be checked against the compiler's own binding.
+#![allow(dead_code, unused_variables, clippy::all)]
+
+pub mod other;
+
+pub struct Foo {
+    pub bar: Bar,
+    pub n: u32,
+}
+pub struct Bar;
+pub struct Gen<T>(pub T);
+pub struct Where;
+pub type Alias = Foo;
+#[cfg(unix)]
+pub struct Amb {
+    pub a: u8,
+}
+#[cfg(not(unix))]
+pub struct Amb {
+    pub b: u8,
+}
+
+/// Same name as `other::Holder`, a different field type: the one in this
+/// file must never type a base written as `other::Holder`.
+pub struct Holder<'a> {
+    pub h: &'a Bar,
+}
+
+pub trait Tr {
+    fn t(&self) -> &'static str;
+    fn by_val(self) -> &'static str;
+    fn only_trait(&self) -> &'static str;
+}
+
+/// Implemented for `&Foo`: rustc's first step on a `&&Foo` receiver is the
+/// outer reference, where this impl outranks the inherent `Foo::d`.
+pub trait Dr {
+    fn d(&self) -> &'static str;
+}
+
+/// `Foo` here is the trait's type parameter, not the struct above: inside
+/// the default body only the bound's `t` is visible.
+pub trait Visit<Foo: Tr> {
+    fn r_trait_generic(&self, n: &Foo) -> &'static str {
+        n.t()
+    }
+}
+pub struct V;
+impl Visit<Foo> for V {}
+
+impl Foo {
+    pub fn new() -> Self {
+        Foo { bar: Bar, n: 0 }
+    }
+    pub fn open() -> Result<Self, String> {
+        Ok(Foo::new())
+    }
+    pub fn m(&self) -> &'static str {
+        "Foo.m"
+    }
+    pub fn mm(&mut self) -> &'static str {
+        "Foo.mm"
+    }
+    pub fn v(self) -> &'static str {
+        "Foo.v"
+    }
+    pub fn g(&self) -> &Bar {
+        &self.bar
+    }
+    pub fn t(&self) -> &'static str {
+        "Foo.t"
+    }
+    pub fn by_val(&self) -> &'static str {
+        "Foo.by_val"
+    }
+    pub fn clone(&self) -> &'static str {
+        "Foo.clone"
+    }
+    pub fn d(&self) -> &'static str {
+        "Foo.d"
+    }
+    pub fn c_m_self_field(&self) -> &'static str {
+        self.bar.m()
+    }
+}
+
+impl Dr for &Foo {
+    fn d(&self) -> &'static str {
+        "Foo@Dr.d"
+    }
+}
+
+impl Tr for Foo {
+    fn t(&self) -> &'static str {
+        "Foo@Tr.t"
+    }
+    fn by_val(self) -> &'static str {
+        "Foo@Tr.by_val"
+    }
+    fn only_trait(&self) -> &'static str {
+        "Foo@Tr.only_trait"
+    }
+}
+
+impl Bar {
+    pub fn m(&self) -> &'static str {
+        "Bar.m"
+    }
+}
+
+impl<T> Gen<T> {
+    pub fn m(&self) -> &'static str {
+        "Gen.m"
+    }
+}
+
+impl Where
+where
+    u8: Copy,
+{
+    pub fn m(&self) -> &'static str {
+        "Where.m"
+    }
+}
+
+impl Amb {
+    pub fn m(&self) -> &'static str {
+        "Amb.m"
+    }
+}
+
+// Proven: a written receiver type whose form matches the inherent method's
+// at the first lookup step, where rustc lets no trait outrank it.
+fn c_p_ref(x: &Foo) -> &'static str {
+    x.m()
+}
+fn c_p_refmut(x: &mut Foo) -> &'static str {
+    x.mm()
+}
+fn c_p_val(x: Foo) -> &'static str {
+    x.v()
+}
+fn c_p_let_ann() -> &'static str {
+    let x: Foo = Foo::new();
+    x.v()
+}
+fn c_p_trait_shadowed(x: &Foo) -> &'static str {
+    x.t()
+}
+fn c_p_prelude_shadowed(x: &Foo) -> &'static str {
+    x.clone()
+}
+
+// Modeled: a written type matched only at a later step with no visible
+// candidate, or a type the file inferred.
+fn c_m_autoref(x: Foo) -> &'static str {
+    x.m()
+}
+fn c_m_field(x: &Foo) -> &'static str {
+    x.bar.m()
+}
+fn c_m_ctor() -> &'static str {
+    let x = Foo::new();
+    x.m()
+}
+fn c_m_ctor_val() -> &'static str {
+    Foo::new().v()
+}
+fn c_m_literal() -> &'static str {
+    let x = Foo { bar: Bar, n: 1 };
+    x.m()
+}
+fn c_m_chain(x: &Foo) -> &'static str {
+    x.g().m()
+}
+fn c_m_try() -> Result<&'static str, String> {
+    Ok(Foo::open()?.m())
+}
+fn c_m_unwrap() -> &'static str {
+    Foo::open().unwrap().m()
+}
+
+// No edge: refused with a reason, or a receiver the file cannot type.
+fn r_by_val_trait(x: Foo) -> &'static str {
+    x.by_val()
+}
+fn r_prelude_later(x: Foo) -> &'static str {
+    x.clone()
+}
+fn r_no_inherent(x: &Foo) -> &'static str {
+    x.only_trait()
+}
+fn r_instantiated(x: &Gen<u8>) -> &'static str {
+    x.m()
+}
+fn r_where(x: &Where) -> &'static str {
+    x.m()
+}
+fn r_alias(x: &Alias) -> &'static str {
+    x.m()
+}
+fn r_amb(x: &Amb) -> &'static str {
+    x.m()
+}
+fn r_closure() -> &'static str {
+    let f = |x: &Foo| x.m();
+    f(&Foo::new())
+}
+fn r_for(v: Vec<Foo>) -> &'static str {
+    for x in v {
+        return x.m();
+    }
+    "none"
+}
+// A written type that is not the first lookup step: `&&Foo` probes the
+// outer reference first, where `impl Dr for &Foo` wins.
+fn r_double_ref(x: &&Foo) -> &'static str {
+    x.d()
+}
+// A base written as `other::Holder`: this file's `Holder` must not type it.
+fn r_foreign_field(x: &other::Holder) -> &'static str {
+    x.h.m()
+}
+
+fn main() {
+    let mut foo = Foo::new();
+    #[cfg(unix)]
+    let amb = Amb { a: 1 };
+    #[cfg(not(unix))]
+    let amb = Amb { b: 1 };
+    let rows: Vec<(&str, &str)> = vec![
+        ("c_p_ref", c_p_ref(&foo)),
+        ("c_p_refmut", c_p_refmut(&mut foo)),
+        ("c_p_val", c_p_val(Foo::new())),
+        ("c_p_let_ann", c_p_let_ann()),
+        ("c_p_trait_shadowed", c_p_trait_shadowed(&foo)),
+        ("c_p_prelude_shadowed", c_p_prelude_shadowed(&foo)),
+        ("c_m_autoref", c_m_autoref(Foo::new())),
+        ("c_m_field", c_m_field(&foo)),
+        ("Foo.c_m_self_field", foo.c_m_self_field()),
+        ("c_m_ctor", c_m_ctor()),
+        ("c_m_ctor_val", c_m_ctor_val()),
+        ("c_m_literal", c_m_literal()),
+        ("c_m_chain", c_m_chain(&foo)),
+        ("c_m_try", c_m_try().unwrap()),
+        ("c_m_unwrap", c_m_unwrap()),
+        ("r_by_val_trait", r_by_val_trait(Foo::new())),
+        ("r_prelude_later", r_prelude_later(Foo::new())),
+        ("r_no_inherent", r_no_inherent(&foo)),
+        ("r_instantiated", r_instantiated(&Gen(1u8))),
+        ("r_where", r_where(&Where)),
+        ("r_alias", r_alias(&foo)),
+        ("r_amb", r_amb(&amb)),
+        ("r_closure", r_closure()),
+        ("r_for", r_for(vec![Foo::new()])),
+        ("Visit.r_trait_generic", V.r_trait_generic(&foo)),
+        ("r_double_ref", r_double_ref(&&foo)),
+        (
+            "r_foreign_field",
+            r_foreign_field(&other::Holder { h: &other::Qux }),
+        ),
+    ];
+    for (name, reached) in rows {
+        println!("{name}\t{reached}");
+    }
+}

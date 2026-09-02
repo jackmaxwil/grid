@@ -180,6 +180,66 @@ fn qualified_self_paths_produce_nothing() {
     assert!(r.is_empty());
 }
 
+/// Conservatism, T-18: `self::x()` inside an inline module names the
+/// *module's* `x`, never the file's. Red before the fix with the path
+/// recorded as written (`self.x`), which the resolver anchored against the
+/// file's module — one wrong proven edge, a C14 violation.
+#[test]
+fn self_inside_an_inline_module_anchors_against_the_module() {
+    let r = refs("fn x() {}\nmod tests {\n    fn x() {}\n    fn t() { self::x(); }\n}");
+    assert_eq!(
+        r,
+        vec![("tests.t".into(), RefKind::Call, "self.tests.x".into())]
+    );
+}
+
+#[test]
+fn super_inside_an_inline_module_is_the_files_module() {
+    let r = refs("fn x() {}\nmod tests {\n    fn t() { super::x(); }\n}");
+    assert_eq!(r, vec![("tests.t".into(), RefKind::Call, "self.x".into())]);
+    let i = imports("fn x() {}\nmod tests {\n    use super::x;\n}");
+    assert_eq!(i, vec![("x".into(), "self.x".into(), "tests".into())]);
+}
+
+#[test]
+fn nested_inline_modules_climb_one_module_per_super() {
+    let i = imports(
+        "mod a {\n    mod b {\n        use super::super::x;\n        use super::y;\n    }\n}",
+    );
+    assert_eq!(
+        i,
+        vec![
+            ("x".into(), "self.x".into(), "a.b".into()),
+            ("y".into(), "self.a.y".into(), "a.b".into()),
+        ]
+    );
+}
+
+#[test]
+fn a_super_chain_past_the_inline_nesting_climbs_the_files_module() {
+    // Two `super`s inside one inline module: one leaves the inline module,
+    // the other leaves the file's module — which the resolver already
+    // anchors, so the remainder is left for it.
+    let i = imports("mod tests {\n    use super::super::x;\n}");
+    assert_eq!(i, vec![("x".into(), "super.x".into(), "tests".into())]);
+}
+
+#[test]
+fn anchors_outside_any_inline_module_are_recorded_as_written() {
+    // The file-without-inline-modules case extracts exactly as before.
+    let r = refs("fn t() { self::x(); super::y(); crate::z(); }");
+    assert_eq!(
+        r,
+        vec![
+            ("t".into(), RefKind::Call, "self.x".into()),
+            ("t".into(), RefKind::Call, "super.y".into()),
+            ("t".into(), RefKind::Call, "crate.z".into()),
+        ]
+    );
+    let i = imports("mod tests {\n    use crate::x;\n}");
+    assert_eq!(i, vec![("x".into(), "crate.x".into(), "tests".into())]);
+}
+
 #[test]
 fn a_struct_literal_also_writes_the_types_fields() {
     let r = refs("struct Foo { x: u32 }\nfn f() { let _ = Foo { x: 1 }; }");

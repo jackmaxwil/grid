@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.10.0
+version: 2.11.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -13,7 +13,7 @@ document.
 | tag | columns |
 |---|---|
 | `snapshot` | id (`@rev`; `@rev+<prefix>` when the tree was a dirty worktree — labelled with the rev it was checked out from, and never taken for the tree at that rev), stats (`defs N  edges N  reread N  <duration>`) |
-| `miss` (survey) | count, `references declined (external N, method N, internal N)` — the one record `grid survey` closes with when the resolver declined anything |
+| `miss` (survey) | count, `references declined (external N, method N of which N refused, internal N)` — the one record `grid survey` closes with when the resolver declined anything; the `of which N refused` clause is the typed receivers the method-call rule declined with a reason, and is absent when the snapshot predates the count |
 | `def` | glyph, callsign, hash transition (`old→new` or new hash), `sig` when the interface identity also moved (absent when it held, and absent when a pre-epoch-3 snapshot means nobody can say); inside `grid gate` output, an unaccounted definition's trailing column reads `unaccounted: interface` when a def promise's `interface` claim is what holds it |
 | `ref` | callsign, datum prefix, `file:line` when the snapshot carries locations (`grid resolve` — a definition that exists, not one that changed) |
 | `orphan` | callsign, datum prefix, `file:line`, and under `--traced` a trailing `trace N` — a definition with no *proven* caller (`grid orphans`); not the same as dead, and `trace 0` is still a maybe |
@@ -72,12 +72,18 @@ would read as "nothing in the closure moved".
 Verdict roles on `edge` records: `match`, `miss`, `surplus`, `tolerated`.
 
 `grid survey` closes with one `miss` record when the resolver declined any
-reference — `miss 8413  references declined (external 1272, method 6091,
-internal 1050)` — the existing tag and its existing "what could not be
-checked" meaning. The three add up to the total by construction. They mean
-opposite things: `external` costs a claim about this repo nothing, `method`
-is a hole no static rule closes, and `internal` is a hole in exactly what
-`grid drift` claims. A survey that declined nothing prints no such record.
+reference — `miss 8413  references declined (external 1272, method 6091 of
+which 261 refused, internal 1050)` — the existing tag and its existing
+"what could not be checked" meaning. The three populations add up to the
+total by construction; `refused` is a sub-count of `method`, the calls
+whose receiver *was* typed to a charted type and the method-call rule
+declined with a reason (a trait candidate, a generic impl, no inherent
+method, a wrapper), and the clause is omitted when the snapshot predates
+the count. They mean opposite things: `external` costs a claim about this
+repo nothing, `method` is a hole no static rule closes — the receiver could
+not be typed, or was typed and refused — and `internal` is a hole in exactly
+what `grid drift` claims. A survey that declined nothing prints no such
+record.
 
 `grid drift` closes its output with `miss` records for what it could not
 check: `miss <n>  unresolved references unchecked (external N, method N,

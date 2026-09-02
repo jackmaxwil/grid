@@ -393,6 +393,46 @@ fn survey_closes_with_the_declined_split() {
     }
 }
 
+/// The `method` clause states the refused share: a typed receiver the
+/// method-call rule declined with a reason is `of which N refused`, and
+/// the number is the rule's own count, not the declined total.
+#[test]
+fn survey_states_the_refused_share_of_the_method_count() {
+    let dir = repo();
+    // One refusal (a trait candidate at a later step) beside one untyped
+    // method call, so `refused` and `method` must differ.
+    std::fs::create_dir_all(dir.path().join("src")).expect("mkdir");
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\n",
+    )
+    .expect("write");
+    std::fs::write(
+        dir.path().join("src/lib.rs"),
+        "pub struct Foo;\npub trait Tr { fn m(self); }\n\
+         impl Foo { pub fn m(&self) {} }\nimpl Tr for Foo { fn m(self) {} }\n\
+         pub fn f(x: Foo, y: Vec<Foo>) { x.m(); for z in y { z.m(); } }\n",
+    )
+    .expect("write");
+    let add = Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(dir.path())
+        .output()
+        .expect("git add");
+    assert!(add.status.success());
+    let out = grid(dir.path(), &["survey"]);
+    assert_eq!(code(&out), 0);
+    let text = stdout(&out);
+    let miss = text
+        .lines()
+        .find(|l| l.starts_with("miss"))
+        .unwrap_or_else(|| panic!("a closing miss record:\n{text}"));
+    assert!(
+        miss.contains("method 2 of which 1 refused"),
+        "the refused share, stated: {miss}"
+    );
+}
+
 #[test]
 fn diff_records_the_definition_that_changed() {
     let dir = repo();

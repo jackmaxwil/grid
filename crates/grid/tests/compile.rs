@@ -106,10 +106,10 @@ fn cargo_present() -> bool {
 
 const BEFORE_TEST: &str = "pub fn changed(x: u32) -> u32 { x }\n\
                            pub fn compiled() -> u32 { changed(1) }\n\
-                           #[cfg(test)]\nmod tests {\n    use super::*;\n    pub fn t() -> u32 { changed(1) }\n}\n";
+                           #[cfg(test)]\nmod tests {\n    use super::changed;\n    pub fn t() -> u32 { changed(1) }\n}\n";
 const AFTER_TEST: &str = "pub fn changed(x: u64) -> u64 { x }\n\
                           pub fn compiled() -> u64 { changed(1) }\n\
-                          #[cfg(test)]\nmod tests {\n    use super::*;\n    pub fn t() -> u64 { changed(1) }\n}\n";
+                          #[cfg(test)]\nmod tests {\n    use super::changed;\n    pub fn t() -> u64 { changed(1) }\n}\n";
 
 /// Ground truth, `cfg(test)`: the test-module caller of a moved signature
 /// is a `drift` record after a plain compile, and none after `-- --tests`.

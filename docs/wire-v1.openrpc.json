@@ -14,7 +14,7 @@
   },
   "x-porcelain": {
     "doc": "packages/grid/docs/PORCELAIN.md",
-    "version": "2.10.0",
+    "version": "2.11.0",
     "description": "Normative grammar for human-facing stdout records. --json emits wire results verbatim; the porcelain version is reported by grid.version."
   },
   "methods": [
@@ -27,7 +27,7 @@
         {
           "name": "current versions",
           "params": [],
-          "result": { "name": "version", "value": { "wire": "1.1.0", "engine": "grid 0.1.0", "porcelain": "2.10.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
+          "result": { "name": "version", "value": { "wire": "1.1.0", "engine": "grid 0.1.0", "porcelain": "2.11.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
         }
       ],
       "result": {
@@ -779,8 +779,9 @@
             "required": ["external", "method", "internal"],
             "properties": {
               "external": { "type": "integer", "minimum": 0, "description": "Names that were never this tree's to hold — std/core/alloc or another crate in Rust, a top-level module the tree does not root in Python." },
-              "method": { "type": "integer", "minimum": 0, "description": "Calls through a receiver whose type would have to be known. Counted, never resolved." },
-              "internal": { "type": "integer", "minimum": 0, "description": "Names this tree could have held and the resolver could not bind: glob-supplied, ambiguous, an unresolved re-export. The hole." }
+              "method": { "type": "integer", "minimum": 0, "description": "Calls through a receiver the file could not type, or typed and the rule refused. Counted, never guessed." },
+              "internal": { "type": "integer", "minimum": 0, "description": "Names this tree could have held and the resolver could not bind: glob-supplied, ambiguous, an unresolved re-export. The hole." },
+              "refused": { "type": "integer", "minimum": 0, "description": "Of method: the calls whose receiver was typed to a charted type and the rule refused with a reason — a trait candidate, a generic impl, no inherent method, a wrapper. A sub-count of method, not a fourth population; absent from a snapshot surveyed before it was counted." }
             },
             "additionalProperties": false
           }
