@@ -4,6 +4,16 @@
 //! CI greps this output and branches on these exit codes, so both are as much
 //! a contract as the wire is. Every assertion here is something a caller is
 //! entitled to rely on.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr
+)]
 
 use std::path::Path;
 use std::process::{Command, Output};

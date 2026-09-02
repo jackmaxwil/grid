@@ -6,6 +6,10 @@
 //! edit must move both, and formatting or documentation must move neither.
 //! A sig that moved on a body edit would implicate every dependent of every
 //! edit, which is the noise that kills a drift verb.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use grid_lang_rs::definitions;
 
 fn ids(src: &str) -> (String, String, String) {

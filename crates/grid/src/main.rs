@@ -22,6 +22,10 @@
 //! disables). Exit codes are uniform across verbs: 0 pass, 1 internal error,
 //! 2 bad input, 3 divergence, 4 stale coordinate.
 
+// The workspace denies printing: a library that prints has no caller who
+// asked for it. This crate is the CLI, where stdout is the product.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 mod bisect;
 mod chart_provider;
 mod check;

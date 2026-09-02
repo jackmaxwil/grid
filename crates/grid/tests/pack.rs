@@ -8,6 +8,10 @@
 //! fit is demoted to its sigs before it is dropped. Nothing here is ever
 //! truncated, because a certificate over half a layer is the lie
 //! `complete_within` exists to prevent (C31).
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::{Command, Output};

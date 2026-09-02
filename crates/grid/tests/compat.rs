@@ -5,6 +5,10 @@
 //! exactly one rule, surveyed by the real Rust frontend at both ends. None of
 //! them has a caller, so drift itself finds no suspects and the exit code
 //! under test is the compat pass's alone.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::path::Path;
 use std::process::{Command, Output};
 

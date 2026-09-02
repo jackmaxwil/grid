@@ -1,5 +1,9 @@
 //! The cfg fact: every `#[cfg]` that conditions a definition, as written,
 //! conjoined over the item and its enclosing modules.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use grid_lang_rs::{definitions, file_facts};
 
 fn cfg_of(source: &str, callsign: &str) -> String {

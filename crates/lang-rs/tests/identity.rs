@@ -5,6 +5,10 @@
 //! world is the failure), while a local rename moving it is the documented
 //! v1 ceiling — asserted here so silently *gaining* the invariance later
 //! shows up as a test to update, not an unnoticed epoch change.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use grid_lang_rs::definitions;
 
 fn datum_of(src: &str) -> String {

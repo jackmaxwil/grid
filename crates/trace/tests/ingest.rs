@@ -5,6 +5,10 @@
 //! edge must mean "these two datums were seen calling, at least once", and
 //! the unresolved bucket must mean "this is everything we could not point
 //! at". One direction without the other is a trace that lies by omission.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use grid_chart::{build, DatumId, Def, Segment};
 use grid_trace::{ingest, Store};
 use grid_wire::{Lang, Trace, TraceEndpoint, TraceObservation};

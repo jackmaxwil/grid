@@ -6,6 +6,11 @@
 //! answer; the wire description is the fallback for everything else. Nothing
 //! about help text is hand-maintained in the binary, so help cannot drift
 //! from the contract (implementation plan, Wave 6).
+
+// A build script has no runtime caller to hand a Result to: a missing input
+// must stop the build loudly, which is what expect does here (HAR allows it
+// in build scripts, tests and benches, and nowhere else).
+#![allow(clippy::expect_used)]
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;

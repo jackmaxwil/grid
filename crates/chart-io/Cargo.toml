@@ -13,9 +13,24 @@ memmap2 = "0.9"
 [dev-dependencies]
 tempfile = "3"
 
+# Cargo's [lints] table is all-or-nothing, so this crate cannot say
+# `workspace = true` and still relax unsafe_code. The tables below therefore
+# restate the workspace's; check_manifests.py fails if they fall behind it.
 [lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "allow"
 
 # THE ONLY unsafe crate. Overrides the workspace forbid so that mmap can land
 # here and only here; the one unsafe block is justified in ASSURANCE.md and at
@@ -23,3 +38,4 @@ pedantic = { level = "deny", priority = -1 }
 [lints.rust]
 unsafe_code = "deny"
 missing_docs = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

@@ -3,6 +3,10 @@
 //! `walk.rs` covers the traversal; this covers the translation — locator
 //! resolution, the sweep/path-finding fork, and the promise that a rendered
 //! path names real edges in their real direction.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use grid_chart::{build, DatumId, Def, Edge, Segment};
 use grid_walk::{query, resolve, Error};

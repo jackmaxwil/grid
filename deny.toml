@@ -1,5 +1,17 @@
 # cargo-deny configuration. Every dependency entry gets a justification line
 # in docs/ASSURANCE.md — a dep is TCB and must earn its place.
+
+# Dev-deps never ship, and the targets are the ones grid builds for: this is
+# the graph the assurance case is about, not everything cargo can resolve.
+[graph]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]
+exclude-dev = true
+
 [advisories]
 db-path = "~/.cargo/advisory-db"
 yanked = "deny"
@@ -25,7 +37,36 @@ allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", 
 
 [bans]
 wildcards = "deny"
-multiple-versions = "warn"
+multiple-versions = "deny"
+# syn 2 + syn 3 are proc-macro build deps of the two parsers; zero runtime
+# bytes reach the binary, and grid does not get to pick either version.
+skip = [{ crate = "syn" }]
+# ASSURANCE.md's standing rule — no new runtime dependency — in the one form
+# CI can check. Each name is something a code-charting tool is tempted by and
+# refuses: argument parsing, error erasure, matching, walking, watching, git,
+# threading, and networking are all grid's own code or std's.
+deny = [
+    "clap",
+    # Grid's errors are typed enums at every crate boundary. The parser's own
+    # build script erases its errors; those bytes never reach the binary.
+    { crate = "anyhow", wrappers = ["rustpython-parser"] },
+    "regex",
+    "walkdir",
+    "notify",
+    "git2",
+    "libgit2-sys",
+    "gix",
+    "rayon",
+    "tokio",
+    "reqwest",
+    "hyper",
+    "openssl-sys",
+    "native-tls",
+    "lazy_static",
+    # std's OnceLock is the answer for grid's own code; the parser's vendored
+    # Unicode tables predate it and grid does not get to rewrite them.
+    { crate = "once_cell", wrappers = ["rustpython-parser-vendored"] },
+]
 
 [sources]
 unknown-registry = "deny"

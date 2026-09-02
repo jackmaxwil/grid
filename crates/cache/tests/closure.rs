@@ -6,6 +6,10 @@
 //! covers can have changed. Misses are never asserted to be misses — a cache
 //! that never hits is sound, just useless, and the useful direction is covered
 //! separately by the hit tests below.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeSet;
 

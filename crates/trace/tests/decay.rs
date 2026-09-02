@@ -6,6 +6,10 @@
 //! a claim about code that is not there. Left graded `observed` it would rot
 //! into false positives within weeks — which is why the grade is recomputed
 //! per question and the retained log is never rewritten.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use grid_chart::{build, DatumId, Def, DefFacts, Segment};
 use grid_trace::{grade, ObservedEdge, Store, STALE_TRACE};
 use grid_wire::{Grade, Trace, TraceEndpoint, TraceObservation};

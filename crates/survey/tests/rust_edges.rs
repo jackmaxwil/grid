@@ -4,6 +4,16 @@
 //! The conservatism half matters most: a survey that invented an edge for a
 //! glob-supplied or macro-hidden name would poison the proven tier, so this
 //! suite pins counts, not just presence.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr
+)]
 use std::path::Path;
 
 use grid_survey::{run, Cache};
