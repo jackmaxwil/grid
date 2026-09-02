@@ -13,6 +13,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -88,6 +89,22 @@ impl std::fmt::Display for StoreError {
     }
 }
 
+impl StoreError {
+    /// Are the bytes on disk contradicting the manifest — a segment that no
+    /// longer hashes to its name, a manifest that does not parse, a named
+    /// segment that is gone? Nothing the store can do repairs that; the
+    /// recovery is to drop the chart and survey cold, which is what
+    /// [`Store::open_or_reset`] does and what a read verb must name.
+    #[must_use]
+    pub fn is_damage(&self) -> bool {
+        match self {
+            Self::ChecksumMismatch { .. } | Self::Chart(_) => true,
+            Self::Io(e) => e.kind() == std::io::ErrorKind::NotFound,
+            Self::UnknownSnapshot(_) => false,
+        }
+    }
+}
+
 impl std::error::Error for StoreError {}
 
 impl From<std::io::Error> for StoreError {
@@ -108,6 +125,11 @@ pub const MANIFEST: &str = "manifest";
 /// data — deletable, and rebuilt from the retained chain by the next publish.
 pub const MEMBERSHIP: &str = "membership";
 const MANIFEST_TMP: &str = "manifest.tmp";
+/// The publish lock. Held, exclusively, for the whole of a publish.
+const LOCK: &str = "lock";
+/// Per-process sequence for temp names, so two writes in one process — two
+/// threads, or one thread twice — never share one.
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// One immutable epoch of the chart: a manifest and the segments it names.
 ///
@@ -194,6 +216,30 @@ impl Store {
         })
     }
 
+    /// Open a store, dropping it first if it is damaged.
+    ///
+    /// The survey's way in. A read verb refuses a damaged store and names
+    /// this as the recovery; the survey *is* the recovery, so it removes the
+    /// chart — every file in it is rebuilt by the survey that follows — and
+    /// opens the empty store, handing back what it dropped so the caller can
+    /// say so rather than let a cold survey look unexplained. Any other
+    /// failure to open is returned untouched: a store that cannot be read
+    /// for a reason a re-survey would not fix is not one to delete.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store cannot be opened for a reason other than
+    /// damage, or cannot be removed and reopened.
+    pub fn open_or_reset(dir: impl AsRef<Path>) -> Result<(Self, Option<String>), StoreError> {
+        let dir = dir.as_ref();
+        match Self::open(dir) {
+            Err(e) if e.is_damage() => {
+                fs::remove_dir_all(dir)?;
+                Ok((Self::open(dir)?, Some(e.to_string())))
+            }
+            other => other.map(|store| (store, None)),
+        }
+    }
+
     /// The format epoch of a manifest this store refused to load, if it
     /// refused one. A store that answers `Some` is empty because its contents
     /// predate the current format, and the recovery is a re-survey.
@@ -222,8 +268,10 @@ impl Store {
     /// id (D5: a pure function of the manifest, so republishing an identical
     /// state is idempotent).
     ///
-    /// The daemon serializes all calls to this (D6, two writers total); a
-    /// `&mut self` receiver is that rule expressed in the type system.
+    /// `&mut self` serializes publishers within a process; across processes
+    /// — the CLI beside the daemon, two surveys in one tree — the publish
+    /// holds an exclusive lock on the store for its whole window, so no two
+    /// publishers ever interleave their writes.
     ///
     /// # Errors
     /// [`StoreError`] on I/O failure or an image that does not validate.
@@ -263,6 +311,7 @@ impl Store {
         images: &[Vec<u8>],
         live: bool,
     ) -> Result<SnapshotId, StoreError> {
+        let _publishing = self.lock()?;
         let mut segments = Vec::with_capacity(images.len());
         for (i, image) in images.iter().enumerate() {
             // Validate first: the store never contains bytes we would refuse
@@ -342,9 +391,10 @@ impl Store {
     /// first sight, with the sort kept as a separate index). Worth doing when
     /// a chain is long enough for the rewrite to show up in a survey.
     ///
-    /// # Errors
-    /// [`StoreError`] on I/O failure or an image that does not build.
-    pub fn extend_membership(&self, epoch: &Epoch) -> Result<(), StoreError> {
+    /// Called under the publish lock, which is what keeps the read-back and
+    /// the rewrite one step: two publishers extending at once would each
+    /// lose the other's snapshot.
+    fn extend_membership(&self, epoch: &Epoch) -> Result<(), StoreError> {
         let mut chain = match self.membership()? {
             Some(existing) => existing.chain(),
             None => Vec::new(),
@@ -363,6 +413,7 @@ impl Store {
     /// # Errors
     /// [`StoreError`] if the store cannot be read or the image cannot build.
     pub fn rebuild_membership(&self) -> Result<(), StoreError> {
+        let _publishing = self.lock()?;
         let mut chain = Vec::new();
         for id in self.retained_snapshots()? {
             let epoch = self.epoch_of(&id)?;
@@ -380,6 +431,37 @@ impl Store {
             "membership.tmp",
         )?;
         Ok(())
+    }
+
+    /// The publish lock: exclusive, across processes, released on drop.
+    ///
+    /// An advisory `flock` on one file in the store, taken for the whole of
+    /// a publish. The temp names are unique per process and per call, so
+    /// this is not what keeps two writers from renaming each other's bytes;
+    /// it is what keeps the membership image's read-modify-write whole, and
+    /// what makes "the daemon is the single writer" (D6) a fact rather than
+    /// a comment once the CLI writes beside it. Readers never take it.
+    fn lock(&self) -> std::io::Result<fs::File> {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.dir.join(LOCK))?;
+        file.lock()?;
+        Ok(file)
+    }
+
+    /// When `id` was first retained here.
+    ///
+    /// A snapshot is content, not a moment (D5), so the manifest carries no
+    /// clock; the retained file's mtime is the moment it landed, and an
+    /// identical republish rewrites nothing, so the moment holds.
+    ///
+    /// # Errors
+    /// The I/O error, if the retained manifest is not there to ask.
+    pub fn published_at(&self, id: &SnapshotId) -> std::io::Result<std::time::SystemTime> {
+        fs::metadata(self.dir.join(retained_name(id)))?.modified()
     }
 
     /// Every snapshot id the store retains, ascending — the chain, as a set.
@@ -560,7 +642,14 @@ fn hex(bytes: &[u8; 32]) -> String {
 /// Whatever the create, write, fsync or rename returned. On any of them the
 /// file at `path` is untouched — that is the point.
 pub fn write_atomic(dir: &Path, path: &Path, bytes: &[u8], tmp_name: &str) -> std::io::Result<()> {
-    let tmp = dir.join(tmp_name);
+    // The temp name is unique per process and per call. Two writers in one
+    // directory — two surveys, the CLI beside the daemon — sharing a temp
+    // name is how one renames the other's bytes under its own content hash.
+    let tmp = dir.join(format!(
+        "{tmp_name}.{}.{}",
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     {
         let mut f = fs::File::create(&tmp)?;
         f.write_all(bytes)?;

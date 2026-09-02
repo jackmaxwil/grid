@@ -33,6 +33,9 @@ pub struct Recovery {
     rev: Option<String>,
     /// The format epoch this store superseded, when it has one.
     superseded: Option<u32>,
+    /// What the bytes said when the store would not open at all: a segment
+    /// that no longer hashes to its name, a manifest that does not parse.
+    damaged: Option<String>,
 }
 
 impl Recovery {
@@ -45,6 +48,7 @@ impl Recovery {
             root: root.to_path_buf(),
             rev: rev.map(str::to_owned),
             superseded: None,
+            damaged: None,
         }
     }
 
@@ -62,6 +66,13 @@ impl std::fmt::Display for Recovery {
                 f,
                 "the chart there was written by segment format epoch {epoch} — superseded, \
                  so it opens empty"
+            )?;
+        }
+        if let Some(what) = &self.damaged {
+            writeln!(
+                f,
+                "the chart there is damaged — {what} — so nothing can be read from it; \
+                 `grid survey` drops it and surveys cold"
             )?;
         }
         match &self.rev {
@@ -114,6 +125,9 @@ impl std::fmt::Display for Error {
                 )
             }
             Self::Config(msg) | Self::Plan(msg) => f.write_str(msg),
+            Self::NoSnapshot(how) if how.damaged.is_some() => {
+                write!(f, "no readable snapshot — {how}")
+            }
             Self::NoSnapshot(how) => write!(f, "no snapshot published — {how}"),
             Self::NotLive(id) => write!(f, "snapshot {id} is not the live epoch"),
         }
@@ -178,9 +192,22 @@ impl ChartDelta {
     /// Open the store under `root` and index the live epoch's names.
     ///
     /// # Errors
-    /// [`Error::Store`] if the store cannot be opened.
+    /// [`Error::NoSnapshot`] if the store is damaged — its recovery is the
+    /// same survey every other missing snapshot wants, and the refusal says
+    /// so; [`Error::Store`] if it cannot be opened for any other reason.
     pub fn open(root: &Path) -> Result<Self, Error> {
-        let store = Store::open(store_dir(root))?;
+        let store = Store::open(store_dir(root)).map_err(|e| {
+            if e.is_damage() {
+                Error::NoSnapshot(Recovery {
+                    root: root.to_path_buf(),
+                    rev: None,
+                    superseded: None,
+                    damaged: Some(e.to_string()),
+                })
+            } else {
+                Error::Store(e)
+            }
+        })?;
         let head = store.load();
         let mut names = HashMap::new();
         for segment in head.segments() {
@@ -217,6 +244,7 @@ impl ChartDelta {
             root: self.root.clone(),
             rev: rev.map(str::to_owned),
             superseded: self.store.superseded(),
+            damaged: None,
         }
     }
 
@@ -266,6 +294,12 @@ impl ChartDelta {
     #[must_use]
     pub fn git_rev(&self) -> &str {
         &self.head.manifest().git_rev
+    }
+
+    /// When the live snapshot was first published here, if the store can say.
+    #[must_use]
+    pub fn published_at(&self) -> Option<std::time::SystemTime> {
+        self.store.published_at(self.head.snapshot_id()).ok()
     }
 
     /// Live-epoch counts, for the wire `Snapshot`.

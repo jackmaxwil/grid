@@ -310,6 +310,13 @@ plan).
   are skipped (`ponytail:`); a removed payload field is a compat break.
 - **T-31 (P2, S) `check --compile` `examples/` not modeled** for cfg
   joining (marked).
+- **T-46 — not a defect** (fix/store): "`grid survey` ignores SIGINT"
+  (journeys sweep B12) is the harness, not grid. A job started with `&`
+  from a non-interactive shell inherits SIGINT *ignored* (POSIX 2.11), so
+  `kill -INT $!` reaches a process that cannot see it; the same launch
+  under `set -m` dies at once, and grid installs no signal handler of its
+  own. Reproduced both ways against `grid serve`. Ctrl-C from a terminal
+  abandons a long survey, and the store is crash-safe under it (C11).
 
 ### Untested-live paths and platform
 
