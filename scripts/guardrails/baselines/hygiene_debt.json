@@ -1,10 +1,10 @@
 {
   "files": {
-    "crates/grid/src/main.rs": 2097,
-    "crates/grid/src/porcelain.rs": 1254,
-    "crates/grid/src/rpc.rs": 2060
+    "crates/grid/src/main.rs": 2391,
+    "crates/grid/src/porcelain.rs": 1274,
+    "crates/grid/src/rpc.rs": 2140
   },
   "fns": {
-    "crates/grid/src/serve.rs::dispatch": 178
+    "crates/grid/src/serve.rs::dispatch": 181
   }
 }
