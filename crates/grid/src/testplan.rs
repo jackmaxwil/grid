@@ -468,7 +468,7 @@ pub fn compute<B: AsRef<[u8]>>(inputs: &Inputs<'_, B>) -> TestPlan {
 }
 
 /// A changed definition, named where base can name it.
-fn def_ref<B: AsRef<[u8]>>(segments: &[Segment<B>], datum: DatumId) -> DefRef {
+pub(crate) fn def_ref<B: AsRef<[u8]>>(segments: &[Segment<B>], datum: DatumId) -> DefRef {
     let named = segments.iter().find_map(|s| {
         let ord = s.ordinal(&datum)?;
         Some((s.callsign(ord)?.to_owned(), s.location(ord)))

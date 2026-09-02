@@ -92,18 +92,38 @@ fn surveyed(before: &[(&str, &str)], after: &[(&str, &str)]) -> (tempfile::TempD
     (dir, base)
 }
 
-/// The `(datum, via)` pairs of every ranked `hit` record.
-fn hits(out: &Output) -> Vec<(String, String)> {
+/// One ranked `hit` record: datum, `via`, then the callsign and `file:line`
+/// the record closes with so the row can be acted on without a second verb.
+#[derive(Debug)]
+struct Hit {
+    datum: String,
+    via: String,
+    callsign: String,
+    location: String,
+}
+
+/// Every ranked `hit` record. Columns are runs of two spaces, so the `via`
+/// text keeps its own single spaces.
+fn hits(out: &Output) -> Vec<Hit> {
     stdout(out)
         .lines()
         .filter(|line| line.starts_with("hit"))
-        .filter_map(|line| {
-            let mut columns = line.split_whitespace();
-            columns.next()?;
-            let datum = columns.next()?.to_owned();
-            let mode = columns.next()?;
-            assert_eq!(mode, "closure", "closure mode names its evidence: {line}");
-            Some((datum, columns.collect::<Vec<_>>().join(" ")))
+        .map(|line| {
+            let columns: Vec<&str> = line
+                .split("  ")
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+                .collect();
+            let [_, datum, mode, via, callsign, location] = columns.as_slice() else {
+                panic!("a suspects hit is datum, evidence, via, callsign, file:line: {line}");
+            };
+            assert_eq!(*mode, "closure", "closure mode names its evidence: {line}");
+            Hit {
+                datum: (*datum).to_owned(),
+                via: (*via).to_owned(),
+                callsign: (*callsign).to_owned(),
+                location: (*location).to_owned(),
+            }
         })
         .collect()
 }
@@ -152,15 +172,27 @@ fn a_changed_definition_two_hops_down_is_ranked_and_one_outside_is_not() {
         stdout(&out)
     );
     assert_eq!(
-        found[0].1, "via 2 hops, datum moved",
-        "the culprit is two hops from the test: {found:?}"
+        found[0].via,
+        "via 2 hops, datum moved",
+        "the culprit is two hops from the test: {}",
+        stdout(&out)
+    );
+    // The row can be acted on as printed: the callsign is what `grid
+    // explain` and `grid resolve` accept, and the `file:line` is where to
+    // look — the bare datum was the one output neither verb took back.
+    assert_eq!(found[0].callsign, "app.culprit", "{}", stdout(&out));
+    assert_eq!(
+        found[0].location,
+        "crates/app/src/lib.rs:1",
+        "{}",
+        stdout(&out)
     );
 
     // The datum is the culprit's, at head, and it is not the outsider's.
     let resolved = grid(dir.path(), &["resolve", "app.culprit", "--json"]);
     let culprit: serde_json::Value = serde_json::from_str(&stdout(&resolved)).expect("resolve");
     let culprit = culprit[0]["datum"].as_str().expect("datum").to_owned();
-    assert_eq!(found[0].0, culprit, "the row names the culprit");
+    assert_eq!(found[0].datum, culprit, "the row names the culprit");
 
     let closing = stdout(&out);
     assert!(
@@ -255,6 +287,16 @@ fn candidates_equal_an_independent_scope_intersect_diff() {
         .expect("ranked")
         .iter()
         .map(|item| {
+            // Closure mode ranks by hop distance and the porcelain says
+            // `closure` where a score would sit; the JSON says the same —
+            // `hops`, and no `score` a consumer would read as confidence.
+            assert!(item["hops"].is_u64(), "closure mode carries hops: {item}");
+            assert!(
+                item.get("score").is_none(),
+                "closure mode carries no score, as the porcelain prints none: {item}"
+            );
+            assert!(item["callsign"].is_string(), "{item}");
+            assert!(item["materialization"]["line"].is_u64(), "{item}");
             let datum = item["datum"].as_str().expect("datum");
             names
                 .get(datum)

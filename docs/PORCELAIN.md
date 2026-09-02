@@ -42,7 +42,11 @@ per-kind split (`edges 2/3 · defs 1/1 · tests 0/1`). A `done` record from
 `conflict` records.
 
 `grid suspects` emits ranked `hit` records: datum handle, Ochiai score, then
-the `via` evidence text. `grid bisect` — answerable but unlisted, since it
+the `via` evidence text, then the callsign and `file:line` the chart the
+ranking was taken over gives the datum — `-` each when it no longer holds it
+— so a row can be handed to `grid explain` or `grid resolve` as printed. The
+datum stays first: it is the identity across time, the callsign is the name
+today. `grid bisect` — answerable but unlisted, since it
 always refuses until retained history exists — emits one `hit` record for the
 culprit when known, followed by a `done` record carrying measured `steps` and
 `cache_hits`. Neither verb turns missing retained history into an empty
@@ -58,7 +62,9 @@ through the trace it names, to the snapshot that trace was mapped against —
 and one stderr line says which snapshot answered. No such record is bad input
 (exit `2`) with the two ways out on stderr, never a ranking against head,
 which would be empty and read as "nothing in the closure moved". Its rows are the same `hit` records with
-the word `closure` where the Ochiai score sits, and `via <k> hops, datum
+the word `closure` where the Ochiai score sits — and `--json` carries no
+`score` for them either, only `hops`, because a number there would be read
+as confidence and none was computed — and `via <k> hops, datum
 moved` as the evidence: the definitions the test's closure at head can reach
 whose datum that snapshot did not hold — a body that moved, or one that
 arrived since — nearest first, datum identity as the tie-break. Heuristic — a

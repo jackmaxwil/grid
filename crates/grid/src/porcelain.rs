@@ -241,6 +241,11 @@ pub fn lint(result: &LintResult) -> String {
 /// The display policy is that callsigns are identity and hashes appear only
 /// where identity beyond the name matters — a `def` record's transition column
 /// is exactly that place, so it gets the prefix and nothing else does.
+/// `file:line` where a definition currently lives, `absent` when unknown.
+fn at(m: Option<&grid_wire::DefRefMaterialization>, absent: &str) -> String {
+    m.map_or_else(|| absent.to_owned(), |m| format!("{}:{}", m.file, m.line))
+}
+
 fn short(datum: &grid_wire::Datum) -> String {
     datum
         .0
@@ -495,11 +500,7 @@ pub fn orphans(rows: &[grid_wire::Orphan]) -> String {
     for row in rows {
         let d = &row.def;
         let callsign = d.callsign.as_ref().map_or("", |c| c.0.as_str());
-        let at = d
-            .materialization
-            .as_ref()
-            .map(|m| format!("{}:{}", m.file, m.line))
-            .unwrap_or_default();
+        let at = at(d.materialization.as_ref(), "");
         let traces = row
             .traces
             .map_or_else(String::new, |n| format!("trace {n}"));
@@ -671,10 +672,7 @@ fn drift_columns(s: &grid_wire::DriftSuspect) -> Vec<String> {
         name(&s.changed),
         transition,
         s.reason.clone().unwrap_or_else(|| "-".to_owned()),
-        s.dependent
-            .materialization
-            .as_ref()
-            .map_or_else(|| "-".to_owned(), |m| format!("{}:{}", m.file, m.line)),
+        at(s.dependent.materialization.as_ref(), "-"),
     ]
 }
 
@@ -804,11 +802,7 @@ pub fn refs_as(defs: &[grid_wire::DefRef], tag: &str) -> String {
     for d in defs {
         let callsign = d.callsign.as_ref().map_or("", |c| c.0.as_str());
         // file:line last, so the row stays pasteable into an editor.
-        let at = d
-            .materialization
-            .as_ref()
-            .map(|m| format!("{}:{}", m.file, m.line))
-            .unwrap_or_default();
+        let at = at(d.materialization.as_ref(), "");
         record(&mut out, tag, &[callsign, &short(&d.datum), &at]);
     }
     out
@@ -819,11 +813,7 @@ pub fn refs_as(defs: &[grid_wire::DefRef], tag: &str) -> String {
 pub fn hotspots(rows: &[crate::rpc::Hotspot]) -> String {
     let mut out = String::new();
     for r in rows {
-        let at = r
-            .materialization
-            .as_ref()
-            .map(|m| format!("{}:{}", m.file, m.line))
-            .unwrap_or_default();
+        let at = at(r.materialization.as_ref(), "");
         record(
             &mut out,
             "hot",
@@ -1060,12 +1050,7 @@ pub fn scope(pack: &grid_wire::ScopePack, name: &NameOf) -> String {
 #[must_use]
 pub fn scope_document(pack: &grid_wire::ScopePack) -> String {
     let mut out = String::new();
-    let at = |t: &grid_wire::PackText| {
-        t.def
-            .materialization
-            .as_ref()
-            .map_or_else(|| "-".to_owned(), |m| format!("{}:{}", m.file, m.line))
-    };
+    let at = |t: &grid_wire::PackText| at(t.def.materialization.as_ref(), "-");
     let name = |t: &grid_wire::PackText| {
         t.def
             .callsign
@@ -1286,15 +1271,23 @@ pub fn fork(diff: &grid_wire::TraceDiff) -> String {
 ///
 /// The second column is the evidence: an Ochiai score, or the word `closure`
 /// when the row was ranked by hop distance instead. The third says why it
-/// ranked.
+/// ranked; the callsign and `file:line` close the row (`-` when the chart
+/// no longer holds the datum), so it can be acted on as printed.
 #[must_use]
 pub fn suspects(result: &grid_wire::Suspects) -> String {
     let mut out = String::new();
     for item in &result.ranked {
-        let mode = item
-            .hops
-            .map_or_else(|| format!("{:.6}", item.score), |_| "closure".to_owned());
-        record(&mut out, "hit", &[&item.datum.0, &mode, &item.via]);
+        let mode = match (item.hops, item.score) {
+            (Some(_), _) => "closure".to_owned(),
+            (None, score) => score.map_or_else(|| "-".to_owned(), |s| format!("{s:.6}")),
+        };
+        let callsign = item.callsign.as_ref().map_or("-", |c| c.0.as_str());
+        let at = at(item.materialization.as_ref(), "-");
+        record(
+            &mut out,
+            "hit",
+            &[&item.datum.0, &mode, &item.via, callsign, &at],
+        );
     }
     out
 }

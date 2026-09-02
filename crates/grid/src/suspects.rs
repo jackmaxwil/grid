@@ -129,7 +129,8 @@ fn ochiai(params: &SuspectsParams, root: &Path) -> Result<Suspects, Error> {
     let head = SnapshotOrRev::GitRev {
         git_rev: failing.trace.git_rev.clone(),
     };
-    let delta = ChartDelta::open(root)?.diff(&base, &head)?;
+    let chart = ChartDelta::open(root)?;
+    let delta = chart.diff(&base, &head)?;
     let changed: BTreeSet<String> = delta
         .defs
         .iter()
@@ -149,9 +150,24 @@ fn ochiai(params: &SuspectsParams, root: &Path) -> Result<Suspects, Error> {
         .iter()
         .map(|(record, passed)| (spectrum(record), *passed))
         .collect();
-    Ok(Suspects {
-        ranked: score(candidates, &spectra)?,
-    })
+    let mut ranked = score(candidates, &spectra)?;
+    // Named where the failing run's chart names them: the datums are that
+    // chart's, and a callsign from another epoch would be a guess.
+    let at_head = chart.epoch_of(&head)?;
+    for item in &mut ranked {
+        if let Some(datum) = DatumId::parse(&item.datum.0) {
+            place(at_head.segments(), datum, item);
+        }
+    }
+    Ok(Suspects { ranked })
+}
+
+/// Fill a row's callsign and `file:line` from the chart the ranking was
+/// taken over, leaving both absent where that chart no longer holds the datum.
+fn place<B: AsRef<[u8]>>(segments: &[Segment<B>], datum: DatumId, item: &mut SuspectsRankedItem) {
+    let named = crate::testplan::def_ref(segments, datum);
+    item.callsign = named.callsign;
+    item.materialization = named.materialization;
 }
 
 /// Plain Ochiai over retained spectra: descending suspicion, with datum
@@ -180,18 +196,21 @@ fn score(
                 f64::from(failed) / (f64::from(total_failed) * f64::from(failed + passed)).sqrt();
             SuspectsRankedItem {
                 datum: Datum(datum),
-                score,
+                score: Some(score),
                 via: "changed in delta and observed in failing trace".into(),
                 // Ochiai ranks by spectra, not by distance: no hop count to
                 // report, and reporting one would invite a consumer to sort
                 // on a number this mode never computed.
                 hops: None,
+                callsign: None,
+                materialization: None,
             }
         })
         .collect::<Vec<_>>();
     ranked.sort_by(|a, b| {
         b.score
-            .total_cmp(&a.score)
+            .unwrap_or(0.0)
+            .total_cmp(&a.score.unwrap_or(0.0))
             .then_with(|| a.datum.0.cmp(&b.datum.0))
     });
     Ok(ranked)
@@ -339,19 +358,22 @@ pub fn rank_closure(
         .filter(|datum| moved.contains(datum))
         .filter_map(|datum| {
             let hops = *depths.get(datum)?;
-            Some(SuspectsRankedItem {
+            let mut item = SuspectsRankedItem {
                 datum: Datum(datum.to_string()),
-                // Hop distance rendered monotonically into the schema's
-                // [0,1] score, so a consumer sorting on `score` and one
-                // sorting on `hops` agree. The ranking is the distance;
-                // this is not a probability and does not pretend to be.
-                score: 1.0 / (1.0 + f64::from(u32::try_from(hops).unwrap_or(u32::MAX))),
+                // The ranking is the hop distance and nothing else: no
+                // score, because a number here would be read as confidence
+                // and the porcelain prints the word `closure` in its place.
+                score: None,
                 via: format!(
                     "via {hops} hop{}, datum moved",
                     if hops == 1 { "" } else { "s" }
                 ),
                 hops: Some(hops),
-            })
+                callsign: None,
+                materialization: None,
+            };
+            place(head.segments(), *datum, &mut item);
+            Some(item)
         })
         .collect();
     ranked.sort_by(|a, b| a.hops.cmp(&b.hops).then_with(|| a.datum.0.cmp(&b.datum.0)));
@@ -584,8 +606,8 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(
-            (ranked[0].score - 1.0).abs() < 1e-12,
-            "culprit exclusive to every failing spectrum scores 1.0: {}",
+            (ranked[0].score.unwrap_or(0.0) - 1.0).abs() < 1e-12,
+            "culprit exclusive to every failing spectrum scores 1.0: {:?}",
             ranked[0].score
         );
         assert!(
@@ -608,7 +630,7 @@ mod tests {
         assert_eq!(ranked[0].datum.0, datum("aaa"));
         assert_eq!(ranked[1].datum.0, datum("zzz"));
         assert!(
-            (ranked[0].score - ranked[1].score).abs() < f64::EPSILON,
+            (ranked[0].score.unwrap_or(0.0) - ranked[1].score.unwrap_or(0.0)).abs() < f64::EPSILON,
             "the tie-break only matters when the scores are equal"
         );
 

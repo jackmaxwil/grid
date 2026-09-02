@@ -76,7 +76,7 @@ rows are `| \`token\` | one answer, at most three lines when printed |`.
 | `edge` | record: one edge. Change glyph or verdict role first, then `src -relation-> dst`, then evidence. |
 | `test` | record: a test comparison, `expected=actual`. |
 | `inv` | record: a standing invariant — `standing` when declared, `violated` when the gate found it broken. |
-| `hit` | record: a cache hit — datum handle, verdict, when it was recorded. |
+| `hit` | record: a cache hit — datum handle, verdict, when it was recorded. From `grid suspects`, a ranked candidate: datum handle, the score or the word `closure`, the `via` evidence, then the callsign and `file:line` the chart gives the datum (`-` when it no longer does). |
 | `weak-for` | a test that covered a definition, kept passing while that definition's body changed, and was never itself touched — so it proved nothing about the change. Heuristic: reported as a `warn`, ranked, never a gate. |
 | `verdict-stale` | a recorded test verdict that no longer applies: the test's closure key, recomputed now, is not one the cache holds. Identity math, not a guess, so it gates. Reported as `miss <test> closure-changed`. |
 | `selection` | the inbound walk `grid test` runs from every definition whose datum moved, over every grade plus the retained traces' observed edges, that decides — per test — `selected` or `replayed`. Deterministic for a given pair of snapshots; adding a trace never adds a selection. |
