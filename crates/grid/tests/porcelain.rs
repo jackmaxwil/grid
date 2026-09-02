@@ -1548,3 +1548,110 @@ fn two_trace_directories_are_refused_by_name_not_merged() {
         "a refusal changes nothing on disk"
     );
 }
+
+/// A pytest repo: two definitions, two tests, one of them red.
+fn repo_with_pytest(a: i64, b: i64) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let git = |args: &[&str]| {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .env("GIT_AUTHOR_NAME", "grid")
+            .env("GIT_AUTHOR_EMAIL", "grid@example.invalid")
+            .env("GIT_COMMITTER_NAME", "grid")
+            .env("GIT_COMMITTER_EMAIL", "grid@example.invalid")
+            .output()
+            .expect("run git")
+            .status
+            .success();
+        assert!(ok, "git {args:?} failed");
+    };
+    let write = |path: &str, body: &str| {
+        let full = dir.path().join(path);
+        std::fs::create_dir_all(full.parent().expect("parent")).expect("mkdir");
+        std::fs::write(full, body).expect("write");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    write("pkg/__init__.py", "");
+    write("pytest.ini", "[pytest]\n");
+    write(
+        "pkg/core.py",
+        &format!("def a():\n    return {a}\n\n\ndef b():\n    return {b}\n"),
+    );
+    write(
+        "tests/test_core.py",
+        "from pkg.core import a, b\n\n\ndef test_a():\n    assert a() == 1\n\n\n\
+         def test_b():\n    assert b() == 2\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "one"]);
+    dir
+}
+
+/// `grid test` end to end over the real runner: the runner's inventory,
+/// records on stdout, runner output on stderr, exit 3 exactly when a run
+/// test failed. Skipped, saying so, where `python3 -m pytest` is absent —
+/// the fake-runner tests inside the crate cover the loop without it.
+#[test]
+fn grid_test_runs_the_inventory_and_exits_three_on_a_red_test() {
+    let pytest = Command::new("python3")
+        .args(["-m", "pytest", "--version"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !pytest {
+        eprintln!("skipping: python3 -m pytest is not available here");
+        return;
+    }
+    let dir = repo_with_pytest(1, 2);
+    let out = grid(dir.path(), &["test"]);
+    assert_eq!(code(&out), 0, "stderr:\n{}", stderr(&out));
+    let records = stdout(&out);
+    assert!(
+        records.contains("miss    tests/test_core.py::test_a  no-trace\n"),
+        "an untraced test is selected and says why:\n{records}"
+    );
+    assert!(
+        records.contains("test    ok         tests/test_core.py::test_a  pass=pass\n"),
+        "{records}"
+    );
+    assert!(
+        records.contains("done    tests 2/2 ran · 0 replayed · 0 failed\n"),
+        "{records}"
+    );
+    assert!(
+        !records.contains("PASSED"),
+        "runner output stays off stdout:\n{records}"
+    );
+    assert!(stderr(&out).contains("2 passed"), "runner output on stderr");
+
+    // A red test: exit 3, and the outcome row says so.
+    std::fs::write(
+        dir.path().join("pkg/core.py"),
+        "def a():\n    return 1\n\n\ndef b():\n    return 5\n",
+    )
+    .expect("write");
+    let out = grid(dir.path(), &["test", "--json"]);
+    assert_eq!(code(&out), 3, "stderr:\n{}", stderr(&out));
+    let run: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("TestRun JSON");
+    assert!(
+        run["env_hash"]
+            .as_str()
+            .is_some_and(|e| e.starts_with("env:b3:")),
+        "the environment is stated: {run}"
+    );
+    let ran: Vec<(String, String)> = run["ran"]
+        .as_array()
+        .expect("ran")
+        .iter()
+        .map(|o| {
+            (
+                o["test"].as_str().expect("test").to_owned(),
+                o["verdict"].as_str().expect("verdict").to_owned(),
+            )
+        })
+        .collect();
+    assert!(
+        ran.contains(&("tests/test_core.py::test_b".to_owned(), "fail".to_owned())),
+        "{ran:?}"
+    );
+}

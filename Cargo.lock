@@ -188,6 +188,7 @@ dependencies = [
 name = "grid"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "grid-cache",
  "grid-chart",
  "grid-chart-io",

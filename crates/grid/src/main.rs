@@ -34,10 +34,13 @@ mod history;
 mod plan;
 mod porcelain;
 mod rpc;
+mod runner;
 mod serve;
 mod stale;
 mod standing;
 mod suspects;
+mod testplan;
+mod testrun;
 mod watch;
 mod weak;
 
@@ -92,6 +95,7 @@ fn help() {
          roots                        import name -> directory map\n  \
          log <name>                   a definition's history in identity space\n  \
          suspects <test>              likely culprits, ranked\n  \
+         test [base] [--trace|--all]  run what the change can reach; replay the rest; exit 3 on red\n  \
          gate <plan> [head]           promise vs delta; exit 3 on hold\n  \
          plan lint <file>             validate a promise file\n  \
          todo <plan>                  the promise as a worklist\n  \
@@ -184,6 +188,7 @@ fn main() -> ExitCode {
         Some((&"check", args)) => check_verb(args, json),
         Some((&"explain", args)) => explain::main(args),
         Some((&"suspects", args)) => suspects(args, json),
+        Some((&"test", args)) => testrun::main(args, json),
         Some((&"trace", args)) => trace(args, json),
         Some((&"serve", args)) => serve::main(args),
         Some((other, _)) => {

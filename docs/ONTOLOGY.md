@@ -62,6 +62,12 @@ rows are `| \`token\` | one answer, at most three lines when printed |`.
 | `hit` | record: a cache hit — datum handle, verdict, when it was recorded. |
 | `weak-for` | a test that covered a definition, kept passing while that definition's body changed, and was never itself touched — so it proved nothing about the change. Heuristic: reported as a `warn`, ranked, never a gate. |
 | `verdict-stale` | a recorded test verdict that no longer applies: the test's closure key, recomputed now, is not one the cache holds. Identity math, not a guess, so it gates. Reported as `miss <test> closure-changed`. |
+| `selected` | a test `grid test` must run: the inbound walk from the changed set reached its definition (`closure-changed`), no live trace watched it (`no-trace`), the chart cannot name it (`unresolved`), the walk ran aground (`aground`), or nothing is on record to replay (`not-recorded`). Every reason is a refusal to skip. |
+| `replayed` | a test `grid test` did not run: its closure key at head, in this environment, is one the cache holds, and a live trace watched its reach. Printed as a `hit` with the recorded verdict and time. |
+| `no-trace` | why a test is selected regardless of the walk: no retained trace still describes code base holds. The chart is known incomplete, so the static closure alone never licenses a skip. |
+| `nondeterministic` | the same test, the same closure key, the same environment, the opposite verdict. The closure proves the charted code did not change, so the claim is exactly "not the charted code" — a race is code, and grid does not say *flake*. A `warn`, detected at record time from the last entry. |
+| `uncovered` | a changed definition the selection walk connected to no test. Heuristic — "no charted path" is not "no path" — so a `warn` that ranks and never moves the exit code. |
+| `env_hash` | the environment a verdict is keyed under: blake3 over the toolchain version, the lockfile bytes, the runner args, the target triple, and whether the run was traced. Stated in `grid test --json` so a verdict can be re-keyed later. |
 | `miss` | record: a cache miss — the datum must be run, not looked up. Not a failure; exits 0. |
 | `warn` | record: something reported rather than refused — callsign, then the message. |
 | `delta` | record: one signed change to the drift suspect set — `+` appeared, `-` retracted (`grid watch`). Consumers hold a running sum; the sum after any prefix of events equals a fresh `grid drift`. |

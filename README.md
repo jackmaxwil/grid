@@ -164,6 +164,41 @@ Either way the trace records the snapshot it was mapped against, and every
 executed line grid could not place — a file the chart does not hold, a line
 inside no definition — is counted on stderr rather than dropped.
 
+### `grid test`: run what the change can reach, replay the rest
+
+```bash
+grid test                    # since the last run (else HEAD), against the worktree
+grid test --trace            # and refresh one trace per test that ran
+grid test --all              # CI: run the inventory, record everything
+grid test -- --profile ci    # runner args, folded into the environment hash
+```
+
+The inventory is the runner's — `cargo nextest list` (or `cargo test --
+--list` without nextest) and `pytest --collect-only` — never grid's guess.
+Selection is one inbound walk from every definition whose datum moved,
+over every grade plus the retained traces' observed edges; a test the walk
+reaches runs, a test no live trace ever watched runs regardless, a test the
+chart cannot name runs, and a walk that runs out of fuel runs everything and
+says why. What is left is replayed from the verdict cache under this
+environment. Rust selections roll up to `(package, binary)` and nextest is
+invoked once, so unselected binaries are neither compiled nor linked.
+
+```
+hit     grid-cache::closure keys_are_deterministic  pass  2026-09-01T10:02:11Z
+miss    grid::bin/grid drift::tests::a_walk_over_budget_refuses  closure-changed
+miss    grid::conformance test_plan_is_served_over_the_socket    no-trace
+test    ok         grid::bin/grid drift::tests::a_walk_over_budget_refuses  pass=pass
+warn    grid.drift.fold_rows  uncovered
+done    tests 2/33 ran · 31 replayed · 0 failed
+```
+
+Exit 3 when a run test failed, 1 when the runner could not be spawned, 0
+otherwise. `uncovered` (a changed definition no selected test reaches) and
+`nondeterministic` (same closure key, same environment, opposite verdict —
+the claim is "not the charted code", never "flake") are reported and never
+move the exit code. `--trace` needs `cargo llvm-cov` or `pytest-cov`; when
+they are absent it says so and runs untraced.
+
 ## Architecture
 
 Ten crates, one direction, no cycles. `docs/ONTOLOGY.md` is the

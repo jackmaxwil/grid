@@ -1184,6 +1184,7 @@ mod conservatism {
             &["plan"],
             &["plan", "lint"],
             &["check"],
+            &["test", "--nope"],
             &["trace"],
             &["trace", "ingest"],
             &["trace", "diff"],
@@ -1230,6 +1231,74 @@ mod conservatism {
                 .join("\n")
         );
     }
+}
+
+/// `grid.test.plan` is answered over the socket (C10), with the contract's
+/// shape: the inventory is the caller's, the reasons are the plan's. A test
+/// the chart resolves but no trace watched is `no_trace`; one the chart
+/// cannot name is `unresolved`; and the refusal counts ride with the answer.
+#[test]
+fn test_plan_is_served_over_the_socket_with_its_reasons() {
+    let dir = repo();
+    let daemon = Daemon::start(dir.path());
+    let response = daemon.call(
+        "grid.test.plan",
+        &json!({
+            "base": {"git_rev": "HEAD"},
+            "env_hash": "env:b3:77aa77aa",
+            "tests": ["a.py::a", "nowhere.py::test_nothing"]
+        }),
+    );
+    assert!(response.get("error").is_none(), "plan errored: {response}");
+    let plan = &response["result"];
+    for key in [
+        "base",
+        "head",
+        "selected",
+        "replayed",
+        "uncovered",
+        "unchecked",
+    ] {
+        assert!(plan.get(key).is_some(), "TestPlan missing {key}: {plan}");
+    }
+    let selected: Vec<(String, String)> = plan["selected"]
+        .as_array()
+        .expect("selected")
+        .iter()
+        .map(|s| {
+            (
+                s["test"].as_str().expect("test").to_owned(),
+                s["why"].as_str().expect("why").to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        selected,
+        [
+            ("a.py::a".to_owned(), "no_trace".to_owned()),
+            (
+                "nowhere.py::test_nothing".to_owned(),
+                "unresolved".to_owned()
+            ),
+        ]
+    );
+    assert!(
+        plan["selected"][0].get("datum").is_some(),
+        "a resolved test names its datum: {plan}"
+    );
+    assert!(
+        plan["selected"][1].get("datum").is_none(),
+        "an unresolved test has none: {plan}"
+    );
+    assert_eq!(plan["replayed"].as_array().expect("replayed").len(), 0);
+    assert!(
+        plan["unchecked"].get("budget_rejected").is_some(),
+        "unchecked must state what was not walked: {plan}"
+    );
+    // Wire-typed: the daemon's bytes are the contract's TestPlan.
+    let typed: grid_wire::TestPlan =
+        serde_json::from_value(plan.clone()).expect("the answer is a TestPlan");
+    assert_eq!(typed.selected.len(), 2);
 }
 
 /// A retired method name is unknown, never quietly mapped to its successor.

@@ -14,7 +14,7 @@
   },
   "x-porcelain": {
     "doc": "packages/grid/docs/PORCELAIN.md",
-    "version": "2.1.0",
+    "version": "2.2.0",
     "description": "Normative grammar for human-facing stdout records. --json emits wire results verbatim; the porcelain version is reported by grid.version."
   },
   "methods": [
@@ -27,7 +27,7 @@
         {
           "name": "current versions",
           "params": [],
-          "result": { "name": "version", "value": { "wire": "1.0.0", "engine": "grid 0.1.0", "porcelain": "2.1.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
+          "result": { "name": "version", "value": { "wire": "1.0.0", "engine": "grid 0.1.0", "porcelain": "2.2.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
         }
       ],
       "result": {
@@ -276,6 +276,20 @@
                 "additionalProperties": false
               },
               "description": "Entries grid refused to store, e.g. closure unresolved or fuel-exhausted at key-freeze time. Rejection is the record-side face of one-directional soundness."
+            },
+            "nondeterministic": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["datum", "previous", "previous_at"],
+                "properties": {
+                  "datum": { "$ref": "#/components/schemas/Datum" },
+                  "previous": { "type": "string", "enum": ["pass", "fail"], "description": "The verdict the same key already held." },
+                  "previous_at": { "type": "string", "format": "date-time" }
+                },
+                "additionalProperties": false
+              },
+              "description": "Entries whose key already held the opposite verdict: same closure, same environment, a different answer. The closure proves the charted code did not change, so the claim is exactly \"not the charted code\" — a race is code, and grid does not say flake. Detected from the last entry at record time; the new verdict is stored regardless."
             }
           },
           "additionalProperties": false
@@ -496,6 +510,47 @@
         }
       ],
       "result": { "name": "drift", "schema": { "$ref": "#/components/schemas/DriftReport" } },
+      "errors": [{ "$ref": "#/components/errors/UnknownSnapshot" }]
+    },
+    {
+      "name": "grid.test.plan",
+      "summary": "Test selection as data, no running: which of the runner's tests a change can reach, which recorded verdicts still apply, and which changed definitions no test reaches. The CLI spawns the runner and records verdicts through grid.cache.record; the daemon only answers the plan.",
+      "paramStructure": "by-name",
+      "params": [
+        { "name": "base", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" }, "description": "Absent means the last snapshot a `grid test` recorded against, else HEAD." },
+        { "name": "env_hash", "required": true, "schema": { "type": "string", "minLength": 1, "description": "The environment the run would happen in; a replayed verdict must have been recorded under the same one." } },
+        { "name": "tests", "required": true, "schema": { "type": "array", "items": { "$ref": "#/components/schemas/TestId" }, "description": "The runner's own inventory. Grid never guesses what a test is." } },
+        { "name": "replay", "required": false, "schema": { "type": "boolean", "description": "Absent or true: an unselected test's verdict is looked up and replayed. False: nothing is looked up, and every unselected test is selected as not_recorded." } }
+      ],
+      "examples": [
+        {
+          "name": "select tests for an uncommitted edit",
+          "params": [
+            { "name": "base", "value": { "git_rev": "bc21972" } },
+            { "name": "env_hash", "value": "env:b3:77aa77aa" },
+            { "name": "tests", "value": ["cortana::reaper tests::sweep_returns_receipt", "tests/test_tag_contract.py::test_retry_window", "tests/test_tag_contract.py::test_new_and_untraced"] }
+          ],
+          "result": {
+            "name": "plan",
+            "value": {
+              "base": "snap:b3:a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4",
+              "head": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1",
+              "selected": [
+                { "test": "cortana::reaper tests::sweep_returns_receipt", "datum": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "why": "reached" },
+                { "test": "tests/test_tag_contract.py::test_new_and_untraced", "why": "unresolved" }
+              ],
+              "replayed": [
+                { "test": "tests/test_tag_contract.py::test_retry_window", "datum": "b3:4da74da74da74da74da74da74da74da74da74da74da74da74da74da74da74da7", "verdict": "pass", "recorded_at": "2026-08-07T18:05:40Z", "trace_id": "trace:01J4XC8K4E0S5T7V9W1B3D5F6G" }
+              ],
+              "uncovered": [
+                { "datum": "b3:5c195c195c195c195c195c195c195c195c195c195c195c195c195c195c195c19", "callsign": "cortana.reaper.TagContract.retry" }
+              ],
+              "unchecked": { "unresolved_refs": 3, "budget_rejected": 0 }
+            }
+          }
+        }
+      ],
+      "result": { "name": "plan", "schema": { "$ref": "#/components/schemas/TestPlan" } },
       "errors": [{ "$ref": "#/components/errors/UnknownSnapshot" }]
     }
   ],
@@ -978,7 +1033,8 @@
           "datum": { "$ref": "#/components/schemas/Datum" },
           "verdict": { "type": "string", "enum": ["pass", "fail"], "description": "The stored result. fail-hits are the valuable case: skip re-running a known-red verification." },
           "recorded_at": { "type": "string", "format": "date-time" },
-          "trace_id": { "type": "string", "pattern": "^trace:[0-9A-HJKMNP-TV-Z]{26}$", "description": "Present when the recorded run also produced a trace." }
+          "trace_id": { "type": "string", "pattern": "^trace:[0-9A-HJKMNP-TV-Z]{26}$", "description": "Present when the recorded run also produced a trace." },
+          "test": { "$ref": "#/components/schemas/TestId", "description": "Present when the hit was looked up for a named test (grid.test.plan): the test whose verdict this is." }
         },
         "additionalProperties": false
       },
@@ -1299,6 +1355,58 @@
           "cache_hits": { "type": "integer", "minimum": 0 }
         },
         "additionalProperties": false
+      },
+      "TestId": {
+        "type": "string",
+        "minLength": 1,
+        "description": "A test as the runner names it, never as grid guesses it: nextest's `<binary-id> <name>` (`pkg::bin/x mod::tests::t`), pytest's node id (`tests/test_x.py::TestY::test_z`). Grid maps it to a callsign by the frontend's spelling and resolves it by the grid.resolve rule; a test the chart cannot resolve is always run."
+      },
+      "TestSelection": {
+        "type": "object",
+        "required": ["test", "why"],
+        "properties": {
+          "test": { "$ref": "#/components/schemas/TestId" },
+          "datum": { "$ref": "#/components/schemas/Datum", "description": "The test's definition at head. Absent when the test is unresolved." },
+          "why": { "type": "string", "enum": ["reached", "no_trace", "unresolved", "aground", "not_recorded"], "description": "reached: the inbound walk from the changed set reached the test's definition (or the test itself changed). no_trace: no retained trace still describes code base holds, so the static closure alone may not excuse a skip. unresolved: the chart cannot name the test, so nothing can be said about it. aground: the walk ran out of fuel, so every test is selected. not_recorded: unreached and traced, but no verdict for this closure in this environment is on record to replay." }
+        },
+        "additionalProperties": false,
+        "description": "One test the runner must run, and the reason. Every reason is a refusal to skip."
+      },
+      "TestPlan": {
+        "type": "object",
+        "required": ["base", "head", "selected", "replayed", "uncovered", "unchecked"],
+        "properties": {
+          "base": { "$ref": "#/components/schemas/SnapshotId" },
+          "head": { "$ref": "#/components/schemas/SnapshotId", "description": "The worktree survey the plan was computed against." },
+          "selected": { "type": "array", "items": { "$ref": "#/components/schemas/TestSelection" }, "description": "The run set: selected ∪ replayed = the inventory, disjoint." },
+          "replayed": { "type": "array", "items": { "$ref": "#/components/schemas/CacheHit" }, "description": "Unselected tests whose recorded verdict, keyed by the closure at head and the given environment, is on record. Each hit names its test." },
+          "uncovered": { "type": "array", "items": { "$ref": "#/components/schemas/DefRef" }, "description": "Changed definitions the walk connected to no test. Heuristic: the chart is known incomplete, so this ranks and never gates." },
+          "unchecked": { "$ref": "#/components/schemas/DriftUnchecked" }
+        },
+        "additionalProperties": false,
+        "description": "Selection as data: one inbound walk from the datum-level changed set over every grade, fuel grid_cache::FUEL. A walk that runs aground selects every test rather than a shorter list; a test with no live trace is selected regardless of the walk."
+      },
+      "TestOutcome": {
+        "type": "object",
+        "required": ["test", "verdict"],
+        "properties": {
+          "test": { "$ref": "#/components/schemas/TestId" },
+          "verdict": { "type": "string", "enum": ["pass", "fail"] },
+          "trace_id": { "type": "string", "description": "Present when the run was traced and the trace was ingested." }
+        },
+        "additionalProperties": false
+      },
+      "TestRun": {
+        "type": "object",
+        "required": ["env_hash", "plan", "ran", "warnings"],
+        "properties": {
+          "env_hash": { "type": "string", "description": "blake3 over toolchain version, lockfile bytes, runner args, target triple, and whether the run was traced — stated so a verdict can be re-keyed later." },
+          "plan": { "$ref": "#/components/schemas/TestPlan" },
+          "ran": { "type": "array", "items": { "$ref": "#/components/schemas/TestOutcome" }, "description": "What the runner said about each selected test it reported on." },
+          "warnings": { "type": "array", "items": { "$ref": "#/components/schemas/DriftWarning" }, "description": "nondeterministic and uncovered findings. Reported, never gated." }
+        },
+        "additionalProperties": false,
+        "description": "What `grid test --json` emits. No method answers it: the run is the CLI's, the way a survey's git spawn is; the plan inside it is grid.test.plan's answer verbatim."
       }
     },
     "errors": {

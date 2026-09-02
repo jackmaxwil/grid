@@ -13,7 +13,7 @@ use grid_wire::{
 };
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "2.1.0";
+pub const VERSION: &str = "2.2.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -650,6 +650,115 @@ pub fn cache_record(result: &CacheRecordResult) -> String {
     for item in &result.rejected {
         record(&mut out, "warn", &[&item.datum.0, &item.reason]);
     }
+    for item in result.nondeterministic.iter().flatten() {
+        record(
+            &mut out,
+            "warn",
+            &[&item.datum.0, &nondeterministic(item, result_verdict(item))],
+        );
+    }
+    out
+}
+
+/// The verdict a nondeterministic record just stored is the opposite of the
+/// one it found, by definition of the finding.
+fn result_verdict(
+    item: &grid_wire::methods::CacheRecordResultNondeterministicItem,
+) -> &'static str {
+    use grid_wire::methods::CacheRecordResultNondeterministicItemPrevious as P;
+    match item.previous {
+        P::Pass => "fail",
+        P::Fail => "pass",
+    }
+}
+
+/// The `nondeterministic` message for `grid test`'s `warn` record: the same
+/// words as the cache verb's, so the two cannot drift apart.
+#[must_use]
+pub fn nondeterministic_message(
+    item: &grid_wire::methods::CacheRecordResultNondeterministicItem,
+) -> String {
+    nondeterministic(item, result_verdict(item))
+}
+
+/// The `nondeterministic` message: the claim is exactly "not the charted
+/// code" — same closure key, same environment, two answers. The word is
+/// never *flake*: a race is code, and grid does not know which.
+fn nondeterministic(
+    item: &grid_wire::methods::CacheRecordResultNondeterministicItem,
+    now: &str,
+) -> String {
+    use grid_wire::methods::CacheRecordResultNondeterministicItemPrevious as P;
+    let previous = match item.previous {
+        P::Pass => "pass",
+        P::Fail => "fail",
+    };
+    format!(
+        "nondeterministic  same closure key, same env: {previous} {}, {now} now",
+        item.previous_at
+    )
+}
+
+/// Render a `grid test` run: `hit` per replayed verdict, `miss` per selected
+/// test with the reason it must run, `test` per outcome, `warn` per finding,
+/// and the closing `done  tests R/N ran · H replayed · F failed`.
+///
+/// The first column of `hit` and `miss` is the test id here rather than a
+/// datum handle: a test is addressed by the runner's name everywhere in this
+/// verb, and the datum rides in `--json`.
+#[must_use]
+pub fn test_run(run: &grid_wire::TestRun) -> String {
+    let mut out = String::new();
+    for hit in &run.plan.replayed {
+        let verdict = match hit.verdict {
+            CacheHitVerdict::Pass => "pass",
+            CacheHitVerdict::Fail => "fail",
+        };
+        let test = hit
+            .test
+            .as_ref()
+            .map_or(hit.datum.0.as_str(), |t| t.0.as_str());
+        record(&mut out, "hit", &[test, verdict, &hit.recorded_at]);
+    }
+    for sel in &run.plan.selected {
+        let why = match sel.why {
+            grid_wire::TestSelectionWhy::Reached => "closure-changed",
+            grid_wire::TestSelectionWhy::NoTrace => "no-trace",
+            grid_wire::TestSelectionWhy::Unresolved => "unresolved",
+            grid_wire::TestSelectionWhy::Aground => "aground",
+            grid_wire::TestSelectionWhy::NotRecorded => "not-recorded",
+        };
+        record(&mut out, "miss", &[&sel.test.0, why]);
+    }
+    let mut failed = 0usize;
+    for outcome in &run.ran {
+        // A test is expected to pass; the column says what it did.
+        let (verdict, actual) = match outcome.verdict {
+            grid_wire::TestOutcomeVerdict::Pass => ("ok", "pass"),
+            grid_wire::TestOutcomeVerdict::Fail => {
+                failed = failed.saturating_add(1);
+                ("fail", "fail")
+            }
+        };
+        record(
+            &mut out,
+            "test",
+            &[&role(verdict), &outcome.test.0, &format!("pass={actual}")],
+        );
+    }
+    for warning in &run.warnings {
+        record(&mut out, "warn", &[&warning.subject, &warning.message]);
+    }
+    let total = run.plan.selected.len() + run.plan.replayed.len();
+    record(
+        &mut out,
+        "done",
+        &[&format!(
+            "tests {}/{total} ran · {} replayed · {failed} failed",
+            run.ran.len(),
+            run.plan.replayed.len()
+        )],
+    );
     out
 }
 

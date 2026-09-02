@@ -271,6 +271,17 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
                     crate::suspects::Error::Chart(chart) => chart_error(chart),
                 })
         }
+        "grid.test.plan" => {
+            let params = serde_json::from_value(params).map_err(bad_params)?;
+            // Surveys the worktree, so it takes the daemon's chart: the
+            // single writer, and the warm survey cache.
+            rpc::test_plan(&params, root, chart)
+                .map(|v| encode(&v))
+                .map_err(|e| match &e {
+                    rpc::TestPlanError::Chart(chart) => chart_error(chart),
+                    rpc::TestPlanError::Store(_) => (-32603, e.to_string()),
+                })
+        }
         "grid.bisect" => {
             let params = serde_json::from_value(params).map_err(bad_params)?;
             crate::bisect::run(&params, root)

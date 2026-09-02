@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.1.0
+version: 2.2.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -92,6 +92,26 @@ decayed trace produces no such record at all and is counted as
 `miss <n>  weak-checks skipped (stale coverage)`, because a heuristic built
 on a demoted heuristic is noise.
 
+`grid test` uses existing tags only. `hit <test>  <pass|fail>  <recorded>`
+per replayed verdict; `miss <test>  <reason>` per selected test, the reason
+one of `closure-changed` (the walk from the changed set reached it, or the
+test itself changed), `no-trace` (no live trace watched it, so the static
+closure alone does not license a skip), `unresolved` (the chart cannot name
+it), `aground` (the walk ran past its fuel, so every test is selected), or
+`not-recorded` (nothing on record to replay); `test <ok|fail>  <test>
+pass=<pass|fail>` per outcome the runner reported; `warn <test>
+nondeterministic  same closure key, same env: <v1> <t1>, <v2> now` when a
+key already held the opposite verdict; `warn <def>  uncovered` per changed
+definition no selected test reaches; and a closing `done  tests R/N ran ·
+H replayed · F failed`. The first column of `hit` and `miss` is the test
+id as the runner names it, not a datum: a test is addressed by name in this
+verb, and the datum rides in `--json`. Exit `3` when a run test failed (a
+selected test the runner never reported on counts as failed and is named
+in a `warn`), `1` when the runner could not be spawned, `0` otherwise —
+`uncovered` and `nondeterministic` are heuristic and never move it. Runner
+output goes to stderr; the horizon line on stderr says how many tests were
+selected out of how many, and what the plan and the survey cost.
+
 `grid watch` emits `delta` records rather than a current list: `+` a suspect
 appeared, `-` it was retracted. A consumer holds a running sum, and the sum
 after any prefix of events is what a fresh `grid drift` would say — so
@@ -131,7 +151,9 @@ conclusion grid never licenses.
 
 Semver. Adding a record type or a trailing column is minor — as is widening
 a record's message, which carried 2.0.0 to 2.1.0 (`grid survey`'s closing
-`miss`, and the declined split inside `grid drift`'s) — changing column
+`miss`, and the declined split inside `grid drift`'s), and giving existing
+tags a new verb's meanings, which carried 2.1.0 to 2.2.0 (`grid test`'s
+`hit`/`miss` addressed by test id, and its `done` line) — changing column
 order or meaning is major — and so is renaming a tag, which is what carried
 1.6.0 to 2.0.0 (`docs/plans/2026-09-01-naming.md`). The daemon reports this
 version via `grid version` and the wire contract's `x-porcelain` field.

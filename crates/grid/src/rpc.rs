@@ -1,10 +1,11 @@
 //! Method layer shared by CLI and daemon.
 use grid_wire::methods::{
-    CacheCheckParams, CacheRecordParams, CacheRecordResult, CacheRecordResultRejectedItem,
-    DeltaParams, DeltaResult, GateCheckParams, GateCheckResult, PlanLintParams, PlanLintResult,
-    QueryWalkParams, QueryWalkResult, ResolveParams, ResolveResult, ScopeParams, ScopeResult,
-    SnapshotCurrentResult, SurveyRunParams, SurveyRunResult, TodoParams, TodoResult,
-    TraceDiffParams, TraceIngestParams, TraceIngestResult, VersionResult,
+    CacheCheckParams, CacheRecordParams, CacheRecordResult, CacheRecordResultNondeterministicItem,
+    CacheRecordResultNondeterministicItemPrevious, CacheRecordResultRejectedItem, DeltaParams,
+    DeltaResult, GateCheckParams, GateCheckResult, PlanLintParams, PlanLintResult, QueryWalkParams,
+    QueryWalkResult, ResolveParams, ResolveResult, ScopeParams, ScopeResult, SnapshotCurrentResult,
+    SurveyRunParams, SurveyRunResult, TodoParams, TodoResult, TraceDiffParams, TraceIngestParams,
+    TraceIngestResult, VersionResult,
 };
 use grid_wire::{
     CacheCheckResult, CacheHit, CacheHitVerdict, CacheResultEntryVerdict, GitRev, Snapshot,
@@ -882,6 +883,8 @@ pub fn cache_check(
                 },
                 recorded_at: entry.recorded_at,
                 trace_id: entry.trace_id,
+                // A cache check is addressed by datum; nobody named a test.
+                test: None,
             }),
             None => misses.push(datum.clone()),
         }
@@ -917,6 +920,7 @@ pub fn cache_record(
     let chart = grid_cache::Chart::new(epoch.segments());
     let kind = grid_cache::Kind::from(params.kind);
     let recorded_at = grid_cache::now_rfc3339();
+    let mut nondeterministic = Vec::new();
 
     // A verdict tied to a retained trace also lands in the datum-outcome
     // log: that pairing — this test, this datum version, this verdict — is
@@ -940,14 +944,33 @@ pub fn cache_record(
         };
         match chart.key(id, kind, &params.env_hash) {
             Ok(key) => {
+                let verdict = match entry.verdict {
+                    CacheResultEntryVerdict::Pass => grid_cache::Verdict::Pass,
+                    CacheResultEntryVerdict::Fail => grid_cache::Verdict::Fail,
+                };
+                // Same key, opposite verdict: the closure proves the charted
+                // code did not change and the environment is the same, so
+                // whatever differed is not the charted code. Reported from
+                // the last entry — no history table — and stored regardless.
+                if let Some(previous) = cache.get(key).filter(|p| p.verdict != verdict) {
+                    nondeterministic.push(CacheRecordResultNondeterministicItem {
+                        datum: entry.datum.clone(),
+                        previous: match previous.verdict {
+                            grid_cache::Verdict::Pass => {
+                                CacheRecordResultNondeterministicItemPrevious::Pass
+                            }
+                            grid_cache::Verdict::Fail => {
+                                CacheRecordResultNondeterministicItemPrevious::Fail
+                            }
+                        },
+                        previous_at: previous.recorded_at.clone(),
+                    });
+                }
                 cache
                     .put(
                         key,
                         grid_cache::Entry {
-                            verdict: match entry.verdict {
-                                CacheResultEntryVerdict::Pass => grid_cache::Verdict::Pass,
-                                CacheResultEntryVerdict::Fail => grid_cache::Verdict::Fail,
-                            },
+                            verdict,
                             recorded_at: recorded_at.clone(),
                             trace_id: params.trace_id.clone(),
                             // Stored so the key can be recomputed later:
@@ -974,7 +997,180 @@ pub fn cache_record(
             }),
         }
     }
-    Ok(CacheRecordResult { recorded, rejected })
+    Ok(CacheRecordResult {
+        recorded,
+        rejected,
+        nondeterministic: (!nondeterministic.is_empty()).then_some(nondeterministic),
+    })
+}
+
+/// Why `grid.test.plan` could not answer.
+#[derive(Debug)]
+pub enum TestPlanError {
+    /// An endpoint did not resolve, or the worktree survey failed.
+    Chart(chart_provider::Error),
+    /// The trace store or the verdict log could not be read. Neither is an
+    /// empty set: a store that fails to open has unknown contents, and a
+    /// plan computed as if it were empty would skip tests on nothing.
+    Store(String),
+}
+
+impl std::fmt::Display for TestPlanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Chart(e) => write!(f, "{e}"),
+            Self::Store(msg) => f.write_str(msg),
+        }
+    }
+}
+
+impl std::error::Error for TestPlanError {}
+
+/// `grid.test.plan` — selection as data over base and a fresh worktree
+/// survey. The survey is the head, as it is for `grid drift`, because the
+/// everyday question is "what do my uncommitted edits reach".
+///
+/// Base defaults to the snapshot the last `grid test` recorded against,
+/// then to `HEAD`. A remembered snapshot the store no longer holds (an
+/// epoch bump drops the store) falls back to `HEAD` rather than refusing:
+/// the remembered base is a convenience, not a claim.
+///
+/// # Errors
+/// [`TestPlanError::Chart`] when base cannot be resolved or the worktree
+/// cannot be surveyed; [`TestPlanError::Store`] when the traces or the
+/// verdict log cannot be read.
+pub fn test_plan(
+    params: &grid_wire::methods::TestPlanParams,
+    root: &std::path::Path,
+    chart: &mut Chart,
+) -> Result<grid_wire::TestPlan, TestPlanError> {
+    test_plan_timed(params, root, chart).map(|(plan, _)| plan)
+}
+
+/// How long the two halves of a plan took: the surveys, which are the
+/// ledger's `grid survey` row, and the plan itself, which is this step's.
+#[derive(Debug, Clone, Copy)]
+pub struct Timing {
+    pub survey: std::time::Duration,
+    pub plan: std::time::Duration,
+}
+
+/// [`test_plan`], with the timing the CLI states on stderr.
+///
+/// # Errors
+/// As [`test_plan`].
+pub fn test_plan_timed(
+    params: &grid_wire::methods::TestPlanParams,
+    root: &std::path::Path,
+    chart: &mut Chart,
+) -> Result<(grid_wire::TestPlan, Timing), TestPlanError> {
+    let started = std::time::Instant::now();
+    let head_rev = SnapshotOrRev::GitRev {
+        git_rev: GitRev("HEAD".to_owned()),
+    };
+    let base = match &params.base {
+        Some(base) => base.clone(),
+        None => match std::fs::read_to_string(crate::testplan::last_path(root)) {
+            Ok(id) => {
+                let remembered = SnapshotOrRev::Snapshot {
+                    snapshot: SnapshotId(id.trim().to_owned()),
+                };
+                let held = ChartDelta::open(root)
+                    .and_then(|c| c.epoch_of(&remembered))
+                    .is_ok();
+                if held {
+                    remembered
+                } else {
+                    head_rev.clone()
+                }
+            }
+            Err(_) => head_rev.clone(),
+        },
+    };
+    // A rev base is surveyed *at the rev*, out of the object store, and
+    // named by the snapshot that produced. A worktree survey is labelled
+    // with the same rev, so looking a rev up after the worktree survey would
+    // find the worktree — and a plan of a snapshot against itself selects
+    // nothing. Idempotent (D5): an already-surveyed rev costs a cached parse.
+    let base = match base {
+        SnapshotOrRev::GitRev { git_rev } => {
+            let (snapshot, _) = chart
+                .survey_run(&SurveyRunParams {
+                    git_rev: Some(git_rev),
+                    worktree: None,
+                })
+                .map_err(TestPlanError::Chart)?;
+            SnapshotOrRev::Snapshot {
+                snapshot: snapshot.snapshot_id,
+            }
+        }
+        snapshot @ SnapshotOrRev::Snapshot { .. } => snapshot,
+    };
+    let (_, ran) = chart
+        .survey_run(&SurveyRunParams {
+            git_rev: None,
+            worktree: None,
+        })
+        .map_err(TestPlanError::Chart)?;
+    let survey = started.elapsed();
+    let planning = std::time::Instant::now();
+    let provider = ChartDelta::open(root).map_err(TestPlanError::Chart)?;
+    let base_epoch = provider.epoch_of(&base).map_err(TestPlanError::Chart)?;
+    let head_epoch = provider.head();
+    let diff = grid_chart::diff(
+        SnapshotId(base_epoch.snapshot_id().as_str().to_owned()),
+        base_epoch.segments(),
+        SnapshotId(head_epoch.snapshot_id().as_str().to_owned()),
+        head_epoch.segments(),
+    );
+    // `C`: datum-level, base side. A move keeps its datum and an addition
+    // has no base side; both are outside the set by construction.
+    let changed: Vec<crate::testplan::Changed> = diff
+        .defs
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.action,
+                grid_wire::DefChangeAction::Removed | grid_wire::DefChangeAction::Modified
+            )
+        })
+        .filter_map(|d| {
+            Some(crate::testplan::Changed {
+                before: grid_chart::DatumId::parse(&d.before.as_ref()?.0)?,
+                after: d
+                    .after
+                    .as_ref()
+                    .and_then(|after| grid_chart::DatumId::parse(&after.0)),
+            })
+        })
+        .collect();
+    let traces = trace_dir(root)
+        .and_then(grid_trace::Store::open)
+        .and_then(|store| store.retained())
+        .map_err(|e| TestPlanError::Store(e.to_string()))?;
+    let cache = grid_cache::Cache::open(cache_path(root))
+        .map_err(|e| TestPlanError::Store(e.to_string()))?;
+    let plan = crate::testplan::compute(&crate::testplan::Inputs {
+        base: base_epoch.segments(),
+        head: head_epoch.segments(),
+        base_id: diff.base,
+        head_id: diff.head,
+        changed: &changed,
+        traces: &traces,
+        cache: &cache,
+        env_hash: &params.env_hash,
+        tests: &params.tests,
+        replay: params.replay.unwrap_or(true),
+        fuel: grid_cache::FUEL,
+        declined: Some(ran.declined),
+    });
+    Ok((
+        plan,
+        Timing {
+            survey,
+            plan: planning.elapsed(),
+        },
+    ))
 }
 
 /// Open the chart against the epoch a request names.

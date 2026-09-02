@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use super::{
     Anchor, CacheCheckRequest, CacheResultEntry, CallsignPattern, CarriedAnchor, Datum, DefRef,
     Diff, DriftReport, EditResult, EditSpec, Estimate, GateVerdict, GitRev, Grade, LintResult,
-    Locator, Plan, PlanId, ScopePack, Snapshot, SnapshotId, SnapshotOrRev, Suspects, TodoList,
-    Trace, TraceDiff, TraceId, WalkQuery, WalkResult,
+    Locator, Plan, PlanId, ScopePack, Snapshot, SnapshotId, SnapshotOrRev, Suspects, TestId,
+    TestPlan, TodoList, Trace, TraceDiff, TraceId, WalkQuery, WalkResult,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -123,6 +123,8 @@ pub struct CacheRecordParams {
 pub struct CacheRecordResult {
     pub recorded: u64,
     pub rejected: Vec<CacheRecordResultRejectedItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nondeterministic: Option<Vec<CacheRecordResultNondeterministicItem>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +142,22 @@ pub enum CacheRecordKind {
 pub struct CacheRecordResultRejectedItem {
     pub datum: Datum,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CacheRecordResultNondeterministicItemPrevious {
+    #[serde(rename = "pass")]
+    Pass,
+    #[serde(rename = "fail")]
+    Fail,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CacheRecordResultNondeterministicItem {
+    pub datum: Datum,
+    pub previous: CacheRecordResultNondeterministicItemPrevious,
+    pub previous_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -242,3 +260,16 @@ pub struct DriftParams {
 }
 
 pub type DriftResult = DriftReport;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestPlanParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<SnapshotOrRev>,
+    pub env_hash: String,
+    pub tests: Vec<TestId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay: Option<bool>,
+}
+
+pub type TestPlanResult = TestPlan;
