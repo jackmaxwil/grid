@@ -120,6 +120,10 @@ pub struct Survey {
     /// Of [`Survey::declined_refs`]: names this tree could have held and the
     /// resolver could not bind. The population that is a hole.
     pub declined_internal: u64,
+    /// Definitions whose per-definition declined split (segment epoch 5,
+    /// `u16` per column) saturated at `u16::MAX` — stated, never wrapped.
+    /// The repo-wide counters above are exact regardless.
+    pub declined_saturated: u64,
 }
 
 /// The definitions the frontend `lang` names finds in `source`. This is the
@@ -403,7 +407,8 @@ pub fn run_sources(
         })
         .collect();
 
-    let image = grid_chart::build(&chart_defs, &chart_edges)?;
+    let (per_def, declined_saturated) = declined.rows();
+    let image = grid_chart::build_declined(&chart_defs, &chart_edges, &per_def)?;
     // Counts are read back off the built segment rather than off the inputs:
     // the builder dedupes, so its numbers are the true ones.
     let segment = grid_chart::Segment::parse(image.as_slice())?;
@@ -431,10 +436,12 @@ pub fn run_sources(
         declined_method: declined.method,
         declined_method_refused: declined.refused,
         declined_internal: declined.internal,
+        declined_saturated,
     })
 }
 
-/// The declined counters summed over every file's [`Resolved`].
+/// The declined counters summed over every file's [`Resolved`], and the
+/// per-definition rows merged by datum.
 #[derive(Default)]
 struct DeclinedTotals {
     refs: u64,
@@ -442,6 +449,7 @@ struct DeclinedTotals {
     method: u64,
     refused: u64,
     internal: u64,
+    per_def: HashMap<[u8; 32], resolve::DefDeclined>,
 }
 
 impl DeclinedTotals {
@@ -453,6 +461,41 @@ impl DeclinedTotals {
             .refused
             .saturating_add(u64::from(r.declined_method_refused));
         self.internal = self.internal.saturating_add(u64::from(r.declined_internal));
+        for (datum, row) in &r.per_def {
+            let mine = self.per_def.entry(*datum).or_default();
+            mine.external = mine.external.saturating_add(row.external);
+            mine.method = mine.method.saturating_add(row.method);
+            mine.internal = mine.internal.saturating_add(row.internal);
+            mine.refused = mine.refused.saturating_add(row.refused);
+        }
+    }
+
+    /// The rows as the segment stores them — `u16` per column, saturating —
+    /// and how many definitions saturated.
+    fn rows(&self) -> (HashMap<grid_chart::DatumId, grid_chart::Declined>, u64) {
+        let mut saturated = 0u64;
+        let mut narrow = |n: u32| {
+            u16::try_from(n).unwrap_or_else(|_| {
+                saturated = saturated.saturating_add(1);
+                u16::MAX
+            })
+        };
+        let rows = self
+            .per_def
+            .iter()
+            .map(|(datum, row)| {
+                (
+                    grid_chart::DatumId(*datum),
+                    grid_chart::Declined {
+                        external: narrow(row.external),
+                        method: narrow(row.method),
+                        internal: narrow(row.internal),
+                        refused: narrow(row.refused),
+                    },
+                )
+            })
+            .collect();
+        (rows, saturated)
     }
 }
 

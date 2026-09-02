@@ -19,7 +19,7 @@ mod delta;
 mod manifest;
 mod membership;
 
-pub use build::{build, Def, DefFacts, Edge};
+pub use build::{build, build_declined, Def, DefFacts, Edge};
 pub use delta::diff;
 pub use manifest::{Manifest, SegmentEntry, SnapshotId};
 pub use membership::{
@@ -33,17 +33,19 @@ pub const MAGIC: &[u8; 8] = b"GRIDSEG\x00";
 /// reinterpretation of bytes on disk (see ASSURANCE.md, normalization
 /// stability). Every epoch ever shipped parses forever; a section an older
 /// image does not declare answers `None`, never a fabricated value.
-pub const FORMAT_EPOCH: u32 = 4;
+pub const FORMAT_EPOCH: u32 = 5;
 /// Sections an epoch-1 image declares — the first ten of [`Section`].
 pub const V1_SECTION_COUNT: usize = 10;
 /// Sections an epoch-2 image declares — the first fifteen of [`Section`].
 pub const V2_SECTION_COUNT: usize = 15;
 /// Sections an epoch-3 image declares — the first sixteen of [`Section`].
 pub const V3_SECTION_COUNT: usize = 16;
+/// Sections an epoch-4 image declares — the first nineteen of [`Section`].
+pub const V4_SECTION_COUNT: usize = 19;
 /// Fixed-size header: magic, counts, and the checksum of everything after it.
 pub const HEADER_LEN: usize = 64;
-/// Number of sections a v4 image declares, in the order of [`Section`].
-pub const SECTION_COUNT: usize = 19;
+/// Number of sections a v5 image declares, in the order of [`Section`].
+pub const SECTION_COUNT: usize = 20;
 /// Bytes per section-table entry: `(offset: u64, len: u64)`.
 pub const SECTION_ENTRY_LEN: usize = 16;
 
@@ -99,6 +101,23 @@ pub enum Section {
     CfgOffsets = 17,
     /// UTF-8 cfg predicates, deduplicated and concatenated (epoch 4).
     CfgBytes = 18,
+    /// Per def: `(external: u16, method: u16, internal: u16, refused: u16)`
+    /// — the references the survey declined inside this definition, split
+    /// as the repo-wide count is, saturating. What lets a consumer say how
+    /// much of *this* neighbourhood the chart could not follow (epoch 5).
+    DefDeclined = 19,
+}
+
+/// The references the survey declined inside one definition, by why. The
+/// per-definition form of the survey's own split: `external` + `method` +
+/// `internal` is the definition's declined total, `refused` a sub-count of
+/// `method`. Saturating at `u16::MAX`, which the survey reports.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Declined {
+    pub external: u16,
+    pub method: u16,
+    pub internal: u16,
+    pub refused: u16,
 }
 
 /// Why an image was rejected. Every variant is a refusal, never a panic: the
@@ -369,7 +388,8 @@ impl<B: AsRef<[u8]>> Segment<B> {
             1 => V1_SECTION_COUNT,
             2 => V2_SECTION_COUNT,
             3 => V3_SECTION_COUNT,
-            4 => SECTION_COUNT,
+            4 => V4_SECTION_COUNT,
+            5 => SECTION_COUNT,
             other => return Err(ChartError::BadEpoch(other)),
         };
         let sections = read_u32(header, 12).ok_or(ChartError::Truncated)?;
@@ -493,6 +513,12 @@ impl<B: AsRef<[u8]>> Segment<B> {
         }
         if self.epoch >= 4 {
             self.validate_cfgs(defs)?;
+        }
+        if self.epoch >= 5 {
+            sized(
+                Section::DefDeclined,
+                defs.checked_mul(8).ok_or(ChartError::TooLarge)?,
+            )?;
         }
 
         // Ordinals are a binary search over the digests, which is only a
@@ -724,6 +750,33 @@ impl<B: AsRef<[u8]>> Segment<B> {
             .section(Section::CfgBytes)
             .get(start as usize..end as usize)?;
         std::str::from_utf8(raw).ok()
+    }
+
+    /// The references the survey declined inside the definition at `ord`,
+    /// split by why. `None` on an image that predates epoch 5: an older
+    /// snapshot answers *unknown*, never "nothing declined" — a consumer
+    /// summing a closure's holes would otherwise report a clean zero for a
+    /// chart that never counted.
+    #[must_use]
+    pub fn declined(&self, ord: Ordinal) -> Option<Declined> {
+        if self.epoch < 5 {
+            return None;
+        }
+        let at = (ord.0 as usize).checked_mul(8)?;
+        let raw = self
+            .section(Section::DefDeclined)
+            .get(at..at.checked_add(8)?)?;
+        let column = |i: usize| {
+            raw.get(i..i + 2)
+                .and_then(|b| b.try_into().ok())
+                .map(u16::from_le_bytes)
+        };
+        Some(Declined {
+            external: column(0)?,
+            method: column(2)?,
+            internal: column(4)?,
+            refused: column(6)?,
+        })
     }
 
     /// Cyclomatic complexity of the definition at `ord`, if surveyed. A

@@ -100,6 +100,19 @@ pub struct Resolved {
     /// resolver could not bind — glob-supplied, ambiguous, an unresolved
     /// re-export. The population that is an actual hole in what grid claims.
     pub declined_internal: u32,
+    /// The same counts per source definition, keyed by its datum — the
+    /// per-definition fact segment epoch 5 stores. Every decline above is
+    /// in exactly one row here, so the rows sum to the totals.
+    pub per_def: HashMap<[u8; 32], DefDeclined>,
+}
+
+/// One definition's declined split, as the resolver counts it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DefDeclined {
+    pub external: u32,
+    pub method: u32,
+    pub internal: u32,
+    pub refused: u32,
 }
 
 /// Which population a declined reference belongs to.
@@ -119,21 +132,26 @@ pub(crate) enum Decline {
 }
 
 impl Resolved {
-    pub(crate) fn decline(&mut self, which: Decline) {
+    /// Count one declined reference from the definition `src`.
+    pub(crate) fn decline(&mut self, src: [u8; 32], which: Decline) {
         self.declined = self.declined.saturating_add(1);
-        let slot = match which {
-            Decline::External => &mut self.declined_external,
-            Decline::Method => &mut self.declined_method,
-            Decline::Internal => &mut self.declined_internal,
+        let row = self.per_def.entry(src).or_default();
+        let (slot, cell) = match which {
+            Decline::External => (&mut self.declined_external, &mut row.external),
+            Decline::Method => (&mut self.declined_method, &mut row.method),
+            Decline::Internal => (&mut self.declined_internal, &mut row.internal),
         };
         *slot = slot.saturating_add(1);
+        *cell = cell.saturating_add(1);
     }
 
     /// A method call whose receiver was typed to a charted type and the
     /// rule refused: counted `method`, and counted refused.
-    pub(crate) fn refuse(&mut self) {
-        self.decline(Decline::Method);
+    pub(crate) fn refuse(&mut self, src: [u8; 32]) {
+        self.decline(src, Decline::Method);
         self.declined_method_refused = self.declined_method_refused.saturating_add(1);
+        let row = self.per_def.entry(src).or_default();
+        row.refused = row.refused.saturating_add(1);
     }
 }
 
@@ -161,7 +179,7 @@ pub fn resolve(index: &DefIndex, module: &str, imports: &[Import], refs: &[Refer
         } else if let Some(target) = annotated_method(index, &bindings, module, r) {
             (target, Grade::Modeled)
         } else {
-            out.decline(decline_of(index, &bindings, module, r));
+            out.decline(src, decline_of(index, &bindings, module, r));
             continue;
         };
         // A definition referencing itself is a fact about recursion, not a

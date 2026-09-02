@@ -182,6 +182,92 @@ fn an_inferred_receiver_yields_a_modeled_edge_never_a_proven_one() {
     );
 }
 
+/// The per-definition split, read back off the segment.
+fn per_def(s: &Survey) -> Vec<(String, grid_chart::Declined)> {
+    let seg = grid_chart::Segment::parse(s.image.as_slice()).expect("parse");
+    (0..seg.def_count())
+        .map(|i| {
+            let ord = grid_chart::Ordinal(i);
+            (
+                seg.callsign(ord).unwrap_or("?").to_owned(),
+                seg.declined(ord).expect("a fresh image counts every def"),
+            )
+        })
+        .collect()
+}
+
+/// Property, T-17: the sum over every definition of each counter equals
+/// the survey's repo-wide counter — module-level references are counted in
+/// neither — and `refused ≤ method` holds per definition.
+#[test]
+fn per_definition_declines_sum_to_the_surveys_counters() {
+    let dir = repo(&[
+        ("Cargo.toml", "[package]\nname = \"fixture\"\n"),
+        (
+            "src/lib.rs",
+            "use std::collections::HashMap;\n\
+             use crate::hidden::*;\n\
+             pub mod hidden;\n\
+             pub struct Local;\n\
+             pub trait Tr { fn frob(&self); }\n\
+             impl Local {\n  pub fn frob(&self) {}\n  pub fn zap(&self) { self.frob(); glob_supplied(); }\n}\n\
+             pub fn sibling(x: Local) { x.frob(); }\n\
+             pub fn caller(v: Vec<Local>) {\n\
+             \x20   HashMap::<u8, u8>::new();\n\
+             \x20   for x in v { x.frob(); }\n\
+             \x20   glob_supplied();\n\
+             \x20   sibling(Local);\n\
+             }\n\
+             const AT_MODULE_LEVEL: u8 = { helper(); 1 };\n",
+        ),
+        ("src/hidden.rs", "// no definitions here\n"),
+    ]);
+    let s = survey(dir.path());
+    let rows = per_def(&s);
+    let sum = |f: fn(&grid_chart::Declined) -> u16| -> u64 {
+        rows.iter().map(|(_, d)| u64::from(f(d))).sum()
+    };
+    assert_eq!(sum(|d| d.external), s.declined_external, "{rows:?}");
+    assert_eq!(sum(|d| d.method), s.declined_method, "{rows:?}");
+    assert_eq!(sum(|d| d.internal), s.declined_internal, "{rows:?}");
+    assert_eq!(sum(|d| d.refused), s.declined_method_refused, "{rows:?}");
+    assert_eq!(
+        sum(|d| d.external) + sum(|d| d.method) + sum(|d| d.internal),
+        s.declined_refs
+    );
+    for (name, d) in &rows {
+        assert!(d.refused <= d.method, "{name}: {d:?}");
+    }
+    // Non-vacuity: the rows are not all zero, and one of them is the
+    // refused trait candidate in `sibling`.
+    assert!(s.declined_refs >= 4, "{s:?}");
+    let sibling = rows
+        .iter()
+        .find(|(n, _)| n == "fixture.sibling")
+        .map(|(_, d)| *d)
+        .expect("sibling");
+    assert_eq!((sibling.method, sibling.refused), (1, 1), "{sibling:?}");
+    assert_eq!(s.declined_saturated, 0);
+}
+
+/// A definition's counter saturates at `u16::MAX` and the survey says so;
+/// the repo-wide counter stays exact.
+#[test]
+fn a_per_definition_counter_saturates_and_is_reported() {
+    let calls = "y.m();".repeat(70_000);
+    let src = format!("pub fn f(x: Vec<u8>) {{ for y in x {{ {calls} }} }}\n");
+    let dir = repo(&[
+        ("Cargo.toml", "[package]\nname = \"fixture\"\n"),
+        ("src/lib.rs", &src),
+    ]);
+    let s = survey(dir.path());
+    assert_eq!(s.declined_method, 70_000, "the repo-wide count is exact");
+    assert_eq!(s.declined_saturated, 1, "one definition saturated");
+    let rows = per_def(&s);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].1.method, u16::MAX, "{rows:?}");
+}
+
 /// A prelude name is not a hole in this tree: `Some(..)`, `Ok(..)`,
 /// `drop(..)` and a derived or implemented prelude trait were never the
 /// tree's to hold, and counting them `internal` inflated the one number

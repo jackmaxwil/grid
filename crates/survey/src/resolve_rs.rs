@@ -31,11 +31,11 @@ pub(crate) fn resolve(
             match method_call(index, &bindings, module, r) {
                 Ok(bound) => bound,
                 Err(Refusal::Declined(which)) => {
-                    out.decline(which);
+                    out.decline(src, which);
                     continue;
                 }
                 Err(Refusal::Refused(_reason)) => {
-                    out.refuse();
+                    out.refuse(src);
                     continue;
                 }
             }
@@ -44,7 +44,7 @@ pub(crate) fn resolve(
                 // A name a glob import would have supplied was never bound
                 // by extraction, so it falls through to here. Counted, not
                 // guessed.
-                out.decline(decline_of(index, &bindings, r));
+                out.decline(src, decline_of(index, &bindings, r));
                 continue;
             };
             (target, Grade::Proven)
