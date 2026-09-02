@@ -7,6 +7,8 @@
 //! the survey's edges can be checked against the compiler's own binding.
 #![allow(dead_code, unused_variables, clippy::all)]
 
+pub mod other;
+
 pub struct Foo {
     pub bar: Bar,
     pub n: u32,
@@ -24,11 +26,33 @@ pub struct Amb {
     pub b: u8,
 }
 
+/// Same name as `other::Holder`, a different field type: the one in this
+/// file must never type a base written as `other::Holder`.
+pub struct Holder<'a> {
+    pub h: &'a Bar,
+}
+
 pub trait Tr {
     fn t(&self) -> &'static str;
     fn by_val(self) -> &'static str;
     fn only_trait(&self) -> &'static str;
 }
+
+/// Implemented for `&Foo`: rustc's first step on a `&&Foo` receiver is the
+/// outer reference, where this impl outranks the inherent `Foo::d`.
+pub trait Dr {
+    fn d(&self) -> &'static str;
+}
+
+/// `Foo` here is the trait's type parameter, not the struct above: inside
+/// the default body only the bound's `t` is visible.
+pub trait Visit<Foo: Tr> {
+    fn r_trait_generic(&self, n: &Foo) -> &'static str {
+        n.t()
+    }
+}
+pub struct V;
+impl Visit<Foo> for V {}
 
 impl Foo {
     pub fn new() -> Self {
@@ -58,8 +82,17 @@ impl Foo {
     pub fn clone(&self) -> &'static str {
         "Foo.clone"
     }
+    pub fn d(&self) -> &'static str {
+        "Foo.d"
+    }
     pub fn c_m_self_field(&self) -> &'static str {
         self.bar.m()
+    }
+}
+
+impl Dr for &Foo {
+    fn d(&self) -> &'static str {
+        "Foo@Dr.d"
     }
 }
 
@@ -185,6 +218,15 @@ fn r_for(v: Vec<Foo>) -> &'static str {
     }
     "none"
 }
+// A written type that is not the first lookup step: `&&Foo` probes the
+// outer reference first, where `impl Dr for &Foo` wins.
+fn r_double_ref(x: &&Foo) -> &'static str {
+    x.d()
+}
+// A base written as `other::Holder`: this file's `Holder` must not type it.
+fn r_foreign_field(x: &other::Holder) -> &'static str {
+    x.h.m()
+}
 
 fn main() {
     let mut foo = Foo::new();
@@ -217,6 +259,12 @@ fn main() {
         ("r_amb", r_amb(&amb)),
         ("r_closure", r_closure()),
         ("r_for", r_for(vec![Foo::new()])),
+        ("Visit.r_trait_generic", V.r_trait_generic(&foo)),
+        ("r_double_ref", r_double_ref(&&foo)),
+        (
+            "r_foreign_field",
+            r_foreign_field(&other::Holder { h: &other::Qux }),
+        ),
     ];
     for (name, reached) in rows {
         println!("{name}\t{reached}");

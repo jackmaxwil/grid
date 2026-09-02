@@ -229,6 +229,54 @@ fn pattern_bindings_for_loops_and_type_parameters_carry_no_hint() {
     assert_eq!(hint(&src), None);
     let src = format!("{FOO}fn f(x: &dyn Sized) {{ x.m(); }}");
     assert_eq!(hint(&src), None);
+    // A trait's own type parameter shadows the file's same-named struct
+    // inside a default body: `Foo` here is the parameter, and rustc binds
+    // `x.m()` to the bound's method, never to `Foo::m`.
+    let src = format!("{FOO}pub trait Visit<Foo: Sized> {{ fn f(&self, x: &Foo) {{ x.m(); }} }}");
+    assert_eq!(hint(&src), None);
+    let src = format!(
+        "{FOO}pub trait Visit<Foo: Sized> {{ fn f(&self, x: Foo) {{ let y: &Foo = &x; y.m(); }} }}"
+    );
+    assert_eq!(hint(&src), None);
+}
+
+/// Conservatism: a reference to a reference is not the written type's
+/// first lookup step — rustc probes `&&Foo` before `&Foo`, and a trait
+/// implemented for `&Foo` matches there — so it records no hint at all.
+#[test]
+fn a_reference_to_a_reference_carries_no_hint() {
+    let src = format!("{FOO}fn f(x: &&Foo) {{ x.m(); }}");
+    assert_eq!(hint(&src), None);
+    let src = format!("{FOO}fn f(x: &mut &Foo) {{ x.m(); }}");
+    assert_eq!(hint(&src), None);
+    let src = format!("{FOO}fn f() {{ let x: &&Foo = &&Foo::new(); x.m(); }}");
+    assert_eq!(hint(&src), None);
+    // `&` around an already-referenced binding is the same double reference.
+    let src = format!("{FOO}fn f(x: &Foo) {{ (&x).m(); }}");
+    assert_eq!(hint(&src), None);
+    // `&` around a field the index will type: the field's own form is not
+    // known here, so the form cannot be composed and nothing is recorded.
+    let src = "impl Foo { fn f(&self) { (&self.bar).m(); } }";
+    assert_eq!(hint(src), None);
+}
+
+/// Conservatism: a base written as a multi-segment path is never this
+/// file's same-named type. `other::Foo`'s field, return and constructor are
+/// not in this file's tables; the field goes to the index by its written
+/// path, the rest record nothing.
+#[test]
+fn a_multi_segment_base_is_never_this_files_same_named_type() {
+    let src = format!("{FOO}fn f(x: &other::Foo) {{ x.bar.m(); }}");
+    let r = hints(&src).pop().flatten().expect("a hint");
+    assert_eq!(r.ty.path, ["other", "Foo"]);
+    assert_eq!(r.origin, ReceiverOrigin::TypedField);
+    assert_eq!(r.field.as_deref(), Some("bar"));
+    let src = format!("{FOO}fn f(x: &other::Foo) {{ x.g().m(); }}");
+    assert_eq!(hint(&src), None);
+    let src = format!("{FOO}fn f() {{ let x = other::Foo::new(); x.m(); }}");
+    assert_eq!(hint(&src), None);
+    let src = format!("{FOO}fn f() {{ other::make().m(); }}");
+    assert_eq!(hint(&src), None);
 }
 
 #[test]

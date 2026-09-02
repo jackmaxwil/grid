@@ -26,6 +26,11 @@ pub(crate) fn type_ref(
     match ty {
         Type::Reference(r) => {
             let mut inner = type_ref(&r.elem, self_ty, generics)?;
+            // A reference to a reference: rustc's first lookup step is the
+            // outer reference, which no single form spells — no hint.
+            if inner.form != ReceiverForm::Value {
+                return None;
+            }
             inner.form = if r.mutability.is_some() {
                 ReceiverForm::RefMut
             } else {
@@ -141,17 +146,17 @@ pub(crate) fn plain_impl(i: &syn::ItemImpl) -> bool {
 }
 
 /// Same-file facts the extractor types a chain with: every function's
-/// written return keyed by the type's last segment and the method
-/// (`Foo.new`; `free` for a free function), and every struct's field types
-/// keyed by the struct's own name. A key two items share is `None`: an
-/// ambiguous entry yields no hint rather than a wrong one.
+/// written return keyed by the type's written path and the method
+/// (`Foo.new`, `other.Foo.new`; `free` for a free function), and every
+/// struct's field types keyed by the struct's own name. A key two items
+/// share is `None`: an ambiguous entry yields no hint rather than a wrong
+/// one, and a base written as `other::Foo` never reads this file's `Foo`.
 ///
-/// ponytail: keyed by the bare name, not the module path — an inline
-/// module's `Foo` and the file's `Foo` collide into a refusal, and a
-/// same-named type imported from elsewhere is typed by *this* file's
-/// `Foo::new` return, which is `Self` in practice. Cross-file returns are
-/// not followed at all; phase 3 holds every method's return on
-/// `MethodFacts` and is the upgrade.
+/// ponytail: keyed by the written path, not the resolved one — an inline
+/// module's `Foo` and the file's `Foo` collide into a refusal, and the
+/// same type written two ways (`Foo`, `self::Foo`) is two keys, the second
+/// of which yields nothing. Cross-file returns are not followed at all;
+/// phase 3 holds every method's return on `MethodFacts` and is the upgrade.
 #[derive(Default)]
 pub(crate) struct FileTypes {
     pub(crate) returns: HashMap<String, Option<TypeRef>>,
@@ -216,9 +221,7 @@ pub(crate) fn collect(
                 let Some(self_ty) = type_ref(&i.self_ty, None, &generics) else {
                     continue;
                 };
-                let Some(name) = self_ty.path.last().cloned() else {
-                    continue;
-                };
+                let name = self_ty.path.join(".");
                 for ii in &i.items {
                     let syn::ImplItem::Fn(m) = ii else { continue };
                     let mut generics = generics.clone();

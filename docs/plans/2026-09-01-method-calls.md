@@ -54,14 +54,14 @@ pairwise within noise; idle, both binaries measured 90ms / 170ms.
 | proven | 3,648 | 3,769 | 6,876 | 7,159 |
 | modeled | 0 | 71 | 0 | 519 |
 | declined | 12,848 | 12,574 | 36,879 | 35,758 |
-| external | 2,534 | 4,100 | 10,062 | 13,742 |
-| method | 9,549 | 7,802 | 23,871 | 19,074 |
-| of which refused | — | 66 | — | 338 |
+| external | 2,534 | 4,099 | 10,062 | 13,742 |
+| method | 9,549 | 7,803 | 23,871 | 19,074 |
+| of which refused | — | 64 | — | 338 |
 | internal | 765 | 672 | 2,946 | 2,942 |
 | segment bytes (epoch 4 → 5) | 438,170 (1,932 defs) | 456,436 | 1,150,811 | 1,205,953 |
 | `grid survey`, warm, interleaved | 100–140ms | 110–140ms | 180–320ms | 190–320ms |
 
-Against Part I's targets: `external` rose by 1,566 / 3,680 (predicted
+Against Part I's targets: `external` rose by 1,565 / 3,680 (predicted
 ~1,800 / ~5,400); edges emitted 121 proven + 71 modeled on this repo (of
 which ~93 proven are T-18's inline-module references, so step 2's own are
 ~28 proven), 279 proven + 519 modeled on yi (predicted 68 / 221 and 578 /
@@ -70,6 +70,16 @@ the builder's dedup, follows no cross-file chain, and refuses where the
 walker counted a `self.field` place as first-step. `method` fell 18% on
 this repo and 20% on yi; the half is the residual only a type checker
 moves (R-5).
+
+Corrected after the review of PR #22 (same tree, same method): three
+receivers that looked written and first-step were not — a trait's own
+type parameter, a double reference, a field of a same-named type written
+as `other::Foo` — and each now records no hint. On this repo the edge set
+is unchanged and three references moved population (`external` 4,100 →
+4,099, `method` 7,802 → 7,803, refused 66 → 64: `rpc::cache_record` and
+`rpc::cache_check` typed `grid_cache::Chart::new(..)` by this file's own
+`Chart`, `serde_shape::field_of` typed `syn::Field.ty` by this file's own
+`Field`); yi is unchanged to the reference.
 
 Original plan follows, unchanged.
 

@@ -90,12 +90,14 @@ fn last_segment(callsign: &str) -> &str {
 }
 
 const FIXTURE: &str = include_str!("fixtures/receivers.rs.txt");
+const OTHER: &str = include_str!("fixtures/receivers_other.rs.txt");
 
 /// Every method callsign the fixture defines — the value domain of the
 /// transcript, and what separates a method edge from a path-call edge.
 fn fixture_methods() -> BTreeSet<String> {
     FIXTURE
         .lines()
+        .chain(OTHER.lines())
         .filter_map(|l| l.trim().strip_prefix('"')?.strip_suffix('"'))
         .filter(|c| c.contains('.'))
         .map(str::to_owned)
@@ -112,10 +114,12 @@ fn every_emitted_method_edge_agrees_with_rustc_and_every_refusal_is_annotated() 
             "[package]\nname = \"receivers\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
         ),
         ("src/main.rs", FIXTURE),
+        ("src/other.rs", OTHER),
     ]);
     let s = survey(dir.path());
     let methods = fixture_methods();
     assert!(methods.len() >= 12, "{methods:?}");
+    assert!(methods.contains("other.Qux.m"), "{methods:?}");
 
     // rustc's binding, observed: `<function>\t<callsign reached>`.
     let out = std::process::Command::new(env!("CARGO"))
@@ -134,7 +138,7 @@ fn every_emitted_method_edge_agrees_with_rustc_and_every_refusal_is_annotated() 
         .filter_map(|l| l.split_once('\t'))
         .map(|(f, c)| (f.to_owned(), c.to_owned()))
         .collect();
-    assert_eq!(transcript.len(), 24, "{transcript:?}");
+    assert_eq!(transcript.len(), 27, "{transcript:?}");
 
     // The survey's method edges, per call site.
     let mut found: BTreeMap<String, Vec<(String, Grade)>> = BTreeMap::new();
@@ -153,32 +157,39 @@ fn every_emitted_method_edge_agrees_with_rustc_and_every_refusal_is_annotated() 
         }
     }
 
+    // Every call site judged, then one verdict: a disagreement anywhere is
+    // reported beside every other one.
+    let mut wrong = Vec::new();
     for (name, reached) in &transcript {
         let got = found.get(name).cloned().unwrap_or_default();
-        if name.contains("c_p_") {
-            assert_eq!(
-                got,
-                vec![(reached.clone(), Grade::Proven)],
-                "{name} must have exactly the proven edge rustc reached"
-            );
+        let want = if name.contains("c_p_") {
+            vec![(reached.clone(), Grade::Proven)]
         } else if name.contains("c_m_") {
-            assert_eq!(
-                got,
-                vec![(reached.clone(), Grade::Modeled)],
-                "{name} must have exactly the modeled edge rustc reached"
-            );
+            vec![(reached.clone(), Grade::Modeled)]
         } else {
-            assert!(name.starts_with("r_"), "{name}: unexpected fixture name");
             assert!(
-                got.is_empty(),
-                "{name} must have no method edge, got {got:?}"
+                last_segment(name).starts_with("r_"),
+                "{name}: unexpected fixture name"
             );
+            vec![]
+        };
+        if got != want {
+            wrong.push(format!(
+                "{name}: rustc reached {reached}; want {want:?}, got {got:?}"
+            ));
         }
     }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     // Every emitted edge above is one rustc reached — and the by-value
     // trait method the fixture plants is what makes that non-vacuous.
     assert_eq!(transcript["r_by_val_trait"], "Foo@Tr.by_val");
     assert_eq!(transcript["c_p_trait_shadowed"], "Foo.t");
+    // The three receivers that look written and first-step but are not: a
+    // trait's type parameter, a double reference, a foreign same-named
+    // struct. rustc reaches something else in each; the rule must decline.
+    assert_eq!(transcript["Visit.r_trait_generic"], "Foo@Tr.t");
+    assert_eq!(transcript["r_double_ref"], "Foo@Dr.d");
+    assert_eq!(transcript["r_foreign_field"], "other.Qux.m");
     // Every refusal is counted `method`, and counted refused where the
     // receiver was typed: instantiated, where-clause, no inherent, trait
     // candidate ×2 — five; the alias, the ambiguous type, the closure and

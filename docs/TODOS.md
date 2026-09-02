@@ -160,7 +160,7 @@ plan).
   impl, a wrapper or no inherent method stands in the way; rustc's own
   binding, run on the fixture, agrees with every emitted edge. Measured,
   same tree, previous binary against this one: this repo `method` 9,549
-  → 7,802 (66 refused), `external` 2,534 → 4,100, proven edges 3,648 →
+  → 7,803 (64 refused), `external` 2,534 → 4,099, proven edges 3,648 →
   3,769, modeled 0 → 71; yi `method` 23,871 → 19,074 (338 refused),
   `external` 10,062 → 13,742, proven 6,876 → 7,159, modeled 0 → 519.
   Python: annotated parameters resolve modeled; zero on yi. The "cut by
@@ -318,7 +318,7 @@ plan).
 ### From the method-calls plan's cut line (`docs/plans/2026-09-01-method-calls.md`)
 
 - **T-45 (P1, L) A type checker for the seventy percent.** The `method`
-  residual (7,802 here, 19,074 on yi) has no syntactic type; only
+  residual (7,803 here, 19,074 on yi) has no syntactic type; only
   rust-analyzer as a sidecar or in-process reaches it. Gated on R-5.
 - **T-46 (P1, S) Consumers of the per-definition declined split.**
   `DefRef.declined` and `declined_within` on the wire; `suspects

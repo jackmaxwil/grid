@@ -42,5 +42,23 @@ fn dump_edges() {
         survey.declined_method,
         survey.declined_internal
     );
+    // The per-definition rows (epoch 5), so a reference that moved between
+    // populations is nameable by its definition, not only counted.
+    for i in 0..seg.def_count() {
+        let Some(d) = seg.declined(Ordinal(i)) else {
+            continue;
+        };
+        if d.external | d.method | d.internal | d.refused != 0 {
+            let _ = writeln!(
+                text,
+                "# row\t{}\text {} method {} internal {} refused {}",
+                seg.callsign(Ordinal(i)).unwrap_or("?"),
+                d.external,
+                d.method,
+                d.internal,
+                d.refused
+            );
+        }
+    }
     std::fs::write(out, text).expect("write");
 }

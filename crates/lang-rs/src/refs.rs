@@ -255,7 +255,8 @@ impl Scan {
         }
         let is_self = matches!(&*f.base, Expr::Path(p) if p.path.is_ident("self"));
         let field = id.to_string();
-        match self.types.fields.get(base.ty.path.last()?) {
+        // Keyed by the written path: `other::Foo` is never this file's `Foo`.
+        match self.types.fields.get(&base.ty.path.join(".")) {
             // The struct is in this file: its declared type, or nothing for
             // a field no path spells.
             Some(Some(fields)) => fields.get(&field).map(|ty| Binding {
@@ -293,6 +294,12 @@ impl Scan {
             Expr::Paren(p) => self.type_of(&p.expr),
             Expr::Reference(r) => {
                 let mut b = self.type_of(&r.expr)?;
+                // `&` around a reference is a double reference, whose first
+                // lookup step the form cannot spell; `&` around a field the
+                // index will type composes with a form not known here.
+                if b.field.is_some() || b.ty.form != ReceiverForm::Value {
+                    return None;
+                }
                 b.ty.form = if r.mutability.is_some() {
                     ReceiverForm::RefMut
                 } else {
@@ -314,7 +321,7 @@ impl Scan {
                 if method == "unwrap" || method == "expect" {
                     return unwrapped(base);
                 }
-                let key = format!("{}.{method}", base.ty.path.last()?);
+                let key = format!("{}.{method}", base.ty.path.join("."));
                 let ret = self.types.returns.get(&key)?.clone()?;
                 Some(Binding {
                     ty: ret,
@@ -327,11 +334,11 @@ impl Scan {
                 let path = dotted(&c.func)?;
                 let key = match path.as_slice() {
                     [f] => f.clone(),
-                    [.., ty, f] => {
-                        let ty = if ty == "Self" {
-                            self.self_ty.as_ref()?.path.last()?
+                    [ty @ .., f] => {
+                        let ty = if matches!(ty, [only] if only == "Self") {
+                            self.self_ty.as_ref()?.path.join(".")
                         } else {
-                            ty
+                            ty.join(".")
                         };
                         format!("{ty}.{f}")
                     }
@@ -530,6 +537,10 @@ impl<'ast> Visit<'ast> for Scan {
     fn visit_item_trait(&mut self, node: &'ast syn::ItemTrait) {
         let name = node.ident.to_string();
         self.decorators(&name, &node.attrs);
+        // The trait's own type parameters shadow same-named types inside
+        // its default bodies, exactly as an impl's do inside its methods.
+        let outer_generics = self.generics.len();
+        self.generics.extend(types::generic_names(&node.generics));
         for ti in &node.items {
             if let TraitItem::Fn(m) = ti {
                 if let Some(block) = &m.default {
@@ -539,6 +550,7 @@ impl<'ast> Visit<'ast> for Scan {
                 }
             }
         }
+        self.generics.truncate(outer_generics);
     }
 
     fn visit_item_impl(&mut self, node: &'ast syn::ItemImpl) {

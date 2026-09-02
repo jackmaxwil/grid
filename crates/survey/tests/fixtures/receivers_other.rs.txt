@@ -1,0 +1,11 @@
+//! The second file of the oracle fixture: a `Holder` of the same name as
+//! `main.rs`'s, whose field is a type this file alone defines.
+pub struct Qux;
+impl Qux {
+    pub fn m(&self) -> &'static str {
+        "other.Qux.m"
+    }
+}
+pub struct Holder<'a> {
+    pub h: &'a Qux,
+}

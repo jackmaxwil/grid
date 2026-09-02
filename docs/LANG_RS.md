@@ -237,7 +237,7 @@ expansion, a `modeled` tier) is a later wave with its own evidence story.
   percent have a charted receiver type, and a little over half of those
   resolve under the first-step rule. Measured after the plan landed, same
   tree, previous binary against this one: this repo `method` 9,549 →
-  7,802 (66 refused), `external` 2,534 → 4,100, proven edges 3,648 →
+  7,803 (64 refused), `external` 2,534 → 4,099, proven edges 3,648 →
   3,769, modeled 0 → 71; yi `method` 23,871 → 19,074 (338 refused),
   `external` 10,062 → 13,742, proven 6,876 → 7,159, modeled 0 → 519.
   "Halved" is the residual only a type checker moves; the route is in the
