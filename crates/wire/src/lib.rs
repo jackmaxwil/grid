@@ -262,6 +262,8 @@ pub struct Diff {
 pub struct PlanDefPromise {
     pub action: PlanDefPromiseAction,
     pub callsign: CallsignPattern,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -419,6 +421,8 @@ pub struct GateVerdict {
     pub invariant_violations: Vec<InvariantViolation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasons: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface_unaccounted: Option<Vec<DefChange>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

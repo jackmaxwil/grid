@@ -13,7 +13,7 @@ use grid_wire::{
 };
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "2.3.0";
+pub const VERSION: &str = "2.4.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -154,8 +154,13 @@ pub fn verdict(v: &GateVerdict, name: &NameOf) -> String {
             ],
         );
     }
+    let held_for_interface = v.interface_unaccounted.as_deref().unwrap_or_default();
     for d in &v.defs_unaccounted {
-        record(&mut out, "def", &[def_glyph(d.action), &d.callsign.0]);
+        let mut columns = vec![def_glyph(d.action), d.callsign.0.as_str()];
+        if held_for_interface.contains(d) {
+            columns.push("unaccounted: interface");
+        }
+        record(&mut out, "def", &columns);
     }
     for t in &v.tests {
         let outcome = format!("{}={}", expected_name(t.expected), actual_name(t.actual));

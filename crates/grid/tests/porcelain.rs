@@ -477,6 +477,75 @@ fn diff_marks_only_the_definition_whose_interface_moved() {
     );
 }
 
+/// `interface: false` claims a definition's body may change but its
+/// interface may not; a plan promise correctly telling the two apart passes.
+#[test]
+fn interface_promises_made_good_by_the_transition_they_named_pass() {
+    let dir = repo_with_a_body_and_a_signature_edit();
+    let plan = write_track(
+        dir.path(),
+        "interface-pass",
+        &json!({
+            "plan_id": "plan:interface-pass/v1",
+            "base": {"git_rev": "HEAD~1"},
+            "delta": {
+                "defs": [
+                    {"action": "modify", "callsign": "m.body", "interface": false},
+                    {"action": "modify", "callsign": "m.iface", "interface": true}
+                ],
+                "edges": []
+            }
+        }),
+    );
+    let out = grid(dir.path(), &["gate", plan.to_str().expect("path"), "HEAD"]);
+    let text = stdout(&out);
+    assert_eq!(code(&out), 0, "stdout:\n{text}");
+    assert!(
+        !text.lines().any(|l| columns(l)[0] == "def"),
+        "nothing left unaccounted:\n{text}"
+    );
+}
+
+/// The plan's own headline use case: a promise that a definition's interface
+/// holds (`interface: false`) is not made good when the interface moves
+/// anyway — the gate holds, and the trailing column names the reason.
+#[test]
+fn a_def_promise_that_forbids_the_interface_move_holds_the_gate() {
+    let dir = repo_with_a_body_and_a_signature_edit();
+    let plan = write_track(
+        dir.path(),
+        "interface-hold",
+        &json!({
+            "plan_id": "plan:interface-hold/v1",
+            "base": {"git_rev": "HEAD~1"},
+            "delta": {
+                "defs": [
+                    {"action": "modify", "callsign": "m.iface", "interface": false}
+                ],
+                "edges": []
+            }
+        }),
+    );
+    let out = grid(dir.path(), &["gate", plan.to_str().expect("path"), "HEAD"]);
+    let text = stdout(&out);
+    assert_eq!(code(&out), 3, "stdout:\n{text}");
+    // The trailing column is free text (like a `warn` message), so it is
+    // matched by substring on the whole line rather than by exact column
+    // equality: `columns()` would otherwise split "unaccounted: interface"
+    // at its embedded space.
+    let row = text
+        .lines()
+        .find(|l| {
+            let c = columns(l);
+            c[0] == "def" && c.get(1) == Some(&"~") && c.get(2) == Some(&"m.iface")
+        })
+        .unwrap_or_else(|| panic!("a `def ~ m.iface` record:\n{text}"));
+    assert!(
+        row.trim_end().ends_with("unaccounted: interface"),
+        "row: {row}"
+    );
+}
+
 /// Publish a chart with a caller and its proven callee, so the cache verbs
 /// have real closures to key over.
 fn seed_chart(dir: &Path, callee_byte: u8) -> (String, String) {

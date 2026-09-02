@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.3.0
+version: 2.4.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -14,7 +14,7 @@ document.
 |---|---|
 | `snapshot` | id, stats (`defs N  edges N  reread N  <duration>`) |
 | `miss` (survey) | count, `references declined (external N, method N, internal N)` — the one record `grid survey` closes with when the resolver declined anything |
-| `def` | glyph, callsign, hash transition (`old→new` or new hash), `sig` when the interface identity also moved (absent when it held, and absent when a pre-epoch-3 snapshot means nobody can say) |
+| `def` | glyph, callsign, hash transition (`old→new` or new hash), `sig` when the interface identity also moved (absent when it held, and absent when a pre-epoch-3 snapshot means nobody can say); inside `grid gate` output, an unaccounted definition's trailing column reads `unaccounted: interface` when a def promise's `interface` claim is what holds it |
 | `ref` | callsign, datum prefix, `file:line` when the snapshot carries locations (`grid resolve` — a definition that exists, not one that changed) |
 | `orphan` | callsign, datum prefix, `file:line` — a definition with no *proven* caller (`grid orphans`); not the same as dead |
 | `edit` | `@from -> @to`, rev — one patch edge in the datum's history, newest first (`grid log`) |
@@ -173,6 +173,8 @@ a record's message, which carried 2.0.0 to 2.1.0 (`grid survey`'s closing
 tags a new verb's meanings, which carried 2.1.0 to 2.2.0 (`grid test`'s
 `hit`/`miss` addressed by test id, and its `done` line) and 2.2.0 to 2.3.0
 (`grid check --compile`'s `drift` reason `uncompiled:<cfg>` and its `warn`)
+and 2.3.0 to 2.4.0 (`grid gate`'s `def` record, trailing `unaccounted:
+interface` when a def promise's `interface` claim is why it holds)
 — changing column
 order or meaning is major — and so is renaming a tag, which is what carried
 1.6.0 to 2.0.0 (`docs/plans/2026-09-01-naming.md`). The daemon reports this

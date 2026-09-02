@@ -194,6 +194,17 @@ pub fn verdict<P: DeltaProvider>(plan: &Plan, diff: &Diff, provider: &P) -> Gate
         .cloned()
         .collect();
 
+    // The subset of defs_unaccounted held specifically because a caller could
+    // see the change and no promise permitted that: `covers` already refuses
+    // to let an `interface: false` promise cover a sig move, so every
+    // sig-moved member of defs_unaccounted qualifies by construction — a
+    // filter, never a second unification pass, so nothing is held twice.
+    let interface_unaccounted: Vec<DefChange> = defs_unaccounted
+        .iter()
+        .filter(|d| !matches!(d.sig_changed, Some(false)))
+        .cloned()
+        .collect();
+
     let tests: Vec<TestComparison> = plan
         .tests
         .as_deref()
@@ -237,14 +248,34 @@ pub fn verdict<P: DeltaProvider>(plan: &Plan, diff: &Diff, provider: &P) -> Gate
         tests,
         invariant_violations,
         reasons: Some(reasons),
+        interface_unaccounted: Some(interface_unaccounted),
     }
 }
 
-/// A def promise covers a def change when the action agrees and the pattern
-/// matches the callsign.
+/// A def promise covers a def change when the action agrees, the pattern
+/// matches the callsign, and the promise's `interface` claim (if any) agrees
+/// with what the sig actually did.
 fn covers(promise: &PlanDefPromise, change: &DefChange) -> bool {
     change.action == def_tense(promise.action)
         && pattern::matches(&promise.callsign.0, &change.callsign.0)
+        && interface_covers(promise.interface, change.sig_changed)
+}
+
+/// Does a promise's `interface` claim agree with an observed sig transition?
+///
+/// `None` is today's behavior: either transition makes the promise good.
+/// `Some(true)` claims a caller can see the change, made good only by a sig
+/// move — and an unknown transition (a pre-epoch-3 snapshot on either side)
+/// is treated as a move, the conservative reading. `Some(false)` claims the
+/// interface held, made good only by a sig that provably did not move —
+/// unknown is *not* "held" here either, for the same reason: a promise this
+/// specific about invisibility should not be made good by "nobody can say".
+const fn interface_covers(interface: Option<bool>, sig_changed: Option<bool>) -> bool {
+    match interface {
+        None => true,
+        Some(true) => !matches!(sig_changed, Some(false)),
+        Some(false) => matches!(sig_changed, Some(false)),
+    }
 }
 
 const fn expect_of(e: grid_wire::ExpectedTestExpect) -> TestComparisonExpected {

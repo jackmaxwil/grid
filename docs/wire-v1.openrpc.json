@@ -14,7 +14,7 @@
   },
   "x-porcelain": {
     "doc": "packages/grid/docs/PORCELAIN.md",
-    "version": "2.3.0",
+    "version": "2.4.0",
     "description": "Normative grammar for human-facing stdout records. --json emits wire results verbatim; the porcelain version is reported by grid.version."
   },
   "methods": [
@@ -27,7 +27,7 @@
         {
           "name": "current versions",
           "params": [],
-          "result": { "name": "version", "value": { "wire": "1.0.0", "engine": "grid 0.1.0", "porcelain": "2.3.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
+          "result": { "name": "version", "value": { "wire": "1.0.0", "engine": "grid 0.1.0", "porcelain": "2.4.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
         }
       ],
       "result": {
@@ -784,7 +784,8 @@
         "required": ["action", "callsign"],
         "properties": {
           "action": { "type": "string", "enum": ["add", "remove", "modify", "move"] },
-          "callsign": { "$ref": "#/components/schemas/CallsignPattern" }
+          "callsign": { "$ref": "#/components/schemas/CallsignPattern" },
+          "interface": { "type": "boolean", "description": "A promise's claim about whether callers can see the change, checked against DefChange.sig_changed on a modify or move promise (rejected on add/remove by plan.lint, exit 2). true: made good only by a sig_changed of true or absent (unknown is treated as moved, conservative). false: made good only by sig_changed == false; a sig move under this promise is unaccounted with reason 'interface'. Absent: today's behavior, either makes it good." }
         },
         "additionalProperties": false
       },
@@ -898,7 +899,8 @@
           "defs_unaccounted": { "type": "array", "items": { "$ref": "#/components/schemas/DefChange" }, "description": "Definitions changed by the diff but covered by no def promise." },
           "tests": { "type": "array", "items": { "$ref": "#/components/schemas/TestComparison" } },
           "invariant_violations": { "type": "array", "items": { "$ref": "#/components/schemas/InvariantViolation" } },
-          "reasons": { "type": "array", "items": { "type": "string" }, "description": "Human-readable one-liners, one per contributing hold cause; empty on pass." }
+          "reasons": { "type": "array", "items": { "type": "string" }, "description": "Human-readable one-liners, one per contributing hold cause; empty on pass." },
+          "interface_unaccounted": { "type": "array", "items": { "$ref": "#/components/schemas/DefChange" }, "description": "The subset of defs_unaccounted whose sig moved (sig_changed true or absent) and which matches no def promise permitting that move (interface true or absent) — held for reason 'interface'. Always a subset of defs_unaccounted; a member of both lists is held once, not twice." }
         },
         "additionalProperties": false,
         "description": "Cross-plan error. Surplus is computed after tolerate filtering. gate is 'hold' iff missing, surplus, defs_unaccounted, a failed TestComparison, or an invariant violation is non-empty; 'pass' otherwise. The verdict itemizes divergence — it never says only 'hold'."

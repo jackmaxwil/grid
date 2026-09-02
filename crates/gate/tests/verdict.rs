@@ -269,6 +269,7 @@ fn def_promises_cover_def_changes_by_pattern() {
     t.delta.defs = vec![PlanDefPromise {
         action: PlanDefPromiseAction::Add,
         callsign: CallsignPattern("cortana.reaper.TagContract.*".into()),
+        interface: None,
     }];
     let covered = DefChange {
         moved_from: None,
@@ -293,6 +294,141 @@ fn def_promises_cover_def_changes_by_pattern() {
     let v = verdict(&t, &diff(vec![covered, stray], vec![]), &Table::new());
     assert_eq!(v.gate, GateVerdictGate::Hold);
     assert_eq!(v.defs_unaccounted.len(), 1);
+}
+
+fn def_promise(
+    action: PlanDefPromiseAction,
+    callsign: &str,
+    interface: Option<bool>,
+) -> PlanDefPromise {
+    PlanDefPromise {
+        action,
+        callsign: CallsignPattern(callsign.into()),
+        interface,
+    }
+}
+
+fn def_change(action: DefChangeAction, callsign: &str, sig_changed: Option<bool>) -> DefChange {
+    DefChange {
+        moved_from: None,
+        sig_changed,
+        action,
+        callsign: Callsign(callsign.into()),
+        before: Some(datum("aa")),
+        after: Some(datum("bb")),
+    }
+}
+
+/// `interface: true` claims a caller can see the change: made good by a sig
+/// move, and — conservatively — by an unknown transition too (a pre-epoch-3
+/// snapshot on either side).
+#[test]
+fn interface_true_is_made_good_by_a_sig_move_or_unknown() {
+    let mut t = plan(vec![]);
+    t.delta.defs = vec![def_promise(
+        PlanDefPromiseAction::Modify,
+        "cortana.reaper.Reaper.sweep",
+        Some(true),
+    )];
+    for sig_changed in [Some(true), None] {
+        let change = def_change(
+            DefChangeAction::Modified,
+            "cortana.reaper.Reaper.sweep",
+            sig_changed,
+        );
+        let v = verdict(&t, &diff(vec![change], vec![]), &Table::new());
+        assert_eq!(v.gate, GateVerdictGate::Pass, "sig_changed={sig_changed:?}");
+    }
+}
+
+/// `interface: true` is not made good by a change that provably held the
+/// sig — the promise claimed a caller would see something, and nothing
+/// moved. Unaccounted, but not for the `interface` reason: the sig held.
+#[test]
+fn interface_true_is_not_made_good_by_a_held_sig() {
+    let mut t = plan(vec![]);
+    t.delta.defs = vec![def_promise(
+        PlanDefPromiseAction::Modify,
+        "cortana.reaper.Reaper.sweep",
+        Some(true),
+    )];
+    let change = def_change(
+        DefChangeAction::Modified,
+        "cortana.reaper.Reaper.sweep",
+        Some(false),
+    );
+    let v = verdict(&t, &diff(vec![change], vec![]), &Table::new());
+    assert_eq!(v.gate, GateVerdictGate::Hold);
+    assert_eq!(v.defs_unaccounted.len(), 1);
+    assert!(v.interface_unaccounted.unwrap().is_empty());
+}
+
+/// `interface: false` claims the interface holds: made good only by a sig
+/// that provably did not move.
+#[test]
+fn interface_false_is_made_good_only_by_a_held_sig() {
+    let mut t = plan(vec![]);
+    t.delta.defs = vec![def_promise(
+        PlanDefPromiseAction::Modify,
+        "cortana.reaper.Reaper.sweep",
+        Some(false),
+    )];
+    let change = def_change(
+        DefChangeAction::Modified,
+        "cortana.reaper.Reaper.sweep",
+        Some(false),
+    );
+    let v = verdict(&t, &diff(vec![change], vec![]), &Table::new());
+    assert_eq!(v.gate, GateVerdictGate::Pass);
+}
+
+/// A sig move under an `interface: false` promise is unaccounted with reason
+/// `interface` — it lands in both lists, held once.
+#[test]
+fn interface_false_is_violated_by_a_sig_move() {
+    let mut t = plan(vec![]);
+    t.delta.defs = vec![def_promise(
+        PlanDefPromiseAction::Modify,
+        "cortana.reaper.Reaper.sweep",
+        Some(false),
+    )];
+    let change = def_change(
+        DefChangeAction::Modified,
+        "cortana.reaper.Reaper.sweep",
+        Some(true),
+    );
+    let v = verdict(&t, &diff(vec![change.clone()], vec![]), &Table::new());
+    assert_eq!(v.gate, GateVerdictGate::Hold);
+    assert_eq!(v.defs_unaccounted, vec![change.clone()]);
+    assert_eq!(v.interface_unaccounted.unwrap(), vec![change]);
+}
+
+/// Conservatism, seen red first: a pre-epoch-3 snapshot on either side of the
+/// diff makes `sig_changed` `None` — unknown, not "held". A naive reading
+/// that treats unknown as "did not move" would let an `interface: false`
+/// promise pass here; the conservative reading holds instead, because a
+/// promise this specific about invisibility must never be made good by
+/// "nobody can say".
+#[test]
+fn interface_false_conservatism_an_unknown_sig_still_holds() {
+    let mut t = plan(vec![]);
+    t.delta.defs = vec![def_promise(
+        PlanDefPromiseAction::Modify,
+        "cortana.reaper.Reaper.sweep",
+        Some(false),
+    )];
+    let change = def_change(
+        DefChangeAction::Modified,
+        "cortana.reaper.Reaper.sweep",
+        None,
+    );
+    let v = verdict(&t, &diff(vec![change.clone()], vec![]), &Table::new());
+    assert_eq!(
+        v.gate,
+        GateVerdictGate::Hold,
+        "unknown must not read as \"held\" under an interface:false promise"
+    );
+    assert_eq!(v.interface_unaccounted.unwrap(), vec![change]);
 }
 
 #[test]
@@ -438,5 +574,29 @@ proptest! {
             .filter(|e| provider.callsign(&e.edge.src) == Some(Callsign("a".into())))
             .count();
         prop_assert_eq!(accounted + matched_changes, delta.edges.len());
+    }
+
+    /// `interface: None` is today's behavior, and today's behavior never
+    /// looked at `sig_changed` — so a covering promise with no `interface`
+    /// claim stays byte-identical to before the field existed, whatever the
+    /// sig did. This is the property the field's additivity promised: every
+    /// plan on record (which carries no `interface` and so deserializes to
+    /// `None`) sees no change in verdict from adding the field.
+    #[test]
+    fn interface_none_is_blind_to_sig_changed(sig_changed in prop::option::of(any::<bool>())) {
+        let mut t = plan(vec![]);
+        t.delta.defs = vec![def_promise(
+            PlanDefPromiseAction::Modify,
+            "cortana.reaper.Reaper.sweep",
+            None,
+        )];
+        let change = def_change(
+            DefChangeAction::Modified,
+            "cortana.reaper.Reaper.sweep",
+            sig_changed,
+        );
+        let v = verdict(&t, &diff(vec![change], vec![]), &Table::new());
+        prop_assert_eq!(v.gate, GateVerdictGate::Pass);
+        prop_assert!(v.defs_unaccounted.is_empty());
     }
 }
