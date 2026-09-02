@@ -239,6 +239,17 @@ Load-bearing invariants (`docs/ASSURANCE.md`, claims C1–C43):
   with deviations and measured numbers
 - `docs/research/ANALYSIS.md` — the four papers grid steals from
 
+## Forge
+
+This repository lives on the estate's Forgejo: `git.example.invalid/apex/grid`
+(clone and push over SSH, `ssh://git@forge.example.invalid:2222/apex/grid.git`).
+Pull requests open and merge there, and `.forgejo/workflows/` is the gate that
+has to be green: `main` takes merges only through a pull request whose checks
+passed. GitHub (`github.com/jackmaxwil/grid`) is a mirror of the forge and
+carries no CI; nothing pushes to it from a keyboard. Sessions drive pull
+requests with `tea`, the Gitea CLI, as described in yi's `docs/FORGE.md` under
+"Working the forge from a session".
+
 ## Contributing
 
 - Read `docs/ONTOLOGY.md` first; a word means one thing everywhere, and
