@@ -1,4 +1,0 @@
-{
-  "GRID_HINTS": "0 silences the stderr hints and the first-run banner",
-  "GRID_SOCKET": "path of the daemon's unix socket, overriding the default under .grid/"
-}
