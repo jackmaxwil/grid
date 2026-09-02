@@ -175,6 +175,10 @@ pub struct Snapshot {
     pub worktree_diff_hash: Option<String>,
     pub stats: SnapshotStats,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unparseable: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreadable: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declined: Option<SnapshotDeclined>,
 }
 

@@ -2,9 +2,10 @@
 //!
 //! Discovery is deliberately dumb and deliberately total: it is `git
 //! ls-files`, so the repo's own ignore rules decide what is source and nothing
-//! in this crate has an opinion. A file grid cannot read is skipped, not
-//! fatal — a survey that dies on one unreadable path is a survey that never
-//! finishes on a real machine.
+//! in this crate has an opinion. A file grid cannot read is kept and marked,
+//! not fatal — a survey that dies on one unreadable path is a survey that
+//! never finishes on a real machine, and one that drops it charts a file
+//! with nothing in it (verb sweep B6).
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -24,8 +25,31 @@ pub struct SourceFile {
     /// blake3 of the file's bytes. The incremental key, and the only thing
     /// consulted to decide a file is unchanged.
     pub content_hash: [u8; 32],
-    /// The file's text.
+    /// The file's text; empty when [`SourceFile::unreadable`].
     pub source: String,
+    /// The bytes could not be read, or are not UTF-8: no adapter could have
+    /// parsed them, and the survey names the file rather than losing it.
+    pub unreadable: bool,
+}
+
+/// One discovered file from its raw bytes: text when they are UTF-8, and a
+/// named, empty, unreadable entry when they are not. The hash is of the
+/// bytes either way, so the cache key does not depend on the outcome.
+fn source_file(path: String, lang: Lang, bytes: Option<Vec<u8>>) -> SourceFile {
+    let content_hash = bytes
+        .as_deref()
+        .map_or([0; 32], |b| *blake3::hash(b).as_bytes());
+    let (source, unreadable) = match bytes.map(String::from_utf8) {
+        Some(Ok(text)) => (text, false),
+        _ => (String::new(), true),
+    };
+    SourceFile {
+        path,
+        lang,
+        content_hash,
+        source,
+        unreadable,
+    }
 }
 
 /// Directory -> crate-name bindings from every tracked `Cargo.toml`'s
@@ -258,20 +282,19 @@ pub fn reread(root: &Path, sources: &mut [SourceFile], path: &str) -> bool {
     let Some(slot) = sources.iter_mut().find(|s| s.path == path) else {
         return false;
     };
-    let Ok(source) = std::fs::read_to_string(root.join(path)) else {
+    let Ok(bytes) = std::fs::read(root.join(path)) else {
         // A file that vanished is a discovery change, not a content one.
         return false;
     };
-    slot.content_hash = *blake3::hash(source.as_bytes()).as_bytes();
-    slot.source = source;
+    *slot = source_file(std::mem::take(&mut slot.path), slot.lang, Some(bytes));
     true
 }
 
 /// Read every tracked file an adapter claims.
 ///
-/// Unreadable and non-UTF-8 files are skipped: they are not Python the parser
-/// could have accepted anyway, and a survey must survive a repo containing a
-/// stray broken symlink.
+/// Unreadable and non-UTF-8 files are kept as [`SourceFile::unreadable`]:
+/// no parser could have accepted them, a survey must survive a repo holding
+/// a stray broken symlink, and the survey must still say the file is there.
 ///
 /// # Errors
 /// [`SurveyError::Git`] if the file list cannot be obtained.
@@ -310,15 +333,8 @@ pub fn sources(root: &Path) -> Result<(Vec<SourceFile>, CrateRoots), SurveyError
                 scope.spawn(move || {
                     chunk
                         .iter()
-                        .filter_map(|(rel, path, lang)| {
-                            let bytes = std::fs::read(root.join(rel)).ok()?;
-                            let source = String::from_utf8(bytes).ok()?;
-                            Some(SourceFile {
-                                content_hash: *blake3::hash(source.as_bytes()).as_bytes(),
-                                path: path.clone(),
-                                lang: *lang,
-                                source,
-                            })
+                        .map(|(rel, path, lang)| {
+                            source_file(path.clone(), *lang, std::fs::read(root.join(rel)).ok())
                         })
                         .collect::<Vec<_>>()
                 })
@@ -575,17 +591,9 @@ fn cat_blobs(
                         manifests.push((dir, name));
                     }
                 }
-                // A blob that is not UTF-8 is not source an adapter could parse.
-                Want::Source(lang) => {
-                    if let Ok(source) = String::from_utf8(bytes) {
-                        out.push(SourceFile {
-                            content_hash: *blake3::hash(source.as_bytes()).as_bytes(),
-                            path,
-                            lang,
-                            source,
-                        });
-                    }
-                }
+                // A blob that is not UTF-8 is not source an adapter could
+                // parse; it is kept, marked, and named by the survey.
+                Want::Source(lang) => out.push(source_file(path, lang, Some(bytes))),
             }
         }
         // Drain whatever is still queued so the writer thread is never left

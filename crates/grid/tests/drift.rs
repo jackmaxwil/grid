@@ -1371,3 +1371,61 @@ fn a_caller_inside_a_macro_is_counted_as_unchecked_not_silently_absent() {
     let json = grid(dir.path(), &["drift", "HEAD~1", "HEAD", "--json"]);
     assert_eq!(report(&json)["unchecked"]["unresolved_macros"], 1);
 }
+
+/// Verb sweep B2: a file that does not parse at head was charted as a file
+/// with nothing in it, and drift read the absence as a deletion — twelve
+/// phantom suspects, exit 3, a hint sending the reader to innocent callers.
+/// Red before the fix with exit 3 and `probe.answer <-calls- probe.standing.fold`
+/// as a suspect. The honest verdict is a `warn` naming the file: nothing
+/// moved, something was not read.
+#[test]
+fn a_definition_absent_only_because_its_file_did_not_parse_is_not_a_removal() {
+    let dir = repo(
+        &[
+            ("Cargo.toml", "[package]\nname = \"probe\"\n"),
+            (
+                "src/main.rs",
+                "mod standing;\npub fn answer() -> i32 {\n    standing::fold() + standing::load()\n}\nfn main() {\n    let _ = answer();\n}\n",
+            ),
+            (
+                "src/standing.rs",
+                "pub fn fold() -> i32 {\n    1\n}\npub fn load() -> i32 {\n    2\n}\n",
+            ),
+        ],
+        &[("src/standing.rs", "fn ((((( broken !!! {{{\n")],
+    );
+    let survey = grid(dir.path(), &["survey"]);
+    assert!(
+        stdout(&survey).contains("miss    src/standing.rs  unparseable"),
+        "the survey names the file it could not read:\n{}",
+        stdout(&survey)
+    );
+    let out = grid(dir.path(), &["drift", "HEAD~1", "HEAD"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "nothing moved, so nothing gates:\n{}{}",
+        stdout(&out),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        suspects(&out).is_empty(),
+        "no phantom suspects: {}",
+        stdout(&out)
+    );
+    let text = stdout(&out);
+    let warn = text
+        .lines()
+        .find(|l| l.starts_with("warn    src/standing.rs"))
+        .unwrap_or_else(|| panic!("a warn naming the unread file:\n{text}"));
+    assert!(
+        warn.contains("unparseable") && warn.contains("2 definitions"),
+        "{warn}"
+    );
+    let json = grid(dir.path(), &["survey", "--json"]);
+    let snapshot: serde_json::Value = serde_json::from_str(&stdout(&json)).expect("a Snapshot");
+    assert_eq!(
+        snapshot["unparseable"],
+        serde_json::json!(["src/standing.rs"])
+    );
+}

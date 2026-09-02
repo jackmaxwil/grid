@@ -14,7 +14,7 @@
   },
   "x-porcelain": {
     "doc": "packages/grid/docs/PORCELAIN.md",
-    "version": "2.21.0",
+    "version": "2.22.0",
     "description": "Normative grammar for human-facing stdout records. --json emits wire results verbatim; the porcelain version is reported by grid.version."
   },
   "methods": [
@@ -27,7 +27,7 @@
         {
           "name": "current versions",
           "params": [],
-          "result": { "name": "version", "value": { "wire": "1.1.0", "engine": "grid 0.1.0", "porcelain": "2.21.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
+          "result": { "name": "version", "value": { "wire": "1.1.0", "engine": "grid 0.1.0", "porcelain": "2.22.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
         }
       ],
       "result": {
@@ -773,6 +773,8 @@
             },
             "additionalProperties": false
           },
+          "unparseable": { "type": "array", "items": { "type": "string" }, "description": "Repo-relative paths of tracked files a frontend claims whose parser rejected them. Charted as nothing — never as a file with nothing in it — and named, so their absence is never read as a deletion. Absent from a snapshot nobody re-surveyed in this run; empty when the survey read every file." },
+          "unreadable": { "type": "array", "items": { "type": "string" }, "description": "Repo-relative paths of tracked files a frontend claims that are not UTF-8 or could not be read at all. Charted as nothing and named, exactly as unparseable files are. Absent from a snapshot nobody re-surveyed in this run." },
           "declined": {
             "type": "object",
             "description": "What the survey declined to bind, split by why. Absent from a snapshot nobody re-surveyed in this run, so an unknown count is never reported as zero. external, method, internal and macros add up to the survey's declined total.",

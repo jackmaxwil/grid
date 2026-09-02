@@ -96,19 +96,16 @@ pub fn gate_check_on(
 pub struct Ran {
     /// Files whose facts came from the cache rather than the parser.
     pub reread: u64,
-    /// Format epoch of a store this run superseded, if it found one. A store
-    /// written by an older epoch is dropped, not reinterpreted, and this is
-    /// how the caller gets to say so instead of the re-survey looking
-    /// unexplained.
+    /// Format epoch of a store this run superseded, if it found one: dropped,
+    /// not reinterpreted, and said so rather than re-surveyed unexplained.
     pub superseded: Option<u32>,
     /// What a damaged store said before this run dropped it and surveyed cold.
     pub dropped: Option<String>,
-    /// References the resolver declined to bind, so no edge exists for them.
-    /// Every consumer that reads the edge set as "everything that reaches
-    /// this" is wrong by at most this much, and can now say so — and, since
-    /// the three populations mean opposite things for an analysis, by how
-    /// much of each.
+    /// References the resolver declined to bind, by population: every
+    /// consumer reading the edge set as complete is wrong by at most this.
     pub declined: crate::drift::Declined,
+    /// Files the survey could not read, with why: unread, never removed.
+    pub unread: Vec<(String, grid_survey::Unread)>,
 }
 
 /// The repo's segment store, plus the survey cache that lives beside it.
@@ -261,6 +258,7 @@ impl Chart {
         });
         let survey = survey?;
         let declined = crate::drift::Declined::of(&survey);
+        let (unparseable, unreadable) = unread(&survey);
         // A damaged store is dropped here and nowhere else: the survey is
         // the recovery every read verb names, so it cannot refuse the store
         // it exists to rebuild. The publish itself is serialized by the
@@ -278,9 +276,8 @@ impl Chart {
         }
         .map_err(chart_provider::Error::Store)?;
         // Every modification between the previous live set and this one is a
-        // edit: edits made outside `grid edit` are still captured, one edit
-        // per survey interval. Best effort — an unwritable log costs
-        // history, never the snapshot that already published.
+        // edit, one per survey interval. Best effort: an unwritable log
+        // costs history, never the snapshot that already published.
         if live && !prev.segments().is_empty() && prev.snapshot_id() != &id {
             let next = store.load();
             let delta = grid_chart::diff(
@@ -327,12 +324,15 @@ impl Chart {
                     refused: Some(survey.declined_method_refused),
                     macros: Some(declined.macros),
                 }),
+                unparseable: Some(unparseable),
+                unreadable: Some(unreadable),
             },
             Ran {
                 reread: survey.reread,
                 superseded,
                 dropped,
                 declined,
+                unread: survey.unread,
             },
         ))
     }
@@ -345,6 +345,18 @@ fn created_at(store: &grid_chart_io::Store, id: &grid_chart::SnapshotId) -> Stri
         .published_at(id)
         .map(grid_cache::rfc3339)
         .unwrap_or_default()
+}
+
+/// The paths a survey could not read: `(unparseable, unreadable)`.
+fn unread(survey: &grid_survey::Survey) -> (Vec<String>, Vec<String>) {
+    let of = |why: grid_survey::Unread| -> Vec<String> {
+        let named = survey.unread.iter().filter(|(_, w)| *w == why);
+        named.map(|(path, _)| path.clone()).collect()
+    };
+    (
+        of(grid_survey::Unread::Unparseable),
+        of(grid_survey::Unread::Unreadable),
+    )
 }
 
 /// The hash of the working tree's diff against `HEAD`, or `None` for a tree
@@ -409,23 +421,21 @@ pub struct Endpoints {
     pub base: SnapshotOrRev,
     /// The snapshot they may now be stale against.
     pub head: SnapshotOrRev,
-    /// What head's survey declined, or `None` when nobody surveyed head in
-    /// this run — unknown, never zero.
-    pub declined: Option<crate::drift::Declined>,
+    /// What head's survey ran said, or `None` when nobody surveyed head in this run.
+    pub ran: Option<Ran>,
 }
 
 /// Survey and name both endpoints of a drift question.
 ///
 /// # Errors
-/// [`crate::drift::Error::Chart`] when an endpoint cannot be surveyed or
-/// resolved.
+/// [`crate::drift::Error::Chart`] when an endpoint cannot be surveyed or resolved.
 pub fn drift_endpoints(
     params: &grid_wire::methods::DriftParams,
     root: &std::path::Path,
 ) -> Result<Endpoints, crate::drift::Error> {
     let mut chart = Chart::new(root);
     let base = chart.ensure(&params.base)?;
-    let (head, declined) = match &params.head {
+    let (head, ran) = match &params.head {
         SnapshotOrRev::GitRev { git_rev } => {
             let at = (git_rev.0 != "HEAD").then(|| git_rev.clone());
             let (snapshot, ran) = chart.survey_run(&SurveyRunParams {
@@ -436,18 +446,13 @@ pub fn drift_endpoints(
                 SnapshotOrRev::Snapshot {
                     snapshot: snapshot.snapshot_id,
                 },
-                Some(ran.declined),
+                Some(ran),
             )
         }
-        // Nobody re-surveyed head in this run, so nobody can say what its
-        // survey declined. Unknown, not zero.
+        // Nobody re-surveyed head in this run: unknown, not zero.
         snapshot @ SnapshotOrRev::Snapshot { .. } => (snapshot.clone(), None),
     };
-    Ok(Endpoints {
-        base,
-        head,
-        declined,
-    })
+    Ok(Endpoints { base, head, ran })
 }
 
 /// The drift report over a chart and a delta the caller already holds —
@@ -465,13 +470,11 @@ pub fn drift_on(
     ends: &Endpoints,
     params: &grid_wire::methods::DriftParams,
 ) -> Result<grid_wire::methods::DriftResult, crate::drift::Error> {
-    let (base, head, declined) = (&ends.base, &ends.head, ends.declined);
+    let (base, head, ran) = (&ends.base, &ends.head, ends.ran.as_ref());
     // A declaration file that exists but does not parse is a loud error,
-    // never an absence of declarations: a covenant nobody can read is not a
-    // covenant nobody made.
+    // never an absence of declarations.
     let covenants = crate::covenant::load(root).map_err(crate::drift::Error::Covenants)?;
-    // Same posture for the invariant file: a rule nobody can read is not an
-    // absence of rules, so a broken file is an error rather than an empty set.
+    // Same posture for the invariant file: unreadable is not empty.
     let invariants = if params.compat == Some(true) {
         Some(crate::standing::load(root).map_err(crate::drift::Error::Covenants)?)
     } else {
@@ -487,7 +490,8 @@ pub fn drift_on(
                 .unwrap_or(crate::drift::Query::new(base, head).floor),
             plan: params.plan.as_ref(),
             covenants: &covenants,
-            declined,
+            declined: ran.map(|r| r.declined),
+            unread: ran.map(|r| r.unread.as_slice()),
             compat: invariants.as_deref(),
             ..crate::drift::Query::new(base, head)
         },
@@ -971,8 +975,10 @@ pub fn snapshot_current(
             .map(|h| format!("b3:{}", blake3::Hash::from_bytes(h).to_hex())),
         stats: chart.stats(),
         // Published, not re-surveyed here: nobody in this call can say what
-        // its survey declined, and unknown is not zero.
+        // its survey declined or could not read, and unknown is not zero.
         declined: None,
+        unparseable: None,
+        unreadable: None,
     }))
 }
 

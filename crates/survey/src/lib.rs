@@ -75,6 +75,9 @@ pub struct FileFacts {
     pub defs: Vec<Definition>,
     /// Imports and references, unresolved.
     pub refs: FileRefs,
+    /// The parser rejected the text: `defs` and `refs` are empty because
+    /// nothing was read, not because nothing is there.
+    pub unparseable: bool,
 }
 
 /// Per-file extraction results, keyed by content hash.
@@ -128,6 +131,31 @@ pub struct Survey {
     /// `u16` per column) saturated at `u16::MAX` — stated, never wrapped.
     /// The repo-wide counters above are exact regardless.
     pub declined_saturated: u64,
+    /// Tracked files an adapter claims that contributed nothing, by path,
+    /// with why. Charted as nothing — never as a file with nothing in it —
+    /// and named, because a file grid could not read is the largest
+    /// omission a survey can make (verb sweep B2/B6).
+    pub unread: Vec<(String, Unread)>,
+}
+
+/// Why a tracked file an adapter claims contributed nothing to the chart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unread {
+    /// The parser rejected the text.
+    Unparseable,
+    /// Not UTF-8, or the bytes could not be read at all.
+    Unreadable,
+}
+
+impl Unread {
+    /// The porcelain word.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Unparseable => "unparseable",
+            Self::Unreadable => "unreadable",
+        }
+    }
 }
 
 /// The definitions the frontend `lang` names finds in `source`. This is the
@@ -174,7 +202,8 @@ pub fn references(lang: Lang, source: &str) -> Result<FileRefs, ParseError> {
 ///
 /// A file the parser rejects yields no facts rather than failing the survey —
 /// a repo with one syntactically broken file still has a chart, and the
-/// alternative is a tool that cannot run on the tree it is meant to fix.
+/// alternative is a tool that cannot run on the tree it is meant to fix. It
+/// is marked [`FileFacts::unparseable`], so the chart can say so.
 #[must_use]
 pub fn extract(lang: Lang, source: &str) -> FileFacts {
     // One parse serves both extractions; parsing twice was measured at half
@@ -184,8 +213,13 @@ pub fn extract(lang: Lang, source: &str) -> FileFacts {
         Lang::Rs => grid_lang_rs::file_facts(source),
         Lang::Ts | Lang::Js => Ok((Vec::new(), FileRefs::default())),
     };
+    let unparseable = facts.is_err();
     let (defs, refs) = facts.unwrap_or_default();
-    FileFacts { defs, refs }
+    FileFacts {
+        defs,
+        refs,
+        unparseable,
+    }
 }
 
 /// Survey a working tree into a segment image, reusing `cache` where the file
@@ -229,7 +263,16 @@ fn extract_all<'s>(
     let mut slots: Vec<Option<FileFacts>> = Vec::with_capacity(sources.len());
     let mut misses = Vec::new();
     for (i, file) in sources.iter().enumerate() {
-        if let Some(hit) = cache.get(&file.content_hash) {
+        if file.unreadable {
+            // Nothing to parse and nothing to cache: an unreadable file's
+            // hash is of bytes no adapter read, and must not stand in for
+            // the facts of a readable file with the same bytes.
+            slots.push(Some(FileFacts {
+                defs: Vec::new(),
+                refs: FileRefs::default(),
+                unparseable: false,
+            }));
+        } else if let Some(hit) = cache.get(&file.content_hash) {
             reread += 1;
             slots.push(Some(hit.clone()));
         } else {
@@ -427,6 +470,7 @@ pub fn run_sources(
         .collect();
     langs.sort_by_key(|l| format!("{l:?}"));
     langs.dedup_by_key(|l| format!("{l:?}"));
+    let unread = unread_of(&per_file);
 
     Ok(Survey {
         image,
@@ -442,7 +486,26 @@ pub fn run_sources(
         declined_internal: declined.internal,
         declined_macro: declined.macros,
         declined_saturated,
+        unread,
     })
+}
+
+/// Every file that contributed nothing, with why — sorted with the sources,
+/// so the list is a function of the tree.
+fn unread_of(per_file: &[(&SourceFile, FileFacts)]) -> Vec<(String, Unread)> {
+    per_file
+        .iter()
+        .filter_map(|(file, facts)| {
+            let why = if file.unreadable {
+                Unread::Unreadable
+            } else if facts.unparseable {
+                Unread::Unparseable
+            } else {
+                return None;
+            };
+            Some((file.path.clone(), why))
+        })
+        .collect()
 }
 
 /// The declined counters summed over every file's [`Resolved`], and the
