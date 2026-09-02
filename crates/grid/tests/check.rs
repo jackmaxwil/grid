@@ -838,3 +838,61 @@ fn a_declined_count_that_moved_is_always_printed() {
         "the new count is now the remembered one"
     );
 }
+
+/// T-10, ground truth: a verb that refuses for a base this store does not
+/// hold prints one hint line with the command *and* the tree to run it in.
+/// "run `grid survey` first" with no tree named is unfollowable from a hook,
+/// a subdirectory, or a sibling worktree.
+///
+/// `check` and `drift` are not in the loop because they survey their base on
+/// demand and so never reach this refusal; the two they can reach — a rev git
+/// cannot name, a snapshot id the store never held — are not fixed by a
+/// survey, and the last assertion pins that they do not pretend otherwise.
+#[test]
+fn a_missing_base_refusal_names_the_command_and_the_tree() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(dir.path(), &[("crates/app/src/lib.rs", CFG_BEFORE)]);
+    commit(dir.path(), "one");
+    write(
+        dir.path(),
+        &[("crates/app/src/lib.rs", "pub fn only() -> u32 { 1 }\n")],
+    );
+    commit(dir.path(), "two");
+    // Only the second commit is ever surveyed, so `HEAD~1` is a tree this
+    // store does not hold — and neither verb below surveys on demand.
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+
+    for args in [
+        &["scope", "app.only", "--since", "HEAD~1"][..],
+        &["suspects", "app.only", "--closure", "HEAD~1"][..],
+    ] {
+        let out = grid(dir.path(), args);
+        assert_eq!(
+            code(&out),
+            2,
+            "{args:?} refuses a base it does not hold: {}",
+            stdout(&out)
+        );
+        assert!(
+            stderr(&out).contains("no snapshot of the tree at HEAD~1"),
+            "{args:?} says which coordinate it could not answer: {}",
+            stderr(&out)
+        );
+        assert!(
+            stderr(&out).contains("hint: run `grid survey HEAD~1` in ."),
+            "{args:?} names the command and the tree: {}",
+            stderr(&out)
+        );
+    }
+
+    // And a refusal a survey does not fix offers no survey: a hint that does
+    // not work is worse than none.
+    let bad = grid(dir.path(), &["check", "deadbeef"]);
+    assert!(code(&bad) != 0, "{}", stdout(&bad));
+    assert!(
+        !stderr(&bad).contains("hint: run `grid survey"),
+        "a rev git cannot name is git's answer, not a survey's: {}",
+        stderr(&bad)
+    );
+}

@@ -292,9 +292,7 @@ pub fn rank_closure(
     let chart = ChartDelta::open(root)?;
     let head = chart.head();
     if head.segments().is_empty() {
-        return Err(Error::UnknownSince(
-            "no snapshot published: run `grid survey` first".into(),
-        ));
+        return Err(Error::UnknownSince(chart.no_snapshot().to_string()));
     }
     let test = test_datum(&chart, &params.test)?;
     // The candidate set and its refusal are `grid_cache`'s: one definition of
@@ -378,9 +376,10 @@ fn moved_at(root: &Path, since: &str, head: &str) -> Result<BTreeSet<DatumId>, E
         .membership()
         .map_err(chart_provider::Error::Store)?
         .ok_or_else(|| {
-            Error::UnknownSince(
-                "no membership image beside the chart: run `grid survey` first".into(),
-            )
+            Error::UnknownSince(format!(
+                "no membership image beside the chart\n{}",
+                chart_provider::Recovery::at(root, None)
+            ))
         })?;
     Ok(membership
         .changed_between(since, head)

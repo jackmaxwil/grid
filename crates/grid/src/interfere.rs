@@ -76,10 +76,10 @@ pub fn compute(root: &Path, other: &Path, base: Option<&str>) -> Result<Interfer
     // Mine first, and its head captured before anything is surveyed: the
     // on-demand base survey is retained rather than made live, but the
     // ordering costs nothing and cannot be wrong.
-    let mine_id = ChartDelta::open(root)
-        .map_err(|error| unreadable(root, &error))?
+    let opened = ChartDelta::open(root).map_err(|error| unreadable(root, &error))?;
+    let mine_id = opened
         .current()
-        .ok_or_else(|| unreadable_msg(root, "no snapshot published: run `grid survey` first"))?;
+        .ok_or_else(|| unreadable(root, &opened.no_snapshot()))?;
     // Base is surveyed on demand here and only here — this is grid's own
     // store, and a survey of a rev is idempotent — and named by the id that
     // survey produced: a dirty worktree sitting on the base commit is
@@ -103,7 +103,7 @@ pub fn compute(root: &Path, other: &Path, base: Option<&str>) -> Result<Interfer
     let theirs = open_read_only(&other)?;
     let theirs_id = theirs
         .current()
-        .ok_or_else(|| unreadable_msg(&other, "no snapshot published"))?;
+        .ok_or_else(|| unreadable(&other, &theirs.no_snapshot()))?;
 
     let their_base = snapshot_at(&theirs, &other, &base)?;
 
@@ -292,13 +292,13 @@ fn snapshot_at(chart: &ChartDelta, root: &Path, rev: &str) -> Result<SnapshotId,
         .snapshot_of(&SnapshotOrRev::GitRev {
             git_rev: GitRev(rev.to_owned()),
         })
-        .map_err(|_| {
+        .map_err(|error| {
+            // The store's own refusal, which names the command and the tree;
+            // the second command is this verb's, because a worktree charted
+            // only at the base is not the worktree either side is editing.
             unreadable_msg(
                 root,
-                &format!(
-                    "no snapshot of the tree at base {rev} — run `grid survey {rev}` there \
-                     first, then `grid survey` to chart its worktree again"
-                ),
+                &format!("{error}, then `grid survey` there to chart its worktree again"),
             )
         })
 }
@@ -312,18 +312,15 @@ fn open_read_only(other: &Path) -> Result<ChartDelta, Error> {
     if !chart_provider::store_dir(other).is_dir() {
         return Err(unreadable_msg(
             other,
-            "no chart there — run `grid survey` in that worktree first",
+            &format!(
+                "no chart there\n{}",
+                chart_provider::Recovery::at(other, None)
+            ),
         ));
     }
     let chart = ChartDelta::open(other).map_err(|error| unreadable(other, &error))?;
-    if let Some(epoch) = chart.superseded() {
-        return Err(unreadable_msg(
-            other,
-            &format!(
-                "chart written by segment format epoch {epoch} — superseded, \
-                 so it opens empty; re-run `grid survey` there"
-            ),
-        ));
+    if chart.superseded().is_some() {
+        return Err(unreadable(other, &chart.no_snapshot()));
     }
     Ok(chart)
 }

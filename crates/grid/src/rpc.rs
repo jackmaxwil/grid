@@ -1009,7 +1009,7 @@ pub fn query_walk(
         .map(|snapshot| SnapshotOrRev::Snapshot { snapshot });
     let chart = open_for(named.as_ref(), root)?;
     let Some(snapshot) = chart.current() else {
-        return Err(chart_provider::Error::NoSnapshot);
+        return Err(chart.no_snapshot());
     };
     let sweep = params.query.to.is_none();
     let mut merged = WalkResult {
@@ -1431,7 +1431,7 @@ pub fn scope(
 ) -> Result<ScopeResult, chart_provider::Error> {
     let chart = open_for(params.snapshot.as_ref(), root)?;
     let Some(snapshot) = chart.current() else {
-        return Err(chart_provider::Error::NoSnapshot);
+        return Err(chart.no_snapshot());
     };
     let all = live_defs(&chart);
     let matched: Vec<String> = all
@@ -1942,13 +1942,13 @@ pub fn todo(
     );
     let mut chart = Chart::new(root);
     chart.ensure(&plan.base)?;
-    let head = match &params.head {
-        Some(head) => chart.head_of(head)?,
-        None => SnapshotOrRev::Snapshot {
-            snapshot: ChartDelta::open(root)?
-                .current()
-                .ok_or(chart_provider::Error::NoSnapshot)?,
-        },
+    let head = if let Some(head) = &params.head {
+        chart.head_of(head)?
+    } else {
+        let live = ChartDelta::open(root)?;
+        SnapshotOrRev::Snapshot {
+            snapshot: live.current().ok_or_else(|| live.no_snapshot())?,
+        }
     };
     let provider = ChartDelta::open(root)?;
     let diff = provider.diff(&plan.base, &head)?;

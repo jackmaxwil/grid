@@ -311,8 +311,14 @@ fn an_unheld_since_refuses_rather_than_ranking_nothing() {
         stdout(&out)
     );
     assert!(
-        stderr(&out).contains("no snapshot for rev"),
+        stderr(&out).contains("no snapshot of the tree at HEAD"),
         "the refusal says which coordinate it could not answer: {}",
+        stderr(&out)
+    );
+    // T-10: and the command that would produce it, in the tree to run it in.
+    assert!(
+        stderr(&out).contains("hint: run `grid survey HEAD` in ."),
+        "the refusal names the command and the tree: {}",
         stderr(&out)
     );
 

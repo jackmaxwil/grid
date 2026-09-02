@@ -326,9 +326,7 @@ fn adherence(
         root,
         Some(provider),
     )?;
-    let snapshot = provider
-        .current()
-        .ok_or(chart_provider::Error::NoSnapshot)?;
+    let snapshot = provider.current().ok_or_else(|| provider.no_snapshot())?;
     let names = callsigns(provider);
     let fulfilling = verdict
         .matched

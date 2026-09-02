@@ -283,6 +283,17 @@ orphans, zero edges) exits `0` with no records; a name that resolves to
 callsigns — silence was read as "does not exist", which is the one
 conclusion grid never licenses.
 
+A refusal a survey would fix says so, in one hint line that names the
+command **and the tree to run it in** — `hint: run \`grid survey\` in <root>`,
+or `hint: run \`grid survey <rev>\` in <root>`. It is one line because it is
+one action; it names the tree because the tree is usually not the one the
+reader is standing in (`grid interfere` refuses about *the other* worktree),
+and a superseded store — which opens empty, and so looks exactly like a store
+nobody surveyed — says which format epoch it superseded before the same
+command. A refusal a survey does *not* fix (a rev git cannot name, a snapshot
+id that names content the store never held) carries no such line: a hint that
+would not work is worse than none.
+
 ## Versioning
 
 Semver. Adding a record type, a trailing column, a text-mode output, or a

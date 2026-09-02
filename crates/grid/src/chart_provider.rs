@@ -16,6 +16,66 @@ use grid_chart_io::{Epoch, Store};
 use grid_gate::DeltaProvider;
 use grid_wire::{Callsign, Datum, Diff, SnapshotId, SnapshotOrRev};
 
+/// What to run, and where, to fix a refusal that a survey fixes.
+///
+/// Every missing-snapshot refusal in the engine has the same recovery and
+/// used to say so vaguely: "run `grid survey` first", with no tree named,
+/// and with a superseded store — which opens *empty*, so it looks exactly
+/// like a store nobody surveyed — giving no reason at all. A refusal a
+/// reader cannot act on is a dead end, and against another worktree "run
+/// survey" in the wrong directory is worse than a dead end. So the recovery
+/// rides the error: one hint line, with the command and the tree, wherever
+/// the error surfaces — the CLI, the daemon, a verb that wrapped it (T-10).
+#[derive(Debug, Clone)]
+pub struct Recovery {
+    /// The tree the command runs in.
+    root: PathBuf,
+    /// The rev to survey, or `None` for the worktree.
+    rev: Option<String>,
+    /// The format epoch this store superseded, when it has one.
+    superseded: Option<u32>,
+}
+
+impl Recovery {
+    /// The recovery for a tree whose store is not open at hand: the command
+    /// and the directory, with no superseded epoch to report — a caller that
+    /// holds the store says so through [`ChartDelta::recovery`] instead.
+    #[must_use]
+    pub fn at(root: &Path, rev: Option<&str>) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            rev: rev.map(str::to_owned),
+            superseded: None,
+        }
+    }
+
+    /// The rev the caller asked about, when it asked about one.
+    #[must_use]
+    pub fn rev(&self) -> Option<&str> {
+        self.rev.as_deref()
+    }
+}
+
+impl std::fmt::Display for Recovery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(epoch) = self.superseded {
+            writeln!(
+                f,
+                "the chart there was written by segment format epoch {epoch} — superseded, \
+                 so it opens empty"
+            )?;
+        }
+        match &self.rev {
+            Some(rev) => write!(
+                f,
+                "hint: run `grid survey {rev}` in {}",
+                self.root.display()
+            ),
+            None => write!(f, "hint: run `grid survey` in {}", self.root.display()),
+        }
+    }
+}
+
 /// Why a chart-backed delta could not be produced.
 #[derive(Debug)]
 pub enum Error {
@@ -26,13 +86,15 @@ pub enum Error {
     /// A git rev was named, but the store holds no snapshot of the tree at
     /// it — a dirty worktree survey labelled with the rev does not count.
     /// Unlike an unknown snapshot id this is recoverable by surveying, so it
-    /// says so.
-    NoSnapshotForRev(String),
+    /// carries the [`Recovery`] that says how.
+    NoSnapshotForRev(Recovery),
     /// Repo configuration under `.grid` is present but unreadable. A broken
     /// rule file must not be mistaken for an absence of rules.
     Config(String),
-    /// A query needs a snapshot and the store has never held one.
-    NoSnapshot,
+    /// A query needs a snapshot and the store has never held one — or holds
+    /// one written by a superseded format, which opens empty and is the same
+    /// fix for a different reason. The [`Recovery`] states which.
+    NoSnapshot(Recovery),
     /// A snapshot other than the live one was named. The engine holds
     /// exactly one live epoch; anything else cannot be answered from it.
     NotLive(String),
@@ -45,14 +107,15 @@ impl std::fmt::Display for Error {
         match self {
             Self::Store(e) => write!(f, "chart: {e}"),
             Self::Survey(e) => write!(f, "survey: {e}"),
-            Self::NoSnapshotForRev(rev) => {
+            Self::NoSnapshotForRev(how) => {
                 write!(
                     f,
-                    "no snapshot for rev {rev}: run `grid survey {rev}` first"
+                    "no snapshot of the tree at {} — {how}",
+                    how.rev().unwrap_or("that rev")
                 )
             }
             Self::Config(msg) | Self::Plan(msg) => f.write_str(msg),
-            Self::NoSnapshot => f.write_str("no snapshot published: run `grid survey` first"),
+            Self::NoSnapshot(how) => write!(f, "no snapshot published — {how}"),
             Self::NotLive(id) => write!(f, "snapshot {id} is not the live epoch"),
         }
     }
@@ -143,6 +206,26 @@ impl ChartDelta {
     #[must_use]
     pub fn current(&self) -> Option<SnapshotId> {
         (!self.head.segments().is_empty()).then(|| wire_id(self.head.snapshot_id()))
+    }
+
+    /// The command that would give this store what the caller asked for,
+    /// and the tree to run it in — with the superseded epoch when there is
+    /// one, because "opens empty because it is old" and "opens empty because
+    /// nobody surveyed" are the same fix for different reasons.
+    #[must_use]
+    pub fn recovery(&self, rev: Option<&str>) -> Recovery {
+        Recovery {
+            root: self.root.clone(),
+            rev: rev.map(str::to_owned),
+            superseded: self.store.superseded(),
+        }
+    }
+
+    /// The refusal for a query that needs a snapshot this store does not
+    /// hold, with its recovery.
+    #[must_use]
+    pub fn no_snapshot(&self) -> Error {
+        Error::NoSnapshot(self.recovery(None))
     }
 
     /// The format epoch of a manifest this store refused to load.
@@ -325,7 +408,7 @@ impl ChartDelta {
                 }
                 self.store
                     .epoch_for_rev(&rev)?
-                    .ok_or_else(|| Error::NoSnapshotForRev(git_rev.0.clone()))
+                    .ok_or_else(|| Error::NoSnapshotForRev(self.recovery(Some(&git_rev.0))))
             }
         }
     }
@@ -352,7 +435,7 @@ impl ChartDelta {
                 self.store
                     .snapshot_for_rev(&rev)?
                     .map(|id| wire_id(&id))
-                    .ok_or_else(|| Error::NoSnapshotForRev(git_rev.0.clone()))
+                    .ok_or_else(|| Error::NoSnapshotForRev(self.recovery(Some(&git_rev.0))))
             }
         }
     }
