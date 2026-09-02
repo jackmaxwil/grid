@@ -17,7 +17,7 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 | C9 | a promise pattern matches a callsign only in name-space; an unnamed datum makes no promise good | pattern.rs verdict.rs | 3 |
 | C10 | every wire method the daemon claims is answered over the real socket, not only in-process | conformance.rs | 1+ |
 
-| C11 | a store reopens valid after `kill -9` at any instant | crash_safety.rs | 4 |
+| C11 | a store reopens valid after `kill -9` at any instant — a killed process never leaves a store that answers wrongly, because every file lands by atomic rename and nothing is served before its checksum or parse; the store is not fsynced, so a machine that loses power mid-publish may leave one the next open refuses as damaged, which C49 drops and re-surveys | crash_safety.rs | 4 |
 | C12 | CSR indexing is total: a parsed segment answers every ordinal, in bounds | proofs.rs | 4 |
 
 | C13 | an incremental survey and a full one produce the same segment bytes | determinism.rs corpus.rs | 5 |

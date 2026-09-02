@@ -165,11 +165,17 @@ impl Epoch {
 /// A segment store on disk: append-only segment files plus a manifest naming
 /// the live set.
 ///
-/// Crash safety is structural. A segment file is fsynced and renamed into
-/// place before any manifest mentions it, and the manifest itself is published
-/// by atomic rename, so `kill -9` at any instant leaves either the old live
-/// set or the new one — never a manifest pointing at a half-written segment,
-/// and never a torn manifest. Orphaned temp files are garbage, not state.
+/// Crash safety is structural. A segment file is written whole and renamed
+/// into place before any manifest mentions it, and the manifest itself is
+/// published by atomic rename, so `kill -9` at any instant leaves either the
+/// old live set or the new one — never a manifest pointing at a half-written
+/// segment, and never a torn manifest. Orphaned temp files are garbage, not
+/// state. Nothing here is fsynced: the store is derived data, every file in
+/// it is checksummed or parsed before a byte is served, and a machine that
+/// loses power mid-publish may leave a store the next open refuses as
+/// damaged and `grid survey` drops and rebuilds (C49). Two `F_FULLFSYNC`s
+/// per file were measured as 10ms of an unchanged survey and 30–40ms of a
+/// changed one, bought against an outcome the checksum already covers.
 #[derive(Debug)]
 pub struct Store {
     dir: PathBuf,
@@ -323,7 +329,7 @@ impl Store {
             // Content-addressed name: an identical segment is already there,
             // byte for byte, so rewriting it would be pure churn.
             if !path.exists() {
-                write_atomic(&self.dir, &path, image, &format!("seg.{i}.tmp"))?;
+                place(&self.dir, &path, image, &format!("seg.{i}.tmp"), false)?;
             }
             segments.push(SegmentEntry { name, checksum });
         }
@@ -341,14 +347,13 @@ impl Store {
         // that cannot be reopened.
         let retained = self.dir.join(retained_name(&manifest.snapshot_id()));
         if !retained.exists() {
-            write_atomic(&self.dir, &retained, &bytes, "snap.tmp")?;
+            place(&self.dir, &retained, &bytes, "snap.tmp", false)?;
         }
         // The live manifest is content too: republishing an identical state
-        // must rewrite nothing (D5), and the unconditional rewrite here was
-        // measured as the whole fsync cost of an unchanged `grid survey`.
+        // must rewrite nothing (D5).
         let live_path = self.dir.join(MANIFEST);
         if live && !fs::read(&live_path).is_ok_and(|current| current == bytes) {
-            write_atomic(&self.dir, &live_path, &bytes, MANIFEST_TMP)?;
+            place(&self.dir, &live_path, &bytes, MANIFEST_TMP, false)?;
         }
         let epoch = load_epoch(&self.dir, manifest)?;
         let id = epoch.snapshot_id().clone();
@@ -424,11 +429,12 @@ impl Store {
 
     fn write_membership(&self, chain: &[(String, Vec<Member>)]) -> Result<(), StoreError> {
         let image = grid_chart::build_membership(chain)?;
-        write_atomic(
+        place(
             &self.dir,
             &self.dir.join(MEMBERSHIP),
             &image,
             "membership.tmp",
+            false,
         )?;
         Ok(())
     }
@@ -633,15 +639,31 @@ fn hex(bytes: &[u8; 32]) -> String {
 /// Durable, all-or-nothing file write: temp file, fsync, atomic rename, fsync
 /// the directory so the rename itself survives power loss.
 ///
-/// Public because the segment store is not the only thing in `.grid` worth
-/// this guarantee: the repo's declaration files (`invariants.json`,
-/// `covenants.json`) are hand-authored content a truncate-in-place can
-/// destroy, and there is no reason to write the same three lines twice.
+/// Public because the store is not what this is for any more: the repo's
+/// declaration files (`invariants.json`, `covenants.json`) are hand-authored
+/// content a truncate-in-place or a power cut can destroy, and they get the
+/// fsyncs. The store's own files are derived and validated on open, so they
+/// take [`place`] without them.
 ///
 /// # Errors
 /// Whatever the create, write, fsync or rename returned. On any of them the
 /// file at `path` is untouched — that is the point.
 pub fn write_atomic(dir: &Path, path: &Path, bytes: &[u8], tmp_name: &str) -> std::io::Result<()> {
+    place(dir, path, bytes, tmp_name, true)
+}
+
+/// All-or-nothing file write: temp file, atomic rename, and — when `durable`
+/// — an fsync of the file before the rename and of the directory after it,
+/// so both survive power loss. Without `durable` the rename is still atomic
+/// against process death, which is what C11 claims and the kill-9 soak
+/// checks; only a machine crash can then leave the file absent or torn.
+fn place(
+    dir: &Path,
+    path: &Path,
+    bytes: &[u8],
+    tmp_name: &str,
+    durable: bool,
+) -> std::io::Result<()> {
     // The temp name is unique per process and per call. Two writers in one
     // directory — two surveys, the CLI beside the daemon — sharing a temp
     // name is how one renames the other's bytes under its own content hash.
@@ -653,12 +675,18 @@ pub fn write_atomic(dir: &Path, path: &Path, bytes: &[u8], tmp_name: &str) -> st
     {
         let mut f = fs::File::create(&tmp)?;
         f.write_all(bytes)?;
-        f.sync_all()?;
+        if durable {
+            f.sync_all()?;
+        }
     }
     fs::rename(&tmp, path)?;
-    // Without this, the rename can be lost while the data survives — the one
-    // ordering that would leave a manifest naming a segment that is not there.
-    fs::File::open(dir)?.sync_all()
+    if durable {
+        // Without this, the rename can be lost while the data survives — the
+        // one ordering that would leave a manifest naming a segment that is
+        // not there.
+        fs::File::open(dir)?.sync_all()?;
+    }
+    Ok(())
 }
 
 fn load_epoch(dir: &Path, manifest: Manifest) -> Result<Epoch, StoreError> {
