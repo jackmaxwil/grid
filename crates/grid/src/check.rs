@@ -140,22 +140,31 @@ pub fn answer(params: &CheckParams, root: &Path) -> Result<CheckResult, Error> {
     // with the three lists it carries lifted into their own sections. Quick
     // is drift at the proven floor — no trace store, verdict log or source
     // read — plus the compile record.
-    let mut drift = rpc::drift(
-        &DriftParams {
-            base: base.clone(),
-            head: params.head.clone(),
-            floor: quick.then_some(Grade::Proven),
-            plan: plan.clone(),
-            tests: (!quick).then_some(true),
-            compat: (!quick).then_some(true),
-        },
-        root,
-    )
-    .map_err(Error::Drift)?;
+    //
+    // The endpoints are surveyed first, then the store is opened *once* and
+    // both epochs mapped and diffed *once*; every section below takes that
+    // chart and that delta rather than asking the store the same three
+    // questions again. The order is forced, not incidental: surveying head
+    // publishes an epoch, so a store opened before the survey would answer
+    // about the tree from before the edit.
+    let drift_params = DriftParams {
+        base: base.clone(),
+        head: params.head.clone(),
+        floor: quick.then_some(Grade::Proven),
+        plan: plan.clone(),
+        tests: (!quick).then_some(true),
+        compat: (!quick).then_some(true),
+    };
+    let ends = rpc::drift_endpoints(&drift_params, root).map_err(Error::Drift)?;
+    let provider = ChartDelta::open(root)?;
+    let opened =
+        crate::drift::Resolved::open(&provider, &ends.base, &ends.head).map_err(Error::Drift)?;
+    let mut drift =
+        rpc::drift_on(root, &provider, &opened, &ends, &drift_params).map_err(Error::Drift)?;
     let stale = drift.stale_tests.take();
     let weak = drift.weak.take();
     let compat = drift.compat.take();
-    let (base_id, head_id) = (drift.base.clone(), drift.head.clone());
+    let head_id = drift.head.clone();
     let at = |id: &SnapshotId| SnapshotOrRev::Snapshot {
         snapshot: id.clone(),
     };
@@ -166,10 +175,9 @@ pub fn answer(params: &CheckParams, root: &Path) -> Result<CheckResult, Error> {
     // nothing; the warning says so rather than the section going quiet.
     let mut warnings = Vec::new();
     let compile = match crate::compile::load(root).map_err(chart_provider::Error::Config)? {
-        Some(record) if record.snapshot == drift.head => Some(
-            crate::compile::report(root, &at(&drift.base), &at(&drift.head), &record)
-                .map_err(Error::Drift)?,
-        ),
+        Some(record) if record.snapshot == drift.head => {
+            Some(crate::compile::report_on(&provider, &opened, &record).map_err(Error::Drift)?)
+        }
         _ => {
             warnings.push(DriftWarning {
                 subject: "-".to_owned(),
@@ -179,7 +187,6 @@ pub fn answer(params: &CheckParams, root: &Path) -> Result<CheckResult, Error> {
         }
     };
 
-    let provider = ChartDelta::open(root)?;
     let (verdict, why) = match plan.as_ref() {
         Some(plan) => adherence(&at(&head_id), params.trace.as_ref(), plan, root, &provider)?,
         None => (None, None),
@@ -202,20 +209,13 @@ pub fn answer(params: &CheckParams, root: &Path) -> Result<CheckResult, Error> {
         return Ok(result);
     }
 
-    let base_epoch = provider.epoch_of(&at(&base_id))?;
-    let head_epoch = provider.epoch_of(&at(&head_id))?;
-    let diff = grid_chart::diff(
-        base_id,
-        base_epoch.segments(),
-        head_id,
-        head_epoch.segments(),
-    );
-    result.clones = Some(clones(&diff, head_epoch.segments()));
-    let coverage = traced_coverage(root, &diff, base_epoch.segments(), head_epoch.segments())?;
+    let (base_epoch, head_epoch, diff) = (&opened.base, &opened.head, &opened.diff);
+    result.clones = Some(clones(diff, head_epoch.segments()));
+    let coverage = traced_coverage(root, diff, base_epoch.segments(), head_epoch.segments())?;
     result.uncovered = coverage.as_ref().map(|c| c.uncovered.clone());
     if !gated(&result) {
         result.refactor = Some(RefactorCertificate {
-            interfaces_moved: count(interfaces_moved(&diff)),
+            interfaces_moved: count(interfaces_moved(diff)),
             replayed_pass: coverage.as_ref().map(|c| c.replayed_pass),
             uncovered: coverage.as_ref().map(|c| count(c.uncovered.len())),
         });
@@ -260,12 +260,13 @@ fn adherence(
     // worktree survey is labelled with its rev, and looking the rev up here
     // would be the committed tree, not the one drift just judged.
     let diff = provider.diff(&plan.base, head)?;
-    let verdict = rpc::gate_check(
+    let verdict = rpc::gate_check_on(
         &grid_wire::methods::GateCheckParams {
             plan: plan.clone(),
             head: head.clone(),
         },
         root,
+        Some(provider),
     )?;
     let snapshot = provider
         .current()

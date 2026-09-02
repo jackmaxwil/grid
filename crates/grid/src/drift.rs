@@ -284,33 +284,93 @@ impl<'a> Query<'a> {
     }
 }
 
+/// Base and head, mapped once, with the delta between them and the changed
+/// set it implies.
+///
+/// Every section of `grid check` asks the store the same three questions —
+/// what is base, what is head, what changed — and each section used to ask
+/// them itself, so one check opened the store three times and diffed three
+/// times. Resolving once and passing this down is the whole of T-24: the
+/// sections stay their verbs' own functions and take what they used to
+/// fetch.
+pub(crate) struct Resolved {
+    pub(crate) base: std::sync::Arc<grid_chart_io::Epoch>,
+    pub(crate) head: std::sync::Arc<grid_chart_io::Epoch>,
+    pub(crate) diff: Diff,
+    pub(crate) changed: Vec<Changed>,
+}
+
+impl Resolved {
+    /// Map both endpoints against one already-opened chart.
+    ///
+    /// # Errors
+    /// [`Error::Chart`] when an endpoint does not resolve.
+    pub(crate) fn open(
+        chart: &ChartDelta,
+        base: &SnapshotOrRev,
+        head: &SnapshotOrRev,
+    ) -> Result<Self, Error> {
+        let (base, head) = (chart.epoch_of(base)?, chart.epoch_of(head)?);
+        let diff = grid_chart::diff(
+            SnapshotId(base.snapshot_id().as_str().to_owned()),
+            base.segments(),
+            SnapshotId(head.snapshot_id().as_str().to_owned()),
+            head.segments(),
+        );
+        let changed = changed_set_of(&diff, base.segments(), head.segments());
+        Ok(Self {
+            base,
+            head,
+            diff,
+            changed,
+        })
+    }
+
+    /// The base snapshot's wire id.
+    pub(crate) fn base_id(&self) -> SnapshotId {
+        SnapshotId(self.base.snapshot_id().as_str().to_owned())
+    }
+
+    /// The head snapshot's wire id.
+    pub(crate) fn head_id(&self) -> SnapshotId {
+        SnapshotId(self.head.snapshot_id().as_str().to_owned())
+    }
+}
+
 /// Compute drift between two endpoints.
 ///
 /// # Errors
 /// [`Error::Chart`] when an endpoint does not resolve;
 /// [`Error::BudgetRejected`] when an inbound walk ran past the query's fuel.
 pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Error> {
+    let chart = ChartDelta::open(root)?;
+    let at = Resolved::open(&chart, query.base, query.head)?;
+    compute_on(root, &chart, &at, query)
+}
+
+/// The same computation over a chart and a delta the caller already holds.
+///
+/// # Errors
+/// [`Error::BudgetRejected`] when an inbound walk ran past the query's fuel.
+pub(crate) fn compute_on(
+    root: &std::path::Path,
+    chart: &ChartDelta,
+    at: &Resolved,
+    query: &Query,
+) -> Result<DriftReport, Error> {
     let Query {
-        base,
-        head,
         floor,
         plan,
         covenants,
         declined,
         fuel: budget,
         compat,
+        ..
     } = *query;
-    let chart = ChartDelta::open(root)?;
-    let (base_epoch, head_epoch) = (chart.epoch_of(base)?, chart.epoch_of(head)?);
-    let diff = grid_chart::diff(
-        SnapshotId(base_epoch.snapshot_id().as_str().to_owned()),
-        base_epoch.segments(),
-        SnapshotId(head_epoch.snapshot_id().as_str().to_owned()),
-        head_epoch.segments(),
-    );
-
-    let touched = touched(&diff);
-    let changed = changed_set_of(&diff, base_epoch.segments(), head_epoch.segments());
+    let (base_epoch, head_epoch) = (&at.base, &at.head);
+    let diff = &at.diff;
+    let touched = touched(diff);
+    let changed = &at.changed;
 
     // Observed coupling, graded against base. Loaded once: the store is a
     // directory read, and doing it per changed definition would make the
@@ -327,13 +387,13 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
     let mut suspects: BTreeMap<(String, String, u8), DriftSuspect> = BTreeMap::new();
     let mut budget_rejected = 0u32;
 
-    for change in &changed {
+    for change in changed {
         let Some(found) = inbound_of(base_epoch.segments(), change, floor, &observed, budget)
         else {
             budget_rejected = budget_rejected.saturating_add(1);
             continue;
         };
-        fold_rows(&chart, change, found, &touched, plan, &mut suspects);
+        fold_rows(chart, change, found, &touched, plan, &mut suspects);
     }
 
     if budget_rejected > 0 {
@@ -344,7 +404,7 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
     // it needs the same `touched` set the walk used and nothing else.
     let warnings = fire_covenants(
         covenants,
-        &chart,
+        chart,
         base_epoch.segments(),
         head_epoch.segments(),
         &touched,
@@ -357,7 +417,7 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
     let compat = compat.map(|invariants| {
         crate::compat::check(
             root,
-            &changed,
+            changed,
             base_epoch.segments(),
             head_epoch.segments(),
             &base_epoch.manifest().git_rev,
@@ -373,8 +433,8 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
     });
 
     Ok(DriftReport {
-        base: SnapshotId(base_epoch.snapshot_id().as_str().to_owned()),
-        head: SnapshotId(head_epoch.snapshot_id().as_str().to_owned()),
+        base: at.base_id(),
+        head: at.head_id(),
         suspects: suspects.into_values().collect(),
         unchecked: DriftUnchecked {
             unresolved_refs: declined.map(Declined::total),

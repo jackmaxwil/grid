@@ -666,3 +666,66 @@ fn orphans_traced_counts_the_traces_that_hit_each_orphan() {
         "plain orphans are DefRefs"
     );
 }
+
+/// Conservatism (T-24): one check opens the store *once*, and it opens it
+/// **after** the head survey. Opening it earlier is the cheap-looking way to
+/// open it once and it is the wrong one: the chart handed down to every
+/// section would then be the epoch from before the edit, and the records
+/// would describe a tree this check never judged — here, a caller whose
+/// `file:line` is where it used to be. The uncommitted edit is exactly the
+/// state a `PostToolUse` hook runs in.
+#[test]
+fn every_section_answers_about_the_tree_the_check_surveyed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(dir.path(), &[("crates/app/src/lib.rs", CFG_BEFORE)]);
+    commit(dir.path(), "one");
+    // A second commit so `HEAD~1` — the default base — names the first one.
+    commit(dir.path(), "two");
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    // The edit stays in the worktree: nothing is committed after the survey,
+    // so only a survey run inside the check can see it. It adds a required
+    // field (so `Cfg`'s interface moves) and pushes the untouched caller two
+    // lines down without changing what it is (so it stays a suspect, at a
+    // new line).
+    write(
+        dir.path(),
+        &[(
+            "crates/app/src/lib.rs",
+            "#[derive(serde::Deserialize)]\npub struct Cfg { pub a: u32, pub b: u32 }\n\n\n\
+             pub fn untouched() -> Cfg { Cfg { a: 1 } }\n",
+        )],
+    );
+
+    for args in [&["check"][..], &["check", "--quick"][..]] {
+        let out = grid(dir.path(), args);
+        let suspects = records(&out, "drift");
+        let row = suspects
+            .iter()
+            .find(|(_, rest)| rest.contains("app.untouched"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "{args:?} must see the worktree edit and name its untouched caller: {}\n{}",
+                    stdout(&out),
+                    stderr(&out)
+                )
+            });
+        assert!(
+            row.1.ends_with("crates/app/src/lib.rs:5"),
+            "{args:?} locates the caller in the tree it surveyed (line 5), not the one it \
+             opened the store on (line 3): {}",
+            row.1
+        );
+        assert_eq!(
+            code(&out),
+            3,
+            "{args:?} gates on a suspect it can see: {}",
+            stdout(&out)
+        );
+        assert!(
+            !stdout(&out).contains("done    refactor"),
+            "{args:?} certifies no refactor while a gate fires: {}",
+            stdout(&out)
+        );
+    }
+}

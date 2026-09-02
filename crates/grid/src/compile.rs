@@ -342,14 +342,24 @@ pub fn report(
     record: &CompileRecord,
 ) -> Result<CompileReport, drift::Error> {
     let chart = ChartDelta::open(root)?;
-    let (base_epoch, head_epoch) = (chart.epoch_of(base)?, chart.epoch_of(head)?);
-    let diff = grid_chart::diff(
-        SnapshotId(base_epoch.snapshot_id().as_str().to_owned()),
-        base_epoch.segments(),
-        SnapshotId(head_epoch.snapshot_id().as_str().to_owned()),
-        head_epoch.segments(),
-    );
-    let changed = drift::changed_set_of(&diff, base_epoch.segments(), head_epoch.segments());
+    let at = drift::Resolved::open(&chart, base, head)?;
+    report_on(&chart, &at, record)
+}
+
+/// The same evaluation over a chart and a delta the caller already holds:
+/// `grid check`'s path, where the drift section resolved both endpoints one
+/// section earlier and this one has no reason to ask again.
+///
+/// # Errors
+/// [`drift::Error::BudgetRejected`] when an inbound walk ran past its fuel —
+/// refused whole, never served short.
+pub(crate) fn report_on(
+    chart: &ChartDelta,
+    at: &drift::Resolved,
+    record: &CompileRecord,
+) -> Result<CompileReport, drift::Error> {
+    let (base_epoch, head_epoch) = (&at.base, &at.head);
+    let changed = &at.changed;
     let env = CfgEnv {
         features: &record.features,
         all_features: record.all_features,
@@ -365,7 +375,7 @@ pub fn report(
     let mut uncompiled: BTreeMap<(String, String, u8), DriftSuspect> = BTreeMap::new();
     let mut unknown: BTreeMap<String, DriftWarning> = BTreeMap::new();
     let mut rejected = 0u32;
-    for change in &changed {
+    for change in changed {
         let Some(found) = drift::inbound_of(
             base_epoch.segments(),
             change,
@@ -395,7 +405,7 @@ pub fn report(
                         grid_chart::relation_tag(dep.relation),
                     );
                     uncompiled.entry(key).or_insert_with(|| {
-                        suspect(&chart, segment, ord, callsign, &cfg, change, &dep)
+                        suspect(chart, segment, ord, callsign, &cfg, change, &dep)
                     });
                 }
                 Verdict::Unknown(message) => {

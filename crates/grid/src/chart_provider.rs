@@ -162,7 +162,13 @@ impl ChartDelta {
     ///
     /// # Errors
     /// [`Error::Store`] if the image exists and cannot be read.
-    pub fn membership(&self) -> Result<Option<grid_chart::Membership<impl AsRef<[u8]>>>, Error> {
+    /// The concrete byte holder is named rather than hidden behind `impl
+    /// AsRef<[u8]>`: an opaque type here would unify with the segment type of
+    /// whatever the caller joins the image against, and the caller joins it
+    /// against this store's own segments.
+    pub fn membership(
+        &self,
+    ) -> Result<Option<grid_chart::Membership<grid_chart_io::Bytes>>, Error> {
         Ok(self.store.membership()?)
     }
 

@@ -62,12 +62,31 @@ pub fn gate_check(
     params: &GateCheckParams,
     root: &std::path::Path,
 ) -> Result<GateCheckResult, chart_provider::Error> {
+    gate_check_on(params, root, None)
+}
+
+/// The same gate over a chart the caller already opened, when it has one.
+///
+/// `grid check`'s adherence section holds the store open for every other
+/// section; opening a second copy of it for this one was a store map and a
+/// name index per check and nothing else.
+///
+/// # Errors
+/// Propagates the provider's error (unknown snapshot, failed survey).
+pub fn gate_check_on(
+    params: &GateCheckParams,
+    root: &std::path::Path,
+    opened: Option<&ChartDelta>,
+) -> Result<GateCheckResult, chart_provider::Error> {
     let standing = standing::load(root).map_err(chart_provider::Error::Config)?;
     let plan = standing::fold(&params.plan, standing);
     let mut chart = Chart::new(root);
     chart.ensure(&plan.base)?;
     let head = chart.head_of(&params.head)?;
-    grid_gate::check(&plan, &head, &ChartDelta::open(root)?)
+    match opened {
+        Some(delta) => grid_gate::check(&plan, &head, delta),
+        None => grid_gate::check(&plan, &head, &ChartDelta::open(root)?),
+    }
 }
 
 /// What one survey *run* did, as opposed to what the snapshot *is*. Neither
@@ -367,6 +386,34 @@ pub fn drift(
     params: &grid_wire::methods::DriftParams,
     root: &std::path::Path,
 ) -> Result<grid_wire::methods::DriftResult, crate::drift::Error> {
+    let ends = drift_endpoints(params, root)?;
+    let chart = ChartDelta::open(root).map_err(crate::drift::Error::Chart)?;
+    let at = crate::drift::Resolved::open(&chart, &ends.base, &ends.head)?;
+    drift_on(root, &chart, &at, &ends, params)
+}
+
+/// One drift run's endpoints, surveyed and named — the half of `drift` that
+/// must happen *before* the store is opened, because surveying head
+/// publishes the epoch a store opened earlier would not be holding.
+pub struct Endpoints {
+    /// The snapshot dependents were depending on.
+    pub base: SnapshotOrRev,
+    /// The snapshot they may now be stale against.
+    pub head: SnapshotOrRev,
+    /// What head's survey declined, or `None` when nobody surveyed head in
+    /// this run — unknown, never zero.
+    pub declined: Option<crate::drift::Declined>,
+}
+
+/// Survey and name both endpoints of a drift question.
+///
+/// # Errors
+/// [`crate::drift::Error::Chart`] when an endpoint cannot be surveyed or
+/// resolved.
+pub fn drift_endpoints(
+    params: &grid_wire::methods::DriftParams,
+    root: &std::path::Path,
+) -> Result<Endpoints, crate::drift::Error> {
     let mut chart = Chart::new(root);
     let base = chart.ensure(&params.base)?;
     let (head, declined) = match &params.head {
@@ -387,6 +434,29 @@ pub fn drift(
         // survey declined. Unknown, not zero.
         snapshot @ SnapshotOrRev::Snapshot { .. } => (snapshot.clone(), None),
     };
+    Ok(Endpoints {
+        base,
+        head,
+        declined,
+    })
+}
+
+/// The drift report over a chart and a delta the caller already holds —
+/// `grid check`'s path, where every later section reads the same two.
+///
+/// # Errors
+/// [`crate::drift::Error::Covenants`] when a declaration file will not parse;
+/// [`crate::drift::Error::BudgetRejected`] when an inbound walk ran past its
+/// fuel; [`crate::drift::Error::Stale`] when the trace store or the verdict
+/// log could not be read.
+pub fn drift_on(
+    root: &std::path::Path,
+    chart: &ChartDelta,
+    at: &crate::drift::Resolved,
+    ends: &Endpoints,
+    params: &grid_wire::methods::DriftParams,
+) -> Result<grid_wire::methods::DriftResult, crate::drift::Error> {
+    let (base, head, declined) = (&ends.base, &ends.head, ends.declined);
     // A declaration file that exists but does not parse is a loud error,
     // never an absence of declarations: a covenant nobody can read is not a
     // covenant nobody made.
@@ -398,26 +468,26 @@ pub fn drift(
     } else {
         None
     };
-    let mut report = crate::drift::compute(
+    let mut report = crate::drift::compute_on(
         root,
+        chart,
+        at,
         &crate::drift::Query {
             floor: params
                 .floor
-                .unwrap_or(crate::drift::Query::new(&base, &head).floor),
+                .unwrap_or(crate::drift::Query::new(base, head).floor),
             plan: params.plan.as_ref(),
             covenants: &covenants,
             declined,
             compat: invariants.as_deref(),
-            ..crate::drift::Query::new(&base, &head)
+            ..crate::drift::Query::new(base, head)
         },
     )?;
     if params.tests == Some(true) {
-        let chart = ChartDelta::open(root).map_err(crate::drift::Error::Chart)?;
         // Head, because the question is whether a recorded verdict still
         // applies *now* — the closure key is identity math over the current
         // chart, not over the one the verdict was taken against.
-        let epoch = chart.epoch_of(&head).map_err(crate::drift::Error::Chart)?;
-        let base_epoch = chart.epoch_of(&base).map_err(crate::drift::Error::Chart)?;
+        let (epoch, base_epoch) = (&at.head, &at.base);
         let found = crate::stale::tests(root, epoch.segments(), |test| {
             // The `grid.resolve` rule, so the name a user can resolve is the
             // name a verdict can be attributed by. Ambiguity resolves to
@@ -439,12 +509,11 @@ pub fn drift(
                 .get_or_insert_with(Vec::new)
                 .extend(found.warnings);
         }
-        // Green-but-stale, over step 6's membership. Absent membership is an
-        // absence of derived data, not a claim that nothing is weak — the
-        // report simply does not answer a question it could not ask.
-        let store = grid_chart_io::Store::open(chart_provider::store_dir(root))
-            .map_err(|e| crate::drift::Error::Stale(e.to_string()))?;
-        if let Some(membership) = store
+        // Green-but-stale, over step 6's membership — read through the chart
+        // this call already holds. Absent membership is an absence of derived
+        // data, not a claim that nothing is weak: the report simply does not
+        // answer a question it could not ask.
+        if let Some(membership) = chart
             .membership()
             .map_err(|e| crate::drift::Error::Stale(e.to_string()))?
         {
