@@ -72,7 +72,7 @@ pub fn wrap(root: &Path, args: &[String], snapshot: SnapshotId) -> Result<Wrappe
                 .unwrap_or(crate::exit::INTERNAL),
         ));
     }
-    let record = record(root, args, snapshot);
+    let record = record(root, args, snapshot)?;
     let text = serde_json::to_string_pretty(&record).map_err(|e| e.to_string())?;
     let path = root.join(FILE);
     if let Some(parent) = path.parent() {
@@ -97,12 +97,24 @@ pub fn load(root: &Path) -> Result<Option<CompileRecord>, String> {
     }
 }
 
-/// What the compile was asked for, read off its own arguments plus what
-/// cargo and rustc say about the tree and the target.
-fn record(root: &Path, args: &[String], snapshot: SnapshotId) -> CompileRecord {
-    let mut features = Vec::new();
-    let (mut all_features, mut no_default_features, mut tests) = (false, false, false);
-    let mut target = None;
+/// What `cargo check`'s own arguments say it was asked for.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Flags {
+    /// Feature names as given, before defaults and closure.
+    features: Vec<String>,
+    all_features: bool,
+    no_default_features: bool,
+    /// Some `cfg(test)` code was compiled: `--tests`, `--all-targets`, or a
+    /// named test or bench target (`--test it`, `--benches`, `--bench b`).
+    /// Over-approximate on purpose — a named target compiles its own file
+    /// under `cfg(test)` and the lib without — because "compiled" can only
+    /// ever excuse a caller, never gate one.
+    tests: bool,
+    target: Option<String>,
+}
+
+fn flags(args: &[String]) -> Flags {
+    let mut out = Flags::default();
     let mut rest = args.iter().map(String::as_str);
     while let Some(arg) = rest.next() {
         let value = |rest: &mut dyn Iterator<Item = &str>, arg: &str, flag: &str| {
@@ -112,30 +124,53 @@ fn record(root: &Path, args: &[String], snapshot: SnapshotId) -> CompileRecord {
                 .or_else(|| (arg == flag).then(|| rest.next().unwrap_or_default().to_owned()))
         };
         if arg == "--all-features" {
-            all_features = true;
+            out.all_features = true;
         } else if arg == "--no-default-features" {
-            no_default_features = true;
-        } else if arg == "--tests" || arg == "--all-targets" {
-            tests = true;
+            out.no_default_features = true;
+        } else if matches!(arg, "--tests" | "--all-targets" | "--benches") {
+            out.tests = true;
+        } else if arg == "--test" || arg == "--bench" {
+            out.tests = true;
+            rest.next();
+        } else if arg.starts_with("--test=") || arg.starts_with("--bench=") {
+            out.tests = true;
         } else if let Some(list) = value(&mut rest, arg, "--features").or_else(|| {
             (arg == "-F")
                 .then(|| rest.next().unwrap_or_default().to_owned())
                 .or_else(|| arg.strip_prefix("-F").map(str::to_owned))
         }) {
             // `pkg/feat` names a package's feature; the record is flat.
-            features.extend(
+            out.features.extend(
                 list.split(|c: char| c == ',' || c.is_whitespace())
                     .filter(|f| !f.is_empty())
                     .map(|f| f.rsplit('/').next().unwrap_or(f).to_owned()),
             );
         } else if let Some(t) = value(&mut rest, arg, "--target") {
-            target = Some(t);
+            out.target = Some(t);
         }
     }
+    out
+}
+
+/// What the compile was asked for, read off its own arguments plus what
+/// cargo and rustc say about the tree and the target.
+///
+/// # Errors
+/// When the feature closure cannot be read: a record with a shrunken
+/// closure would call a feature-gated caller uncompiled, so no record is
+/// better than that one.
+fn record(root: &Path, args: &[String], snapshot: SnapshotId) -> Result<CompileRecord, String> {
+    let Flags {
+        mut features,
+        all_features,
+        no_default_features,
+        tests,
+        target,
+    } = flags(args);
     if !no_default_features {
         features.push("default".to_owned());
     }
-    let features = close_features(root, features);
+    let features = close_features(root, features)?;
     let host = rustc(root, &["-vV"])
         .lines()
         .find_map(|l| l.strip_prefix("host: "))
@@ -150,7 +185,7 @@ fn record(root: &Path, args: &[String], snapshot: SnapshotId) -> CompileRecord {
             .map(str::to_owned)
             .collect()
     };
-    CompileRecord {
+    Ok(CompileRecord {
         snapshot,
         features,
         all_features,
@@ -160,7 +195,7 @@ fn record(root: &Path, args: &[String], snapshot: SnapshotId) -> CompileRecord {
         host,
         cfgs,
         recorded_at: grid_cache::now_rfc3339(),
-    }
+    })
 }
 
 fn rustc(root: &Path, args: &[&str]) -> String {
@@ -180,34 +215,52 @@ fn rustc(root: &Path, args: &[&str]) -> String {
 /// ponytail: the tables are unioned across packages, so a feature name two
 /// packages both define is one name here; per-package records are the
 /// upgrade if that ever misreports a compile.
-fn close_features(root: &Path, seeds: Vec<String>) -> Vec<String> {
-    let table: HashMap<String, Vec<String>> = Command::new("cargo")
+///
+/// # Errors
+/// When `cargo metadata` cannot be spawned, exits non-zero, or answers a
+/// shape without a feature table. Swallowing any of those collapsed the
+/// closure to the seeds — `default = ["tui"]` no longer enabled `tui` and
+/// every `tui` caller became a false gate — with nothing on stderr to say
+/// why. A closure grid cannot read is a refusal, never a shorter list.
+fn close_features(root: &Path, seeds: Vec<String>) -> Result<Vec<String>, String> {
+    let out = Command::new("cargo")
         .args(["metadata", "--no-deps", "--format-version", "1"])
         .current_dir(root)
         .stdin(Stdio::null())
-        .stderr(Stdio::null())
         .output()
-        .ok()
-        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
-        .and_then(|v| {
-            let mut out: HashMap<String, Vec<String>> = HashMap::new();
-            for package in v.get("packages")?.as_array()? {
-                for (name, deps) in package.get("features")?.as_object()? {
-                    out.entry(name.clone()).or_default().extend(
-                        deps.as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|d| d.as_str())
-                            // `dep:x` and `x/y` name dependencies, not
-                            // this package's features.
-                            .filter(|d| !d.starts_with("dep:") && !d.contains('/'))
-                            .map(str::to_owned),
-                    );
-                }
-            }
-            Some(out)
-        })
-        .unwrap_or_default();
+        .map_err(|e| format!("cargo metadata: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "cargo metadata exited {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let listing: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("cargo metadata did not answer JSON: {e}"))?;
+    let mut table: HashMap<String, Vec<String>> = HashMap::new();
+    let packages = listing
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("cargo metadata: no `packages` in its answer")?;
+    for package in packages {
+        let features = package
+            .get("features")
+            .and_then(serde_json::Value::as_object)
+            .ok_or("cargo metadata: a package without a `features` table")?;
+        for (name, deps) in features {
+            table.entry(name.clone()).or_default().extend(
+                deps.as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|d| d.as_str())
+                    // `dep:x` and `x/y` name dependencies, not this
+                    // package's features.
+                    .filter(|d| !d.starts_with("dep:") && !d.contains('/'))
+                    .map(str::to_owned),
+            );
+        }
+    }
     let mut enabled: Vec<String> = Vec::new();
     let mut worklist = seeds;
     while let Some(f) = worklist.pop() {
@@ -219,7 +272,7 @@ fn close_features(root: &Path, seeds: Vec<String>) -> Vec<String> {
     }
     enabled.sort();
     enabled.dedup();
-    enabled
+    Ok(enabled)
 }
 
 /// What one dependent's cfg says under the record.
@@ -233,15 +286,41 @@ enum Verdict {
 /// `None` is a snapshot that predates the cfg column, and it stays unknown:
 /// an older image answers nothing, and reading nothing as "compiled" would
 /// call every `#[cfg(test)]` caller in it compiled.
+///
+/// A compile that built test targets built the library *twice* — once with
+/// `cfg(test)` for the test binary and once without for the lib — so under
+/// `record.tests` a predicate is evaluated both ways and the answers are
+/// OR-ed in Kleene logic: compiled if either compile saw it, unknown if
+/// either could not say, uncompiled only when both excluded it. Without
+/// that, `#[cfg(not(test))]` callers were a false gate under `--tests`.
 fn classify(cfg: Option<&str>, env: &CfgEnv) -> Verdict {
-    match cfg {
-        None => Verdict::Unknown("cfg unknown: pre-epoch-4 snapshot".to_owned()),
-        Some("") => Verdict::Compiled,
-        Some(cfg) => match eval_cfg(cfg, env) {
-            Some(true) => Verdict::Compiled,
-            Some(false) => Verdict::Uncompiled(cfg.to_owned()),
-            None => Verdict::Unknown(format!("cfg unknown: {cfg}")),
-        },
+    let Some(cfg) = cfg else {
+        return Verdict::Unknown("cfg unknown: pre-epoch-4 snapshot".to_owned());
+    };
+    if cfg.is_empty() {
+        return Verdict::Compiled;
+    }
+    let with_tests = eval_cfg(cfg, env);
+    let seen = if env.tests {
+        let without = eval_cfg(
+            cfg,
+            &CfgEnv {
+                tests: false,
+                ..*env
+            },
+        );
+        match (with_tests, without) {
+            (Some(true), _) | (_, Some(true)) => Some(true),
+            (None, _) | (_, None) => None,
+            (Some(false), Some(false)) => Some(false),
+        }
+    } else {
+        with_tests
+    };
+    match seen {
+        Some(true) => Verdict::Compiled,
+        Some(false) => Verdict::Uncompiled(cfg.to_owned()),
+        None => Verdict::Unknown(format!("cfg unknown: {cfg}")),
     }
 }
 
@@ -380,10 +459,72 @@ fn by_callsign<B: AsRef<[u8]>>(segments: &[Segment<B>]) -> HashMap<String, (usiz
 
 #[cfg(test)]
 mod tests {
-    use super::{classify, report, Verdict};
+    use super::{classify, close_features, flags, report, Verdict};
     use grid_chart::{build, DatumId, Def, DefFacts, Edge, Ordinal, Segment};
     use grid_lang_rs::CfgEnv;
     use grid_wire::{CompileRecord, GitRev, SnapshotId, SnapshotOrRev};
+
+    /// `cargo check --tests` compiles the lib both with and without
+    /// `cfg(test)`, so a `not(test)` caller was seen by that compile and
+    /// is never uncompiled under it; a plain compile still excludes `test`.
+    #[test]
+    fn under_tests_a_not_test_caller_was_compiled() {
+        let tests = CfgEnv {
+            features: &[],
+            all_features: false,
+            tests: true,
+            cfgs: &[],
+        };
+        assert_eq!(classify(Some("not(test)"), &tests), Verdict::Compiled);
+        assert_eq!(classify(Some("test"), &tests), Verdict::Compiled);
+        // Still unknown when either compile could not say.
+        assert_eq!(
+            classify(Some("all(kani,not(test))"), &tests),
+            Verdict::Unknown("cfg unknown: all(kani,not(test))".into())
+        );
+        let plain = CfgEnv {
+            tests: false,
+            ..tests
+        };
+        assert_eq!(
+            classify(Some("test"), &plain),
+            Verdict::Uncompiled("test".into())
+        );
+        assert_eq!(classify(Some("not(test)"), &plain), Verdict::Compiled);
+    }
+
+    /// A feature closure grid cannot read is a refusal, never the seeds
+    /// alone: a directory with no manifest has no `cargo metadata` answer.
+    #[test]
+    fn an_unreadable_feature_closure_refuses_rather_than_shrinking() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = close_features(dir.path(), vec!["default".into()]);
+        assert!(
+            out.is_err(),
+            "no manifest, no closure — never just the seeds: {out:?}"
+        );
+    }
+
+    /// A named test or bench target compiles `cfg(test)` code too.
+    #[test]
+    fn named_test_and_bench_targets_count_as_tests_compiled() {
+        let args = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        for case in [
+            &["--test", "it"][..],
+            &["--test=it"],
+            &["--bench", "b"],
+            &["--benches"],
+            &["--tests"],
+            &["--all-targets"],
+        ] {
+            assert!(flags(&args(case)).tests, "{case:?}");
+        }
+        assert!(!flags(&args(&["--lib", "--features", "tui"])).tests);
+        assert_eq!(
+            flags(&args(&["--test", "it", "-F", "a,b"])).features,
+            ["a", "b"]
+        );
+    }
 
     fn record() -> CompileRecord {
         CompileRecord {

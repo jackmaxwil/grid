@@ -15,10 +15,11 @@ pub mod lint;
 pub mod pattern;
 
 use grid_wire::{
-    Callsign, CallsignPattern, Datum, DefChange, Diff, Edge, EdgeChange, EdgeChangeAction,
-    EdgeRule, GateVerdict, GateVerdictGate, Grade, Invariant, InvariantRule, InvariantViolation,
-    Path, Plan, PlanDefPromise, PlanDefPromiseAction, PlanEdgePromise, PlanEdgePromiseAction,
-    SnapshotId, SnapshotOrRev, TestComparison, TestComparisonActual, TestComparisonExpected,
+    Callsign, CallsignPattern, Datum, DefChange, DefChangeAction, Diff, Edge, EdgeChange,
+    EdgeChangeAction, EdgeRule, GateVerdict, GateVerdictGate, Grade, Invariant, InvariantRule,
+    InvariantViolation, Path, Plan, PlanDefPromise, PlanDefPromiseAction, PlanEdgePromise,
+    PlanEdgePromiseAction, SnapshotId, SnapshotOrRev, TestComparison, TestComparisonActual,
+    TestComparisonExpected,
 };
 
 /// The seam. A provider answers two questions about a pair of snapshots: what
@@ -199,9 +200,16 @@ pub fn verdict<P: DeltaProvider>(plan: &Plan, diff: &Diff, provider: &P) -> Gate
     // to let an `interface: false` promise cover a sig move, so every
     // sig-moved member of defs_unaccounted qualifies by construction — a
     // filter, never a second unification pass, so nothing is held twice.
+    // Only a definition that exists on both sides has an interface that can
+    // move: an add or a remove carries `sig_changed: None`, and reading that
+    // unknown as "moved" labelled every unpromised add `unaccounted:
+    // interface`, which reads as a gate reason it is not.
     let interface_unaccounted: Vec<DefChange> = defs_unaccounted
         .iter()
-        .filter(|d| !matches!(d.sig_changed, Some(false)))
+        .filter(|d| {
+            matches!(d.action, DefChangeAction::Modified | DefChangeAction::Moved)
+                && !matches!(d.sig_changed, Some(false))
+        })
         .cloned()
         .collect();
 

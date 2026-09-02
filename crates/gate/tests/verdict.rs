@@ -600,3 +600,38 @@ proptest! {
         prop_assert!(v.defs_unaccounted.is_empty());
     }
 }
+
+/// An unpromised add or remove is unaccounted, but not *for the interface*:
+/// nothing existed on both sides for a caller to see move, and labelling it
+/// `unaccounted: interface` reads as a gate reason it is not.
+#[test]
+fn an_unpromised_add_is_unaccounted_but_not_for_its_interface() {
+    let t = plan(vec![]);
+    let added = DefChange {
+        moved_from: None,
+        sig_changed: None,
+        action: DefChangeAction::Added,
+        callsign: Callsign("cortana.reaper.Reaper.extra".into()),
+        before: None,
+        after: Some(datum("cc")),
+    };
+    let removed = DefChange {
+        moved_from: None,
+        sig_changed: None,
+        action: DefChangeAction::Removed,
+        callsign: Callsign("cortana.reaper.Reaper.gone".into()),
+        before: Some(datum("dd")),
+        after: None,
+    };
+    let v = verdict(
+        &t,
+        &diff(vec![added.clone(), removed.clone()], vec![]),
+        &Table::new(),
+    );
+    assert_eq!(v.gate, GateVerdictGate::Hold);
+    assert_eq!(v.defs_unaccounted, vec![added, removed]);
+    assert!(
+        v.interface_unaccounted.unwrap().is_empty(),
+        "an add or a remove has no interface that moved"
+    );
+}

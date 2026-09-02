@@ -398,7 +398,7 @@
         { "name": "base", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" }, "description": "The snapshot the change is measured from. Defaults to the plan's base when a plan is named, else HEAD~1 — grid.drift's default." },
         { "name": "head", "required": true, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } },
         { "name": "trace", "required": false, "schema": { "$ref": "#/components/schemas/TraceId" } },
-        { "name": "compile", "required": false, "schema": { "type": "boolean" }, "description": "Kept for 1.0 callers; the compile record is read whenever it exists. When .grid/compile.json is absent, or its snapshot is not the head the check surveyed, the compile section is absent and CheckResult.warnings says so." },
+        { "name": "compile", "required": false, "schema": { "type": "boolean" }, "description": "Ignored. Kept for 1.0 callers; the compile record is read whenever it exists, whatever this says. When .grid/compile.json is absent, or its snapshot is not the head the check surveyed, the compile section is absent and CheckResult.warnings says so." },
         { "name": "quick", "required": false, "schema": { "type": "boolean" }, "description": "Drift at the proven floor plus the compile record, nothing else: no trace store, verdict log or source read. The PostToolUse form." }
       ],
       "examples": [

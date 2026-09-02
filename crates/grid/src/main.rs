@@ -1657,10 +1657,8 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
             Err(code) => return code,
         }
     }
-    if plan.is_none() {
-        if let Some(record) = compiled.as_ref() {
-            return compile_report(record, json);
-        }
+    if let (None, Some(record)) = (&plan, compiled.as_ref()) {
+        return compile_only(record, quick, json);
     }
     let params = grid_wire::methods::CheckParams {
         plan,
@@ -1769,6 +1767,15 @@ fn compile_wrap(cargo_args: &[String]) -> Result<grid_wire::CompileRecord, u8> {
             Ok(record)
         }
     }
+}
+
+/// `--compile` with no `--plan`: the compile report is the whole answer, and
+/// a `--quick` beside it has nothing to apply to — said, not swallowed.
+fn compile_only(record: &grid_wire::CompileRecord, quick: bool, json: bool) -> u8 {
+    if quick {
+        hint("grid: --quick applies to the composite check; with --compile and no --plan the compile report is the whole answer, so --quick is ignored");
+    }
+    compile_report(record, json)
 }
 
 /// The compile report on its own: drift's default endpoints, the worktree
@@ -1994,8 +2001,8 @@ fn suspects_refused(error: &suspects::Error) -> u8 {
 fn trace(args: &[&str], json: bool) -> u8 {
     let root = std::path::Path::new(".");
     match args.split_first() {
-        Some((&"ingest", rest)) if matches!(rest.first(), Some(&"--lcov" | &"--coverage-json")) => {
-            trace_coverage(rest[0], rest, json, root)
+        Some((&"ingest", rest @ [flag @ ("--lcov" | "--coverage-json"), ..])) => {
+            trace_coverage(flag, rest, json, root)
         }
         Some((&"ingest", rest)) => {
             let Some(path) = rest.first() else {

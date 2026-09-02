@@ -29,9 +29,14 @@ pub(crate) fn definitions_of(file: &syn::File, source: &str) -> Vec<Definition> 
 
 /// The `#[cfg(...)]` predicates on one node, as written minus whitespace —
 /// whitespace, because the predicate rides in a porcelain column that is
-/// split on runs of spaces. A `cfg_attr(...)` is recorded whole, as its own
-/// predicate text: the evaluator reads it as unknown, which is the honest
-/// answer for an attribute that may or may not have conditioned anything.
+/// split on runs of spaces. A `cfg_attr(...)` conditions compilation only
+/// when the attributes it may expand to include a `cfg(...)`; such a one is
+/// recorded whole, as its own predicate text, and the evaluator reads it as
+/// unknown — the honest answer for an attribute that may or may not have
+/// conditioned anything. A `cfg_attr` that expands to a `derive`, an
+/// `allow`, or a `doc` conditions nothing and is not a predicate at all;
+/// recording it made every proven caller on a serde-using crate a `cfg
+/// unknown` warning, which buried the records that gate.
 pub(crate) fn cfgs_of(attrs: &[syn::Attribute]) -> Vec<String> {
     attrs
         .iter()
@@ -39,7 +44,11 @@ pub(crate) fn cfgs_of(attrs: &[syn::Attribute]) -> Vec<String> {
             let text = if attr.path().is_ident("cfg") {
                 attr.meta.require_list().ok()?.tokens.to_string()
             } else if attr.path().is_ident("cfg_attr") {
-                attr.meta.to_token_stream().to_string()
+                let text = attr.meta.to_token_stream().to_string();
+                if !text.contains("cfg (") && !text.contains("cfg(") {
+                    return None;
+                }
+                text
             } else {
                 return None;
             };

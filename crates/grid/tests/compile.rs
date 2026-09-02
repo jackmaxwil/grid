@@ -199,15 +199,19 @@ fn a_feature_gated_caller_is_uncompiled_until_the_feature_is_given() {
 
 const BEFORE_CUSTOM: &str = "pub fn changed(x: u32) -> u32 { x }\n\
                              #[cfg(kani)]\npub fn proof() -> u32 { changed(1) }\n\
-                             #[cfg_attr(kani, allow(dead_code))]\npub fn maybe() -> u32 { changed(2) }\n";
+                             #[cfg_attr(kani, cfg(never))]\npub fn maybe() -> u32 { changed(2) }\n\
+                             #[cfg_attr(kani, allow(dead_code))]\npub fn plain() -> u32 { changed(3) }\n";
 const AFTER_CUSTOM: &str = "pub fn changed(x: u64) -> u64 { x }\n\
                             #[cfg(kani)]\npub fn proof() -> u64 { changed(1) }\n\
-                            #[cfg_attr(kani, allow(dead_code))]\npub fn maybe() -> u64 { changed(2) }\n";
+                            #[cfg_attr(kani, cfg(never))]\npub fn maybe() -> u64 { changed(2) }\n\
+                            #[cfg_attr(kani, allow(dead_code))]\npub fn plain() -> u64 { changed(3) }\n";
 
 /// Conservatism: a caller under a custom `cfg(kani)` or a `cfg_attr(…)`
-/// is a `warn`, never a `drift` record, and the exit stays 0. An unproven
-/// exclusion does not gate — an evaluator that read unknown as false would
-/// hold every repo with a custom cfg.
+/// that can expand to a `cfg` is a `warn`, never a `drift` record, and the
+/// exit stays 0. An unproven exclusion does not gate — an evaluator that
+/// read unknown as false would hold every repo with a custom cfg. A
+/// `cfg_attr` that expands to an `allow` conditions nothing: its caller was
+/// compiled, and it is neither a record nor a warning.
 #[test]
 fn an_undecidable_cfg_warns_and_never_gates() {
     if !cargo_present() {
@@ -224,10 +228,11 @@ fn an_undecidable_cfg_warns_and_never_gates() {
         [
             (
                 "app.maybe".to_owned(),
-                "cfg unknown: cfg_attr(kani,allow(dead_code))".to_owned()
+                "cfg unknown: cfg_attr(kani,cfg(never))".to_owned()
             ),
             ("app.proof".to_owned(), "cfg unknown: kani".to_owned()),
-        ]
+        ],
+        "and `plain`, under a cfg_attr that conditions nothing, is neither"
     );
     assert_eq!(
         code(&out),
@@ -239,7 +244,9 @@ fn an_undecidable_cfg_warns_and_never_gates() {
 
 /// Property: with every feature and every test target compiled, a repo
 /// with no custom cfg has nothing left uncompiled and nothing unknown —
-/// the report is empty, in porcelain and on the wire.
+/// the report is empty, in porcelain and on the wire. That includes a
+/// `#[cfg(not(test))]` caller: `--tests` compiles the lib both ways, so
+/// the compiler saw it, and calling it uncompiled was a false gate.
 #[test]
 fn everything_compiled_emits_nothing() {
     if !cargo_present() {
@@ -248,11 +255,13 @@ fn everything_compiled_emits_nothing() {
     }
     let before = format!(
         "{BEFORE_TEST}#[cfg(feature = \"tui\")]\npub fn ui() -> u32 {{ changed(1) }}\n\
-         #[cfg(all(unix, not(windows)))]\npub fn host() -> u32 {{ changed(3) }}\n"
+         #[cfg(all(unix, not(windows)))]\npub fn host() -> u32 {{ changed(3) }}\n\
+         #[cfg(not(test))]\npub fn prod() -> u32 {{ changed(4) }}\n"
     );
     let after = format!(
         "{AFTER_TEST}#[cfg(feature = \"tui\")]\npub fn ui() -> u64 {{ changed(1) }}\n\
-         #[cfg(all(unix, not(windows)))]\npub fn host() -> u64 {{ changed(3) }}\n"
+         #[cfg(all(unix, not(windows)))]\npub fn host() -> u64 {{ changed(3) }}\n\
+         #[cfg(not(test))]\npub fn prod() -> u64 {{ changed(4) }}\n"
     );
     let dir = repo(&before, &after);
     let out = grid(
@@ -316,4 +325,90 @@ fn a_python_tree_has_no_compile_to_wrap() {
         "said, not silent"
     );
     assert!(!dir.path().join(".grid/compile.json").exists());
+}
+
+const MANIFEST_DEFAULT_TUI: &str =
+    "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+     [features]\ndefault = [\"tui\"]\ntui = []\n\n[workspace]\n";
+
+/// Conservatism: a feature closure grid cannot read is a refusal, never a
+/// shrunken closure. With `cargo metadata` failing, `default = ["tui"]` no
+/// longer enables `tui` and every `tui` caller would be a false gate; the
+/// verb refuses (exit 1), writes no record, and says why.
+#[test]
+fn an_unreadable_feature_closure_refuses_rather_than_gating() {
+    if !cargo_present() {
+        eprintln!("skipping: cargo is not on PATH");
+        return;
+    }
+    let Ok(real_cargo) = std::env::var("CARGO") else {
+        eprintln!("skipping: $CARGO is not set by the harness");
+        return;
+    };
+    // `repo`, with a manifest whose default enables `tui` from the start.
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(
+        dir.path(),
+        &[
+            ("Cargo.toml", MANIFEST_DEFAULT_TUI),
+            ("src/lib.rs", BEFORE_FEATURE),
+        ],
+    );
+    git(dir.path(), &["add", "-A"]);
+    git(dir.path(), &["commit", "-qm", "before"]);
+    write(dir.path(), &[("src/lib.rs", AFTER_FEATURE)]);
+    git(dir.path(), &["add", "-A"]);
+    git(dir.path(), &["commit", "-qm", "after"]);
+    // The closure holds when cargo answers.
+    let out = grid(dir.path(), &["check", "--compile"]);
+    assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
+
+    // A cargo whose `metadata` fails, everything else passed through.
+    let shim = tempfile::tempdir().expect("tempdir");
+    let script = shim.path().join("cargo");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = metadata ]; then exit 1; fi\nexec \"{real_cargo}\" \"$@\"\n"
+        ),
+    )
+    .expect("write shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let _ = std::fs::remove_file(dir.path().join(".grid/compile.json"));
+    let path = format!(
+        "{}:{}",
+        shim.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_grid"))
+        .args(["check", "--compile"])
+        .current_dir(dir.path())
+        .env("PATH", path)
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET")
+        .env_remove("RUSTFLAGS")
+        .output()
+        .expect("run grid");
+    assert_eq!(
+        code(&out),
+        1,
+        "a closure grid cannot read is refused, never gated on:\n{}{}",
+        stdout(&out),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(stdout(&out), "", "and nothing is reported");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("cargo metadata"),
+        "the refusal says why:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !dir.path().join(".grid/compile.json").exists(),
+        "no record was written"
+    );
 }

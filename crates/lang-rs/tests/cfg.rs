@@ -41,10 +41,21 @@ fn impl_trait_and_nested_items_inherit() {
     }
 }
 
+/// A `cfg_attr` that can expand to a `cfg(...)` is a predicate of its own;
+/// one that expands to a derive, an allow or a doc conditions nothing and
+/// is not recorded, so a serde-using crate's callers are not all "unknown".
 #[test]
-fn a_cfg_attr_is_its_own_predicate_text() {
-    let src = "#[cfg_attr(kani, allow(dead_code))] fn f() {}\n";
-    assert_eq!(cfg_of(src, "f"), "cfg_attr(kani,allow(dead_code))");
+fn a_cfg_attr_is_a_predicate_only_when_it_can_carry_a_cfg() {
+    let src = "#[cfg_attr(kani, cfg(never))] fn f() {}\n\
+               #[cfg_attr(kani, allow(dead_code))] fn g() {}\n\
+               #[cfg_attr(feature = \"serde\", derive(Deserialize))] struct S;\n\
+               #[cfg_attr(docsrs, doc(cfg(feature = \"x\")))] fn d() {}\n";
+    assert_eq!(cfg_of(src, "f"), "cfg_attr(kani,cfg(never))");
+    assert_eq!(cfg_of(src, "g"), "");
+    assert_eq!(cfg_of(src, "S"), "");
+    // `doc(cfg(..))` is documentation, but the text carries `cfg(` and the
+    // reader stays conservative: unknown, never "unconditioned".
+    assert_eq!(cfg_of(src, "d"), "cfg_attr(docsrs,doc(cfg(feature=\"x\")))");
 }
 
 #[test]
