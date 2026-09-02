@@ -110,6 +110,7 @@ fn help() {
          test [base] [--trace|--all]  run what the change can reach; replay the rest; exit 3 on red\n  \
          gate <plan> [head]           promise vs delta; exit 3 on hold\n  \
          plan lint <file>             validate a promise file\n  \
+         plan new [--from-diff <b>]   a starter promise file, or one drafted from the diff\n  \
          todo <plan>                  the promise as a worklist\n  \
          check [base] [head] [--quick]  everything the change did that nobody checked; exit 3\n  \
          check --plan <p> [--why]     the same, plus the gate verdict and why it says so\n  \

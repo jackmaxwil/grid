@@ -52,8 +52,9 @@ refactored", "tests cover it", "no API change" — become checked
 predicates.
 
 **Plan, implement, gate.** Plan mode writes a plan file (promised
-definitions with `interface: true|false`, promised edges); `grid plan
-lint`; implement; `grid drift --plan f` lists the callers nobody promised;
+definitions with `interface: true|false`, promised edges) — or `grid plan
+new --from-diff <base>` drafts one from a change already made, for pruning;
+`grid plan lint`; implement; `grid drift --plan f` lists the callers nobody promised;
 `grid gate f` holds on an unpromised interface move or a promise not made
 good. Exit 3 means the plan was not made good.
 

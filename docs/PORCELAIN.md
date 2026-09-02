@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.18.0
+version: 2.19.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -164,6 +164,20 @@ never reported on counts as failed and is named in a `warn`), `1` when the runne
 `uncovered` and `nondeterministic` are heuristic and never move it. Runner
 output goes to stderr as the runner produces it, not replayed at the end; the horizon line on stderr says how many tests were
 selected out of how many, and what the plan and the survey cost.
+
+`grid plan new <id>` writes a starter plan into the store and prints one
+`todo  <plan-id>  <path>` record. `grid plan new [<id>] --from-diff <base>`
+instead *drafts* one from the diff between `<base>` and the worktree — a
+`modify`/`add`/`remove`/`move` def promise per changed definition, carrying
+`interface` where the diff could establish it and omitting it where it could
+not, and an `add` edge promise per added edge in callsign space — and writes
+the plan itself, as JSON, to stdout. This is a text-mode output, not
+records: the plan file is the answer. With `--out <file>` it goes there and
+stdout is the same `todo` record. An added edge whose endpoints the chart
+cannot both name is not promised and is named on stderr. Without an id the
+plan is called `plan:from-diff-<base tail>`. Exit `2` on a base that does
+not resolve; the draft is a draft, so nothing here diverges and nothing
+exits `3`.
 
 `grid trace export <dir>` and `grid trace import <dir>` carry retained
 traces between machines, and use existing tags. Export writes one file per

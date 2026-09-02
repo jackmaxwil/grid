@@ -15,7 +15,7 @@ use grid_wire::{
 };
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "2.18.0";
+pub const VERSION: &str = "2.19.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -995,7 +995,8 @@ pub fn test_run(run: &grid_wire::TestRun) -> String {
 
 /// An edge arrow for a chart edge (not a change): same shape as
 /// `edge_arrow`, but nothing was added or removed — the edge *is*.
-fn chart_edge_arrow(edge: &grid_wire::Edge, name: &NameOf) -> String {
+#[must_use]
+pub fn chart_edge_arrow(edge: &grid_wire::Edge, name: &NameOf) -> String {
     let show = |d: &grid_wire::Datum| name(d).unwrap_or_else(|| format!("@{}", short(d)));
     format!(
         "{} -{}-> {}",
