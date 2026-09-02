@@ -46,6 +46,7 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 | C32 | a watch session's summed deltas equal a fresh `grid drift` after every prefix of an event sequence; an edit and its revert net to zero; an unparseable file event emits no deltas and is counted | watch.rs | 10+ |
 | C34 | every declined reference is counted in exactly one of external, method, internal, and the three sum to the declined total; a method call yields no edge whatever its receiver looks like, and a reference an import binds is still an edge | declined_split.rs refs.rs | 10+ |
 | C33 | a rev survey reads every blob it needs through one `git cat-file --batch` child, byte-identical to `git show` per path; a path the listing names that the rev cannot serve is skipped, never fabricated as empty, and never shifts a later answer onto the wrong file | rev_blobs.rs determinism.rs | 10+ |
+| C35 | lcov and coverage.py reports describing the same executed lines produce the same observations and the same resolved hops, because they share one line-to-definition mapping; a file the chart does not hold and a line inside no definition are counted and reported; a report that does not parse is bad input, never a trace claiming the test reached nothing; and re-ingesting a report retains one trace, byte for byte | coverage.rs porcelain.rs | 10+ |
 
 
 ## Maintained views

@@ -568,6 +568,8 @@ pub struct Trace {
     pub command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<SnapshotId>,
     pub observations: Vec<TraceObservation>,
 }
 

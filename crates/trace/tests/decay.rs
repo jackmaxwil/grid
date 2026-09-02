@@ -96,6 +96,7 @@ fn trace(id: &str, hops: &[(&str, &str)]) -> Trace {
         git_rev: grid_wire::GitRev("rev".into()),
         command: None,
         started_at: None,
+        snapshot: None,
         observations: hops
             .iter()
             .map(|(from, to)| TraceObservation {

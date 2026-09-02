@@ -37,6 +37,7 @@ fn trace(hops: Vec<TraceObservation>) -> Trace {
         git_rev: grid_wire::GitRev("4f2c9e1".to_string()),
         command: None,
         started_at: None,
+        snapshot: None,
         observations: hops,
     }
 }

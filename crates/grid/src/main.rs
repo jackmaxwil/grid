@@ -26,11 +26,11 @@ mod bisect;
 mod chart_provider;
 mod check;
 mod covenant;
+mod coverage;
 mod drift;
 mod edit;
 mod explain;
 mod history;
-mod lcov;
 mod plan;
 mod porcelain;
 mod rpc;
@@ -1217,18 +1217,29 @@ fn uses(args: &[&str], json: bool) -> u8 {
     }
 }
 
-/// `grid trace ingest --lcov <report> --test <name>` — coverage as a reach
-/// set: every executed line inside a charted definition becomes one
-/// observation from the named test.
-fn trace_lcov(rest: &[&str], json: bool, root: &std::path::Path) -> u8 {
+/// `grid trace ingest --lcov|--coverage-json <report> --test <name>` —
+/// coverage as a reach set: every executed line inside a charted definition
+/// becomes one observation from the named test.
+///
+/// One report is one test. The per-runner recipes that produce one report
+/// per test are in the README; the orchestration that runs them is
+/// `grid test --trace`, not this handler.
+fn trace_coverage(flag: &str, rest: &[&str], json: bool, root: &std::path::Path) -> u8 {
     let (Some(path), Some(&"--test"), Some(test)) = (rest.get(1), rest.get(2), rest.get(3)) else {
-        hint("usage: grid trace ingest --lcov <report|-> --test <name>");
+        hint(&format!(
+            "usage: grid trace ingest {flag} <report|-> --test <name>"
+        ));
         return exit::BAD_INPUT;
     };
     let Some(report) = read_arg(path) else {
         return exit::BAD_INPUT;
     };
-    let mapped = match lcov::trace_of(root, &report, test) {
+    let mapping = if flag == "--lcov" {
+        coverage::trace_of_lcov(root, &report, test)
+    } else {
+        coverage::trace_of_coverage_json(root, &report, test)
+    };
+    let mapped = match mapping {
         Ok(mapped) => mapped,
         Err(e) => {
             hint(&format!("grid: {e}"));
@@ -1604,7 +1615,9 @@ fn suspects(args: &[&str], json: bool) -> u8 {
 fn trace(args: &[&str], json: bool) -> u8 {
     let root = std::path::Path::new(".");
     match args.split_first() {
-        Some((&"ingest", rest)) if rest.first() == Some(&"--lcov") => trace_lcov(rest, json, root),
+        Some((&"ingest", rest)) if matches!(rest.first(), Some(&"--lcov" | &"--coverage-json")) => {
+            trace_coverage(rest[0], rest, json, root)
+        }
         Some((&"ingest", rest)) => {
             let Some(path) = rest.first() else {
                 hint("usage: grid trace ingest <trace.json|->");

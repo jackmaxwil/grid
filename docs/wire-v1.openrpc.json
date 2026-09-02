@@ -953,6 +953,7 @@
           "git_rev": { "$ref": "#/components/schemas/GitRev" },
           "command": { "type": "string", "description": "The test command that produced this trace." },
           "started_at": { "type": "string", "format": "date-time" },
+          "snapshot": { "$ref": "#/components/schemas/SnapshotId", "description": "The chart snapshot this trace's observations were mapped against, set by the coverage ingestion paths (--lcov, --coverage-json). It pins the chart a later reader must grade the trace against without resolving git_rev through git, which a shallow clone or a rewritten history can no longer answer. Absent on a trace a runner emitted directly, where git_rev is all there is." },
           "observations": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/TraceObservation" } }
         },
         "additionalProperties": false,

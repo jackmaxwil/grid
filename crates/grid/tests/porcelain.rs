@@ -94,6 +94,10 @@ fn stdout(out: &Output) -> String {
     String::from_utf8(out.stdout.clone()).expect("stdout is utf-8")
 }
 
+fn stderr(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
 fn code(out: &Output) -> i32 {
     out.status.code().expect("exit code")
 }
@@ -1072,6 +1076,198 @@ fn lcov_ingests_as_a_reach_set_and_omits_what_it_cannot_map() {
         err.contains("1 executed lines outside any definition"),
         "the unmappable line is counted, never silently dropped:\n{err}"
     );
+}
+
+/// Every retained trace record, keyed by the trace id inside it. The file
+/// name is a hash of that id, so the id is read out rather than derived.
+fn retained_traces(dir: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    let Ok(entries) = std::fs::read_dir(dir.join(".grid/traces")) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "json") {
+            continue;
+        }
+        let bytes = std::fs::read(&path).expect("read retained trace");
+        let record: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("a retained trace parses");
+        let id = record["trace"]["trace_id"]
+            .as_str()
+            .expect("a retained trace names its id")
+            .to_owned();
+        out.insert(id, bytes);
+    }
+    out
+}
+
+/// A coverage.py `coverage json` report over one file's executed lines.
+fn coverage_json(files: &[(String, &[u32])]) -> String {
+    let files: serde_json::Map<String, serde_json::Value> = files
+        .iter()
+        .map(|(path, lines)| (path.clone(), json!({ "executed_lines": lines })))
+        .collect();
+    json!({ "meta": { "version": "7.6.1" }, "files": files, "totals": {} }).to_string()
+}
+
+#[test]
+fn coverage_json_and_lcov_map_the_same_lines_to_the_same_observations() {
+    // The two ingestion paths share the line-to-definition mapping and
+    // nothing else, so the same executed lines must produce the same
+    // observations. Anything else means one of the parsers is inventing.
+    let dir = repo();
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let b = format!("{}/b.py", dir.path().display());
+
+    let lcov = format!("TN:\nSF:{b}\nDA:1,1\nDA:2,1\nend_of_record\n");
+    std::fs::write(dir.path().join("cov.lcov"), lcov).expect("write");
+    let out = grid(
+        dir.path(),
+        &["trace", "ingest", "--lcov", "cov.lcov", "--test", "t"],
+    );
+    assert_eq!(code(&out), 0, "stderr:\n{}", stderr(&out));
+
+    std::fs::write(dir.path().join("cov.json"), coverage_json(&[(b, &[1, 2])])).expect("write");
+    let out = grid(
+        dir.path(),
+        &[
+            "trace",
+            "ingest",
+            "--coverage-json",
+            "cov.json",
+            "--test",
+            "t",
+        ],
+    );
+    assert_eq!(code(&out), 0, "stderr:\n{}", stderr(&out));
+
+    let retained = retained_traces(dir.path());
+    let load = |id: &str| -> serde_json::Value {
+        serde_json::from_slice(
+            retained
+                .get(id)
+                .unwrap_or_else(|| panic!("{id} retained, of {:?}", retained.keys())),
+        )
+        .expect("parse")
+    };
+    // The ids differ by design — one names the format that produced it —
+    // and everything the chart was asked about is identical.
+    let (lcov, cov) = (load("trace:lcov:t"), load("trace:cov:t"));
+    assert_eq!(
+        lcov["trace"]["observations"], cov["trace"]["observations"],
+        "the same executed lines are the same observations"
+    );
+    assert_eq!(lcov["hops"], cov["hops"], "and the same resolved hops");
+    // Both were mapped against the live chart, and both say which one.
+    assert!(
+        lcov["trace"]["snapshot"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("snap:b3:")),
+        "an ingested trace pins the snapshot it was mapped against: {}",
+        lcov["trace"]
+    );
+    assert_eq!(lcov["trace"]["snapshot"], cov["trace"]["snapshot"]);
+}
+
+#[test]
+fn a_coverage_report_counts_what_the_chart_cannot_place() {
+    // Conservatism: a file the chart does not hold and a line inside no
+    // definition are both reported. An ingestion that quietly dropped them
+    // would claim a smaller reach set than the report describes, with
+    // nothing on stderr to say so.
+    let dir = repo();
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let root = dir.path().display();
+    std::fs::write(
+        dir.path().join("cov.json"),
+        coverage_json(&[
+            (format!("{root}/b.py"), &[1, 2, 9]),
+            (format!("{root}/vendor/nope.py"), &[1]),
+        ]),
+    )
+    .expect("write");
+    let out = grid(
+        dir.path(),
+        &[
+            "trace",
+            "ingest",
+            "--coverage-json",
+            "cov.json",
+            "--test",
+            "t",
+        ],
+    );
+    assert_eq!(code(&out), 0, "stderr:\n{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains("1 executed lines outside any definition"),
+        "the line inside no definition is counted:\n{err}"
+    );
+    assert!(
+        err.contains("1 files not in the chart"),
+        "the file the chart does not hold is counted:\n{err}"
+    );
+}
+
+#[test]
+fn a_malformed_coverage_report_is_bad_input_not_an_empty_trace() {
+    // Conservatism: the failure mode that matters is a parse error read as
+    // "this test reached nothing", which would retain a trace claiming a
+    // test covers no definition at all.
+    let dir = repo();
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    for report in ["not json at all", "{\"files\": [1, 2, 3]}", "{}"] {
+        std::fs::write(dir.path().join("cov.json"), report).expect("write");
+        let out = grid(
+            dir.path(),
+            &[
+                "trace",
+                "ingest",
+                "--coverage-json",
+                "cov.json",
+                "--test",
+                "t",
+            ],
+        );
+        assert_eq!(
+            code(&out),
+            2,
+            "a report grid cannot parse is bad input: {report}\n{}",
+            stderr(&out)
+        );
+        assert!(
+            !retained_traces(dir.path()).contains_key("trace:cov:t"),
+            "and retains nothing: {report}"
+        );
+    }
+}
+
+#[test]
+fn ingesting_the_same_coverage_report_twice_retains_one_trace() {
+    // C2's shape for ingestion: a trace id names a run, so re-reporting the
+    // same run replaces rather than accumulates, byte for byte.
+    let dir = repo();
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    std::fs::write(
+        dir.path().join("cov.json"),
+        coverage_json(&[(format!("{}/b.py", dir.path().display()), &[1, 2])]),
+    )
+    .expect("write");
+    let args = [
+        "trace",
+        "ingest",
+        "--coverage-json",
+        "cov.json",
+        "--test",
+        "t",
+    ];
+    assert_eq!(code(&grid(dir.path(), &args)), 0);
+    let first = retained_traces(dir.path());
+    assert_eq!(code(&grid(dir.path(), &args)), 0);
+    let second = retained_traces(dir.path());
+    assert_eq!(first.len(), 1, "one report is one retained trace");
+    assert_eq!(first, second, "ingesting it again changes not one byte");
 }
 
 #[test]

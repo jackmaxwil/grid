@@ -128,8 +128,41 @@ grid gate plan.json                          # did the change match the promise
 Rules of the road: trust the refusals — an empty answer means "cannot
 prove", not "does not exist"; use `name@datumprefix` handles to pin
 identity across turns; on `conflict`, re-read the `now` coordinate and
-retry the whole request. Coverage closes the loop with no tracer:
-`grid trace ingest --lcov cov.lcov --test <name>`, then `grid suspects`.
+retry the whole request.
+
+### Coverage closes the loop, with no tracer
+
+Grid instruments nothing. The runner produces a coverage report, grid maps
+its executed lines onto definitions, and the result is one `observed` edge
+per definition the test reached — which is what `grid suspects` ranks over,
+and what selection and attribution read. One report is one test, so the
+recipes below produce one report per test.
+
+Rust, per test (`cargo llvm-cov` is your toolchain, not grid's):
+
+```bash
+# per test name $t, from `cargo nextest list`
+cargo llvm-cov nextest --lcov --output-path cov.lcov -E "test(=$t)"
+grid trace ingest --lcov cov.lcov --test "$t"
+```
+
+One export per test is not an oversight: a single profile cannot be
+attributed back to tests that shared a process, and nextest's process per
+test is what makes the loop correct at all.
+
+Python, one run and then one report per test — the contexts are already in
+coverage.py's data file, so nothing reruns:
+
+```bash
+pytest --cov --cov-context=test
+# per test node id $t
+coverage json --contexts="$t" -o cov.json
+grid trace ingest --coverage-json cov.json --test "$t"
+```
+
+Either way the trace records the snapshot it was mapped against, and every
+executed line grid could not place — a file the chart does not hold, a line
+inside no definition — is counted on stderr rather than dropped.
 
 ## Architecture
 
