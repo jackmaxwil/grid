@@ -4,6 +4,10 @@
 //! these are the named attacks, kept as regressions so a refactor cannot
 //! quietly re-open one. Every case must produce a typed `ChartError`, never a
 //! panic and never a `Segment` whose accessors could read out of bounds.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use grid_chart::{build, ChartError, DatumId, Def, Edge, Ordinal, Section, Segment, HEADER_LEN};
 use grid_wire::{Grade, Lang, Relation};
 

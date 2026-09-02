@@ -18,3 +18,9 @@ rustpython-ast = { version = "0.4", default-features = false, features = ["num-b
 
 [dev-dependencies]
 proptest = "1"
+
+# Named nowhere in this crate's source: the AST types are reached through
+# `rustpython_parser::ast`, and this entry exists to turn on the `fold` and
+# `visitor` features the extractor's Fold and Visitor impls need.
+[package.metadata.cargo-machete]
+ignored = ["rustpython-ast"]

@@ -1,5 +1,9 @@
 //! Store behaviour: epoch swap, D5 idempotence, and refusal to open a store
 //! whose bytes no longer match its manifest.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use grid_chart::{build, DatumId, Def, Edge};
 use grid_chart_io::{Store, StoreError, MANIFEST};
 use grid_wire::{Grade, Lang, Relation};

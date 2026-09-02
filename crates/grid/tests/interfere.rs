@@ -4,6 +4,10 @@
 //! The worktrees are real because the thing under test is exactly what two
 //! parallel sessions do to each other: git merges text, and the finding this
 //! verb exists for is one where the two sides share no file at all.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 

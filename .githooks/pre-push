@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Full tier. git feeds the refs being pushed on stdin as
+# "<local ref> <local sha> <remote ref> <remote sha>". Ported from yi's scripts/hooks/pre-push,
+# without its release-tag arm: grid has no release pipeline.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+# See pre-commit: a hook's children inherit git's repository context, and grid's tests shell
+# out to git against their own fixtures.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_QUARANTINE_PATH GIT_EDITOR
+
+zero='0000000000000000000000000000000000000000'
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main)
+      if [ "$local_sha" = "$zero" ]; then
+        echo "pre-push: refusing to delete main"
+        exit 1
+      fi
+      # A rewrite of published history is the shape that eats other people's work. An
+      # ancestor check catches it without asking git whether --force was typed, which it
+      # does not tell a hook.
+      if [ "$remote_sha" != "$zero" ] && ! git merge-base --is-ancestor "$remote_sha" "$local_sha"; then
+        echo "pre-push: refusing a non-fast-forward push to main"
+        echo "  remote $remote_sha is not an ancestor of $local_sha"
+        echo "  reconcile first: git fetch && git rebase origin/main"
+        exit 1
+      fi
+      ;;
+  esac
+done
+
+just prepush

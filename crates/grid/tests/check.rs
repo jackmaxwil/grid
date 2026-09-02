@@ -3,6 +3,10 @@
 //!
 //! Every fixture is a real repository surveyed by the real frontends, so
 //! every section here is the one the standalone verb would print.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::fmt::Write as _;
 use std::path::Path;
 use std::process::{Command, Output};

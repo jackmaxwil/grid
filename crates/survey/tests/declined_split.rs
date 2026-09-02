@@ -5,6 +5,10 @@
 //! is a hole no static rule closes, and a name this tree could have held is a
 //! hole in exactly what `grid drift` claims. This suite pins the split, and
 //! pins that a method call still buys no edge.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::path::Path;
 
 use grid_survey::{run, Cache, Survey};

@@ -5,6 +5,16 @@
 //! compile inside them stays fast; cargo is spawned exactly as the verb
 //! spawns it, because a fake compile would leave the one claim this verb
 //! makes — "the compiler did not see this" — untested.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr
+)]
 use std::path::Path;
 use std::process::{Command, Output};
 

@@ -5,6 +5,10 @@
 //! establish. The point of the verb is the case where nothing was retained —
 //! the test passed at the last snapshot and fails now — so none of these
 //! fixtures seeds a trace or a verdict.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::Path;

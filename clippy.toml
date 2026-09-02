@@ -1,0 +1,6 @@
+# The workspace denies unwrap/expect/panic. An assertion is what a test is
+# for, so the three are allowed there and nowhere else; build scripts and
+# examples carry their own crate-root allow with the reason at the site.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

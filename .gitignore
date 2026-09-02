@@ -16,3 +16,5 @@ target/
 !.grid/plans/
 .grid/plans/*
 !.grid/plans/*.json
+
+__pycache__/

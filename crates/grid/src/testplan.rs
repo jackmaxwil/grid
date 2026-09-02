@@ -372,7 +372,7 @@ pub fn compute<B: AsRef<[u8]>>(inputs: &Inputs<'_, B>) -> TestPlan {
         mut reached_tests,
     } = sort_tests(inputs, &resolver, reached.as_ref(), &traced);
 
-    // Uncovered: `C` minus what the reached tests can reach. Only reached
+    // The uncovered set is `C` minus what reached tests reach. Only reached
     // tests need walking — an unreached test reaches nothing in `C`, or the
     // inbound walk would have found it. A test that was itself edited walks
     // from its old self, which is the one base's edges leave from, and

@@ -1,4 +1,4 @@
-//! Covenants: coupling a human declares because no language establishes it.
+//! A covenant is coupling a human declares that no language establishes.
 //!
 //! The serde boundary, the JSON contract, the Python dict a Rust struct
 //! deserializes — grid can prove none of these, and until now had nowhere to

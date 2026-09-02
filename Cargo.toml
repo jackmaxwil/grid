@@ -24,10 +24,38 @@ unsafe_code = { level = "forbid", priority = -1 }
 # `cargo kani` sets this cfg; a plain build must not warn about proof harnesses.
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
+# Grid publishes no crate: `pub` means "visible to the next crate up", so a
+# doc naming a private item is normal here and the lint is a library concern.
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "allow"
+
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
+# The panic budget at compile time; clippy.toml exempts tests, where an
+# assertion is the point. A grep cannot see through macros and cfg, so this is
+# the whole enforcement — grid runs no second script behind it.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+# stdout is the CLI's product and nobody else's: a library that prints has no
+# caller who asked for it. The two binary roots allow it at their crate root.
+print_stdout = "deny"
+print_stderr = "deny"
 
 [profile.release]
 lto = true
 codegen-units = 1
+
+# Dependencies carry no debuginfo and grid's own crates carry line tables only:
+# generating it and linking it into every test binary is a large share of the
+# gate's wall clock, and nobody reads a backtrace through syn's frames.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

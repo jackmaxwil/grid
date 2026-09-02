@@ -3,6 +3,10 @@
 //! and so is a default *value* — changing one silently changes every caller
 //! that omits the argument, which is precisely the hidden drift the sig
 //! exists to name.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use grid_lang_py::definitions;
 
 fn ids(src: &str) -> (String, String, String) {

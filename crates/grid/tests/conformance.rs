@@ -5,6 +5,10 @@
 //! proves the *daemon* does: same JSON in, a response whose shape the contract
 //! accepts out, over a unix socket with newline framing. A method that only
 //! works when called in-process is not served.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;

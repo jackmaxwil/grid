@@ -2,6 +2,11 @@
 //! it is killed. `tests/crash_safety.rs` spawns it, `kill -9`s it at a random
 //! instant, and reopens the store — which must always be valid (plan Wave 4:
 //! crash-safety is structural, not recovered).
+
+// A test fixture, not shipped code: it is spawned only by crash_safety.rs and
+// its whole job is to die, so an unmet precondition should abort it loudly.
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::print_stdout)]
+
 use std::path::PathBuf;
 
 use grid_chart::{build, DatumId, Def, Edge};

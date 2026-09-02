@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# The subject rule at the moment the subject is written. check_commit_style.py otherwise
+# judges commits that already exist (`HEAD --not origin/main`), so a bad subject is caught
+# one commit late or at push — after it is in history and needs a rebase to come out. The
+# composition rule and the trailer rule still belong there, because both need the commit.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+subject=$(sed -n '1p' "$1")
+# An empty or comment-only message: git aborts the commit itself, and a hook that speaks
+# first would only obscure that.
+case "$subject" in '' | '#'*) exit 0 ;; esac
+exec python3 scripts/guardrails/check_commit_style.py --title "$subject" --label commit_msg

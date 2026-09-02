@@ -5,6 +5,10 @@
 //! image extended one snapshot at a time is byte-identical to one rebuilt
 //! from the whole chain; and a snapshot the chain has never held is a typed
 //! refusal, never an empty diff.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use grid_chart::{build, Change, DatumId, Def, DefFacts, Membership, MembershipError};
 use grid_chart_io::Store;
 

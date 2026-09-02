@@ -5,6 +5,10 @@
 //! three hops is in here" from "the walk stopped mid-layer and even depth 1
 //! may be short". The first is usable — a bounded blast radius, a scope pack
 //! that admits its horizon — and the second is not.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use grid_chart::{build, DatumId, Def, Edge, Segment};
 use grid_walk::fuel::Budget;
 use grid_walk::graph::{Direction, Ordinal};

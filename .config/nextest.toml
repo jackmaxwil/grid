@@ -1,0 +1,23 @@
+# Ported from yi's .config/nextest.toml for the same reason it exists there, minus its
+# retries. A test that fails once and passes on retry is reported as passed, which is
+# exactly the failure AGENTS.md tells a reader to attribute rather than shrug at: "a test
+# that fails inside the full suite and passes standalone is a race, not your diff". C11 is
+# a claim *about* a race. There is no such thing as a flake here, so there is no retry.
+[profile.default]
+retries = 0
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+# Every test in these binaries spawns the built `grid` as a child, and that child opens a
+# store and may boot a daemon. Turned loose in one global pool they oversubscribe the
+# machine and blow the slow-timeout. The cap is a scheduling bound, not a coverage one —
+# every test still runs. Raise it when the runners grow.
+#
+# The conformance entry is a binary *id* rather than a bare name: `binary(conformance)`
+# also matched crates/wire/tests/conformance.rs, an in-process test that spawns nothing,
+# and capped it into the three-thread group for no reason.
+[test-groups]
+subprocess = { max-threads = 3 }
+
+[[profile.default.overrides]]
+filter = 'binary_id(grid::conformance) + binary(porcelain) + binary(check) + binary(compile) + binary(compat) + binary(interfere) + binary(drift) + binary(edit_apply) + binary(attribution) + binary(pack) + binary(wave10) + binary(crash_safety)'
+test-group = 'subprocess'

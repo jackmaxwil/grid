@@ -1,50 +1,129 @@
 name: grid-gate
 
-# Grid lives in its own repo (apex/grid); this workflow is the whole gate.
-# packages/grid/** in the monorepo is gitignored, so buildhost's workspace-gate
-# never sees grid content — a grid PR runs exactly this workflow.
+# Grid lives in its own repo (apex/grid); this workflow is the whole gate, and it is the
+# only one. packages/grid/** in the monorepo is gitignored, so buildhost's workspace-gate
+# never sees grid content — a grid PR runs exactly this file. There is no GitHub twin: that
+# remote's push URL is `no_push`, so a second copy of the gate there could only drift.
+# `permissions:` blocks are omitted because Forgejo ignores them.
+#
+# The job names are a contract. Branch protection on `main` requires six exact status
+# contexts on `pull_request` — assurance, build-test, chart-io-sanitizers, deny,
+# fault-injection, fuzz-build. A job renamed, or moved off the `pull_request` event, never
+# reports its context and no pull request can merge again. Make a heavy job cheaper inside
+# the job; never by taking it off the event.
+#
+# Every lane job is a thin caller of the justfile the git hooks already run: the rules live
+# in one place or the file becomes a second copy of them.
+
 on:
   pull_request:
   push:
     branches: [main]
 
 jobs:
+  # The three lanes of `just check`. None depends on another, so the gate pays the longest
+  # rather than the sum, and `just lane` carries the invariant that the gate regenerated
+  # nothing into each one — which matters here because crates/wire and the guardrail
+  # baselines are generated files.
+  #
+  # Three named jobs rather than a matrix: a matrix leg reports as `gate (test)`, and
+  # branch protection asks for `build-test`.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # `rustup show` installs whatever rust-toolchain.toml pins, so the version lives in
+      # one file rather than in every workflow.
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: lint
+          cache-on-failure: true
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: just lane lint
+
+  guardrails:
+    runs-on: ubuntu-latest
+    steps:
+      # check_commit_style.py resolves origin/main and refuses to pass blind on a shallow
+      # clone, so the full history is the gate's precondition.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: guardrails
+          cache-on-failure: true
+      # The aggregator announces a missing optional tool rather than failing on it, so that
+      # a fresh clone can make `just check` green. That makes these installs load-bearing
+      # rather than polite: without them the checks would quietly stop running on the one
+      # estate that runs them.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-deny,cargo-machete
+      - run: pipx install codespell
+      # Determinism smoke (plan Wave 2 accept): hashing a real tree twice must agree, and
+      # the repo itself is the corpus grid always has.
+      - env:
+          GRID_CORPUS: ${{ github.workspace }}
+        run: just lane guardrails
+
   build-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.94.0"
-          components: clippy, rustfmt
+          fetch-depth: 0
+      - run: rustup show
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace
-      - run: cargo test --workspace
-        # Determinism smoke (plan Wave 2 accept): hashing a real tree twice
-        # must agree. The repo itself is the corpus grid always has.
-        env:
+        with:
+          shared-key: test
+          cache-on-failure: true
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-nextest
+      - env:
           GRID_CORPUS: ${{ github.workspace }}
-      - run: cargo clippy --workspace -- -D warnings
-      - run: cargo fmt --check
+        run: just lane test
 
-  # Fuzz targets are code: they must keep compiling even when nothing fuzzes
-  # them in PR time. A rotting target is a claim with no evidence behind it.
+  # The guardrails lane runs `cargo deny check` as well. This job exists because branch
+  # protection names the context, and it costs one prebuilt action rather than a compile.
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # Fuzz targets are code: they must keep compiling even when nothing fuzzes them in PR
+  # time. A rotting target is a claim with no evidence behind it.
   fuzz-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
+      # This step was `taiki-e/install-action` with `tool: cargo-fuzz` for one run, to stop
+      # compiling the tool from source on every pull request. It failed on this runner in
+      # 18 s while the same action installed `just`, `cargo-deny`, `cargo-machete` and
+      # `cargo-nextest` green on four other jobs in the same run, and this Forgejo build
+      # exposes no job logs over its API, so the cause could not be attributed. A from-
+      # source install that works beats a prebuilt one that does not; revisit with the log
+      # in hand (docs/TODOS.md T-40).
+      - run: cargo install cargo-fuzz --locked
       # rust-toolchain.toml pins 1.94.0, so `cargo` alone is stable even after
       # the nightly install; fuzz needs the nightly explicitly.
-      - run: cargo install cargo-fuzz --locked
       - run: cargo +nightly fuzz build normalize
       - run: cargo +nightly fuzz build references
       - run: cargo +nightly fuzz build segment
 
-  # C1 evidence: the one unsafe block in grid, under the tools that can see
-  # through it. MIRI interprets everything except the mmap itself; ASan runs
-  # the real mapping against the real allocator.
+  # C1 evidence: the one unsafe block in grid, under the tools that can see through it.
+  # MIRI interprets everything except the mmap itself; ASan runs the real mapping against
+  # the real allocator. One job, so both steps share one cache.
   chart-io-sanitizers:
     runs-on: ubuntu-latest
     steps:
@@ -53,41 +132,41 @@ jobs:
         with:
           components: miri, rust-src
       - uses: Swatinem/rust-cache@v2
-      # MIRI cannot execute mmap, so it runs the byte-interpretation crate —
-      # which is where an adversarial image would actually cause UB.
-      # The adversarial suite is the whole attack surface in one binary;
-      # proptest under MIRI is minutes of interpreter for the same coverage.
-      - run: cargo +nightly miri test -p grid-chart --test adversarial
-        env:
-          MIRIFLAGS: -Zmiri-strict-provenance
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      # MIRI cannot execute mmap, so it runs the byte-interpretation crate — which is where
+      # an adversarial image would actually cause UB. The adversarial suite is the whole
+      # attack surface in one binary; proptest under MIRI is minutes of interpreter for the
+      # same coverage. `just miri` is the recipe a developer runs, so CI runs that.
+      - run: just miri
       - run: cargo +nightly test -p grid-chart-io --target x86_64-unknown-linux-gnu
         env:
           RUSTFLAGS: -Zsanitizer=address
           RUSTDOCFLAGS: -Zsanitizer=address
 
-  # Crash safety is a claim about a race, so it is evidenced by running the
-  # race many times, not by argument. PR time runs a short loop (in the normal
-  # test job); this is the soak.
+  # Crash safety is a claim about a race, so it is evidenced by running the race many
+  # times, never by argument.
   fault-injection:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.94.0"
+      - run: rustup show
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p grid-chart-io --release --test crash_safety -- --nocapture
-        env:
-          GRID_FAULT_ITERS: "10000"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      # Branch protection requires this context on every pull request, so the job stays on
+      # the event and gets cheaper inside it instead: 500 kill-9 rounds at PR time against
+      # the full 10 000 on the push to main. `just soak` defaults the count rather than
+      # hard-coding it, so a person still gets the whole soak by typing the recipe.
+      - env:
+          GRID_FAULT_ITERS: ${{ github.event_name == 'push' && '10000' || '500' }}
+        run: just soak
 
-  deny:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
-
-  # C5 evidence: no unsafe outside chart-io, and chart-io is the only crate
-  # permitted to ever contain it.
+  # C5 evidence: no unsafe outside chart-io, and chart-io is the only crate permitted to
+  # ever contain it. Its own job so it reports separately, even though the guardrails lane
+  # runs both scripts as well.
   assurance:
     runs-on: ubuntu-latest
     steps:
@@ -96,6 +175,22 @@ jobs:
         run: ./scripts/check-unsafe-confined.sh
       - name: ASSURANCE.md claims all have evidence links
         run: ./scripts/check-assurance-links.sh
+
+  # The title is judged by the same rule the commit subjects are, and only CI can see it:
+  # it exists nowhere in the tree the local hook scans. Guarded to pull requests because on
+  # a push PR_TITLE is empty, the script falls through to range mode, `HEAD --not
+  # origin/main` is empty, and it prints `ok commit_style (0 commits)` — a vacuous pass and
+  # a wasted runner.
+  title:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: python3 scripts/guardrails/check_commit_style.py
 
   # From wave 3 on, grid gates its own PRs: the plan's ground rule, and the
   # best corpus we own. The plan is hand-written in .grid/plans and names
@@ -112,10 +207,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.94.0"
+      - run: rustup show
+      # The debug artifacts the test lane just built, rather than a fourth cold cache.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
       - name: grid gates grid
         # No `ls`: the step shell is `bash -e -o pipefail`, so a glob that
         # matches nothing reaches GNU ls as a literal, ls exits 2, and the

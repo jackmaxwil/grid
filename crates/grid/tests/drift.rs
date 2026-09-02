@@ -7,6 +7,10 @@
 //! establish. A fabricated segment could assert a cross-language proven edge;
 //! the survey cannot produce one, and a fixture that pretended otherwise
 //! would be testing the test.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::path::Path;
 use std::process::{Command, Output};
 

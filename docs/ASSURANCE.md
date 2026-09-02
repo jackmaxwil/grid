@@ -5,10 +5,10 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 
 | claim | statement | evidence | wave |
 |---|---|---|---|
-| C1 | no input to `chart-io` causes UB | segment.rs adversarial.rs + ci:miri+asan | 4 |
-| C2 | same (source, epoch) ⇒ same bytes | determinism.rs store.rs corpus.rs + incremental≡full | 4–5 |
-| C3 | every walk terminates within fuel | proofs.rs walk.rs + ci:kani | 9 |
-| C4 | no cache hit without established closure | closure.rs (cache) conformance.rs | 7 |
+| C1 | no input to `chart-io` causes UB | segment.rs adversarial.rs + ci:chart-io-sanitizers | 4 |
+| C2 | same (source, epoch) ⇒ same bytes | determinism.rs store.rs corpus.rs | 4–5 |
+| C3 | every walk terminates within fuel | proofs.rs walk.rs | 9 |
+| C4 | no cache hit without established closure | closure.rs conformance.rs | 7 |
 | C5 | two writers only (survey, edit.apply); unsafe confined to `chart-io` | check-unsafe-confined.sh | 0+ |
 | C6 | a datum ignores formatting, comments and local renaming; `span_hash` does not | properties.rs determinism.rs | 2 |
 | C7 | the normalizer never panics on arbitrary bytes and never disagrees with itself | normalize.rs | 2+ |
@@ -58,7 +58,24 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 | C44 | a method-call edge is emitted only from a receiver whose type the file states or grid infers from a constructor, literal, or written return; it is proven only where the written receiver form matches the inherent method's at the first lookup step of a plain impl, modeled otherwise, and declined with a stated reason wherever any trait grid can see supplies the method, the impl is bounded or instantiated, the type is a wrapper, or the receiver is a closure or pattern binding; rustc's own binding, observed by running the fixture, agrees with every emitted edge; a receiver typed outside the tree counts `external` unless the tree implements its own trait for that type | receivers.rs refs.rs declined_split.rs | 10+ |
 | C45 | every definition's declined split (segment epoch 5) sums to the survey's repo-wide counters, column by column, with module-level references in neither; `refused ≤ method` per definition; a counter saturates at `u16::MAX` and the survey reports it, never wraps; and a pre-epoch-5 snapshot answers *unknown*, never zero | epochs.rs adversarial.rs declined_split.rs | 10+ |
 | C46 | `self::` and `super::` inside an inline module anchor against that module in `use` declarations and paths — `self::x` is the module's `x`, `super::x` climbs one inline module per `super` and then the file's own module path; a shadowed name resolves to the inline module's item, never the file's; a file with no inline module extracts byte-identically to before | refs.rs rust_edges.rs determinism.rs | 10+ |
+| C47 | every file `scripts/gen-wire.py` writes — `crates/wire/src/lib.rs` and `methods.rs` — is byte-identical to what it writes from `docs/wire-v1.openrpc.json` and `rustfmt` then normalizes, so a hand edit to a generated file and a contract change whose regeneration was never run both fail the gate rather than shipping as a wire the daemon and its callers disagree about; `errors.rs` is hand-written and outside the generator's reach, and this row says so rather than claiming a coverage it does not have; the check regenerates into a scratch tree and never writes the working tree at all, and its own `--selfcheck` renames a wire method to prove the comparison is not blind | check_wire_drift.py | 1+ |
 
+
+## What CI does and does not run
+
+An evidence token of the form `ci:<job>` names a job in
+`.forgejo/workflows/grid-gate.yml`, and `scripts/check-assurance-links.sh`
+resolves it there. Forgejo is the only estate: the GitHub remote's push URL is
+`no_push`, so a job that exists only in a `.github/` workflow runs nowhere and
+is not evidence.
+
+**C3 has no CI evidence and its row no longer claims any.** The Kani harnesses
+in `crates/walk/src/proofs.rs` and `crates/chart/src/proofs.rs` are real and
+`just verify` runs them, but no CI job anywhere has ever run Kani for grid —
+the `proofs` job that claimed to was written into `.github/workflows/`, on the
+estate that never runs. Until a Forgejo job exists, C3's evidence is the
+harness and the developer who ran it, which is what the row now says. Adding
+that job is a row in `docs/TODOS.md`, not a line of prose here.
 
 ## Maintained views
 
@@ -186,3 +203,15 @@ that moves normalization is a declared epoch bump, never a silent re-hash.
   column is parsed by `grid-chart`'s validate-then-accept path. The one
   test that runs a compiler (`receivers.rs`, rustc as the oracle) runs the
   `cargo` that is running the test.
+
+- Tooling (`docs/TOOLING.md`): **no packages at all, runtime or dev.** The
+  harness ported from yi adds only binaries that live on `PATH` and are
+  announced when absent — `codespell`, `cargo-deny`, `cargo-machete`,
+  `cargo-nextest`, `cargo-fuzz`, `kani` — plus Python scripts that import the
+  standard library and nothing else. A dev-dependency would still be a package
+  in `Cargo.lock`, and the lockfile is the thing this rule protects: `git diff`
+  on it is empty across the whole port. `deny.toml`'s named ban list is this
+  paragraph made mechanical, with `wildcards = "deny"` and
+  `multiple-versions = "deny"` covering what the list did not think to name; a
+  package that gets past both still arrives as a `Cargo.lock` line in the diff
+  of the pull request that adds it.

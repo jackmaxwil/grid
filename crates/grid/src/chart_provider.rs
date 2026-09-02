@@ -5,9 +5,8 @@
 //! the gate. This provider answers from the surveyed chart instead, so a
 //! promise about a call is checked against the call.
 //!
-//! It implements the same [`DeltaProvider`] trait, which is why nothing above
-//! it changed: [`crate::provider`] designed the seam and this is what slid
-//! into it.
+//! It implements the same [`grid_gate::DeltaProvider`] trait, which is why
+//! nothing above it changed: the gate designed the seam and this slid in.
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

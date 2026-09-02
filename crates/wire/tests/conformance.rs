@@ -1,5 +1,9 @@
 //! D7 conformance: every example in wire-v1.openrpc.json round-trips through
 //! the generated types byte-canonically; a mutated example fails.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use serde_json::{json, Map, Value};
 

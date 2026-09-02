@@ -5,6 +5,10 @@
 //! like a slow one. What a test can show is that the budget is *respected*:
 //! the counters in the result never exceed the fuel, on graphs including the
 //! cyclic and densely connected ones where an unguarded BFS would not return.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use grid_chart::{build, DatumId, Def, Edge, Segment};
 use grid_walk::fuel::{Budget, DEFAULT_MAX_HOPS, DEFAULT_MAX_NODES};

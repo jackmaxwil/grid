@@ -3,6 +3,10 @@
 //!
 //! Every test runs the real binary against a throwaway git repo: the write
 //! path is filesystem-shaped, so the tests are too.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::Path;
 use std::process::{Command, Output};

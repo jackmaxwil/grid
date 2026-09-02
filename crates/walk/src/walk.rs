@@ -16,7 +16,8 @@
 //!    counter that never grows; the loop exits when it refuses.
 //! 3. Every layer charges [`Budget::take_hop`], likewise.
 //!
-//! The Kani harnesses in [`crate::proofs`] prove (2) and (3) over a symbolic
+//! The Kani harnesses in `proofs.rs` (compiled only under `cfg(kani)`, so
+//! rustdoc cannot link them) prove (2) and (3) over a symbolic
 //! graph: no sequence of steps, however adversarial the edges, re-enters the
 //! loop with a budget that did not strictly decrease.
 //!
@@ -89,8 +90,8 @@ pub enum Status {
     Aground,
 }
 
-/// The result of a walk over ordinals. Rendering to wire types is
-/// [`crate::render`]'s job; this is the pure graph answer.
+/// The result of a walk over ordinals. Rendering to wire types is the
+/// caller's job, in `grid`; this is the pure graph answer.
 #[derive(Debug, Clone)]
 pub struct Walk {
     /// Why it stopped.

@@ -4,6 +4,16 @@
 //! CI greps this output and branches on these exit codes, so both are as much
 //! a contract as the wire is. Every assertion here is something a caller is
 //! entitled to rely on.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr
+)]
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -1734,9 +1744,19 @@ fn grid_test_runs_the_inventory_and_exits_three_on_a_red_test() {
     assert!(stderr(&out).contains("2 passed"), "runner output on stderr");
 
     // A red test: exit 3, and the outcome row says so.
+    //
+    // Incident: this rewrite used to be `return 5`, the same byte count as the
+    // `return 2` it replaced. CPython validates a cached bytecode file against
+    // the source's (mtime, size) at one-second resolution, and Apple's system
+    // python keeps that cache outside the tree entirely
+    // (`sys.pycache_prefix`), so when the rewrite landed in the same second as
+    // the first run pytest re-imported the *old* module, `b()` still returned
+    // 2, the red test came back green and `grid test` exited 0. One extra
+    // digit changes the size, which invalidates the cache whatever the clock
+    // says. Found by setting nextest `retries = 0`, which stopped hiding it.
     std::fs::write(
         dir.path().join("pkg/core.py"),
-        "def a():\n    return 1\n\n\ndef b():\n    return 5\n",
+        "def a():\n    return 1\n\n\ndef b():\n    return 55\n",
     )
     .expect("write");
     let out = grid(dir.path(), &["test", "--json"]);

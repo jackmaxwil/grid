@@ -5,6 +5,10 @@
 //! `#[cfg(test)]` modules inside `src/suspects.rs` and `src/bisect.rs`, since
 //! `grid` is a bin-only crate; those fixtures are algorithm fixtures and are
 //! not evidence of accumulated production CI history.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::process::Command;
 

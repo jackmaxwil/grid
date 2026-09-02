@@ -2,7 +2,7 @@
 //!
 //! A *segment* is a self-describing, immutable byte image: interned datum
 //! ordinals, callsigns, and edges in CSR form in both directions. It is built
-//! by [`build`] and read back by [`Segment::parse`], which validates every
+//! by [`build()`] and read back by [`Segment::parse`], which validates every
 //! structural claim the image makes about itself *before* any accessor can
 //! observe it — a parsed [`Segment`] is a proof that all its indexes are in
 //! bounds and monotone.
@@ -11,7 +11,7 @@
 //! this crate decides what they mean. The split is what keeps the C1 blast
 //! radius to one crate — an adversarial image can only reach validation code.
 //!
-//! Determinism (claim C2): [`build`] sorts and dedups its inputs, so the same
+//! Determinism (claim C2): [`build()`] sorts and dedups its inputs, so the same
 //! (defs, edges) set is the same bytes on every machine, and a snapshot id is
 //! therefore a pure function of content.
 mod build;

@@ -4,6 +4,10 @@
 //! The batch protocol is positional, so the failure it can have that the old
 //! per-file spawns could not is *desync*: an answer read onto the wrong path.
 //! Every test here is aimed at that.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::path::Path;
 use std::process::Command;
 
