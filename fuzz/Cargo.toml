@@ -5,6 +5,9 @@ edition = "2021"
 publish = false
 license = "Proprietary"
 
+[package.metadata]
+cargo-fuzz = true
+
 # Own workspace: cargo-fuzz builds with nightly and its own lock.
 [workspace]
 

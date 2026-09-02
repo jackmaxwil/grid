@@ -102,6 +102,9 @@ jobs:
   # its human override producer for the case where a grid bug blocks a grid
   # fix.
   self-gate:
+    # A grid PR carries a track; a push to main carries none, so this job
+    # only means something on pull requests.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
