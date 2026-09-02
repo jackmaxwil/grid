@@ -713,20 +713,8 @@ fn covenant_verb(args: &[&str], json: bool) -> u8 {
         return exit::BAD_INPUT;
     }
     for pattern in [*a, *b] {
-        match rpc::matching(root(), pattern) {
-            Err(e) => {
-                hint(&format!("grid: {e}"));
-                return exit::INTERNAL;
-            }
-            // The `resolve` contract, restated: a name that resolves to
-            // nothing is bad input, and the hint lists the closest charted
-            // callsigns — silence was read as "does not exist", which is the
-            // one conclusion grid never licenses.
-            Ok(0) => {
-                hint(&miss(pattern));
-                return exit::BAD_INPUT;
-            }
-            Ok(_) => {}
+        if let Err(code) = charted(pattern) {
+            return code;
         }
     }
     let mut covenants = match covenant::load(root()) {
@@ -826,19 +814,8 @@ fn invariant_verb(args: &[&str], json: bool) -> u8 {
             return exit::BAD_INPUT;
         }
     };
-    match rpc::matching(root(), pattern) {
-        Err(e) => {
-            hint(&format!("grid: {e}"));
-            return exit::INTERNAL;
-        }
-        // The `resolve` contract, restated, as `grid covenant` restates it: a
-        // pattern that matches nothing is bad input with the closest charted
-        // callsigns, never a silently written rule.
-        Ok(0) => {
-            hint(&miss(pattern));
-            return exit::BAD_INPUT;
-        }
-        Ok(_) => {}
+    if let Err(code) = charted(pattern) {
+        return code;
     }
     let fresh = grid_wire::Invariant {
         // Content, not a counter: the id a violation prints is
@@ -1098,6 +1075,34 @@ fn resolve(args: &[&str], json: bool) -> u8 {
             }
             print!("{}", porcelain::refs(&defs));
             exit::OK
+        }
+    }
+}
+
+/// A declared pattern must match something in the live chart. `Err` is the
+/// exit code to leave with.
+///
+/// Three answers, and the two failing ones are different refusals. A pattern
+/// that matches nothing is bad input, restating the `resolve` contract with
+/// the closest charted callsigns: silence was read as "does not exist", which
+/// is the one conclusion grid never licenses. A store nobody has surveyed
+/// says nothing about any pattern, so it refuses with the survey to run
+/// instead of reporting the code absent — the same `Recovery` line every
+/// other missing-snapshot refusal carries (T-10).
+fn charted(pattern: &str) -> Result<(), u8> {
+    match rpc::matching(root(), pattern) {
+        Ok(0) => {
+            hint(&miss(pattern));
+            Err(exit::BAD_INPUT)
+        }
+        Ok(_) => Ok(()),
+        Err(e @ chart_provider::Error::NoSnapshot(_)) => {
+            hint(&format!("grid: {e}"));
+            Err(exit::BAD_INPUT)
+        }
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            Err(exit::INTERNAL)
         }
     }
 }

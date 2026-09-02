@@ -556,10 +556,20 @@ pub fn interfere(
 /// Zero is the answer `grid covenant` refuses on: a declaration about code that
 /// does not exist is a rule that will never fire.
 ///
+/// An unsurveyed store is not zero. It holds nothing about *any* pattern, so
+/// counting it as a miss would report the code absent on the strength of
+/// grid's own silence — the one conclusion grid never licenses — and the
+/// recovery is a survey, not an edit. It refuses instead, with the
+/// [`chart_provider::Recovery`] that names the command and the tree.
+///
 /// # Errors
+/// [`chart_provider::Error::NoSnapshot`] when nothing has been surveyed;
 /// [`chart_provider::Error`] if the store cannot be opened.
 pub fn matching(root: &std::path::Path, pattern: &str) -> Result<usize, chart_provider::Error> {
     let chart = ChartDelta::open(root)?;
+    if chart.current().is_none() {
+        return Err(chart.no_snapshot());
+    }
     Ok(live_defs(&chart)
         .into_iter()
         .filter(|(_, callsign, _, _, _)| grid_gate::pattern::matches(pattern, callsign))

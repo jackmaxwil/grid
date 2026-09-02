@@ -506,3 +506,58 @@ fn a_declaration_file_is_published_by_rename_never_truncated_in_place() {
         assert_eq!(strays, Vec::<String>::new(), "the publish left {strays:?}");
     }
 }
+
+/// T-10 + T-12, conservatism: on a store nobody has surveyed, a declaration
+/// verb names the survey rather than reporting the code absent.
+///
+/// `rpc::matching` counts matches over the live epoch, and an unsurveyed
+/// store holds none — so every pattern matched zero and was refused as
+/// "nothing is called `<x>`", which is silence read as "does not exist", the
+/// one conclusion grid never licenses. It is also the only missing-snapshot
+/// refusal on the branch that carried no `Recovery` line, and the recovery
+/// here is exactly `grid survey`. A *stale* store is the same defect: a rule
+/// declared for a type added since the last survey was refused as
+/// nonexistent.
+#[test]
+fn a_declaration_on_an_unsurveyed_store_names_the_survey() {
+    let dir = repo(
+        "#[derive(Deserialize)]\npub struct C {\n    pub a: u32,\n}\n\
+         pub fn one() -> u32 { 1 }\npub fn two() -> u32 { 2 }\n",
+        "#[derive(Deserialize)]\npub struct C {\n    pub a: u32,\n}\n\
+         pub fn one() -> u32 { 1 }\npub fn two() -> u32 { 2 }\n",
+    );
+    // Committed, never surveyed. Both verbs share `matching`, so both must
+    // answer the same way.
+    for args in [
+        vec!["invariant", "persisted", "app.C"],
+        vec!["covenant", "app.one", "app.two", "--via", "schema"],
+    ] {
+        let out = grid(dir.path(), &args);
+        assert_eq!(code(&out), 2, "{args:?}: {}", stdout(&out));
+        assert!(
+            !stderr(&out).contains("nothing is called"),
+            "{args:?}: an empty store is not an empty repository: {}",
+            stderr(&out)
+        );
+        assert!(
+            stderr(&out).contains("no snapshot published"),
+            "{args:?}: it says what is actually missing: {}",
+            stderr(&out)
+        );
+        assert!(
+            stderr(&out).contains("hint: run `grid survey` in"),
+            "{args:?}: and names the command and the tree, as T-10 requires: {}",
+            stderr(&out)
+        );
+        assert!(
+            !dir.path().join(".grid/invariants.json").exists()
+                && !dir.path().join(".grid/covenants.json").exists(),
+            "{args:?}: a refused declaration is not written"
+        );
+    }
+
+    // And once surveyed, the same call answers.
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let out = grid(dir.path(), &["invariant", "persisted", "app.C"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+}
