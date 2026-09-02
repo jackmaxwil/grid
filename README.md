@@ -34,9 +34,10 @@ grid check --quick 2>&1 | head -40 >&2
 exit 2
 ```
 
-Pre-commit runs `grid check`. CI runs `grid test --trace --all` — that is
-what refreshes the traces local selection reads — plus `grid check
---compile -- --all-targets` and `grid gate <plan>` when there is a plan.
+Pre-commit runs `grid check`. CI runs `just traces-ci` (`grid test --trace
+--all`) — that is what refreshes the traces local selection reads — plus
+`grid check --compile -- --all-targets` and `grid gate <plan>` when there is
+a plan.
 
 ## Journeys
 
@@ -150,7 +151,10 @@ grid trace ingest --coverage-json cov.json --test "$t"
 ```
 
 `grid test --trace` runs the recipe for the tests it selected; `--all`
-for the inventory. Traces decay honestly: an observation whose endpoint no
+for the inventory. `just traces` is that run with the tool check in front of
+it — it prints the exact install commands and stops rather than half-tracing
+the inventory; `just traces-ci` is the same run without the check, for a
+workflow that installed them itself. Traces decay honestly: an observation whose endpoint no
 longer exists in the chart asked about is demoted to heuristic with reason
 `stale-trace`, and the retained file is never rewritten.
 
