@@ -97,6 +97,7 @@ fn help() {
          uses <name> [--relation r]   proven inbound edges\n  \
          scope <pattern> [--depth N]  context pack around an edit\n  \
          scope <p> --bodies N         the same, with the text and its horizon\n  \
+         scope <p> --orient|--edit    the two named depth presets (0/2 and 1/3)\n  \
          orphans [--under p] [--traced]  no proven caller (not the same as dead); --traced adds trace N\n  \
          hotspots [--under p]         complexity x churn, descending\n  \
          roots                        import name -> directory map\n  \
@@ -1122,11 +1123,19 @@ fn miss(name: &str) -> String {
 /// the text is deliberately absent and the agent pulls it itself; with them
 /// the pack carries bodies to one depth and signatures to a further one, under
 /// a token budget spent in whole layers, closed by a horizon.
+///
+/// Two named presets, because the two depth pairs worth knowing are the two
+/// journeys: `--orient` is [`ORIENT`] — read the shape of an unfamiliar tree
+/// without paying for bodies — and `--edit` is [`EDIT`], the hop-1 bodies and
+/// hop-3 signatures an edit needs. Each only *supplies* a depth: an explicit
+/// `--bodies` or `--sigs` alongside a preset is what the caller actually
+/// asked for and wins, whichever order they were typed in.
 fn scope(args: &[&str], json: bool) -> u8 {
     const USAGE: &str =
-        "usage: grid scope <pattern>... [--depth N] [--bodies N] [--sigs M] [--budget T] [--since <snapshot|rev>]";
+        "usage: grid scope <pattern>... [--orient|--edit] [--depth N] [--bodies N] [--sigs M] [--budget T] [--since <snapshot|rev>]";
     let mut patterns = Vec::new();
     let (mut depth, mut bodies, mut sigs, mut budget) = (None, None, None, None);
+    let mut preset: Option<(u64, u64)> = None;
     let mut since = None;
     let mut rest = args;
     while let Some((arg, tail)) = rest.split_first() {
@@ -1146,6 +1155,11 @@ fn scope(args: &[&str], json: bool) -> u8 {
                 since = tail.first().map(|s| snapshot_or_rev(s));
                 since.is_some()
             }
+            "--orient" | "--edit" => {
+                preset = Some(if *arg == "--edit" { EDIT } else { ORIENT });
+                rest = tail;
+                continue;
+            }
             _ => {
                 patterns.push(grid_wire::CallsignPattern((*arg).to_string()));
                 rest = tail;
@@ -1161,6 +1175,10 @@ fn scope(args: &[&str], json: bool) -> u8 {
     if patterns.is_empty() {
         hint(USAGE);
         return exit::BAD_INPUT;
+    }
+    if let Some((preset_bodies, preset_sigs)) = preset {
+        bodies = bodies.or(Some(preset_bodies));
+        sigs = sigs.or(Some(preset_sigs));
     }
     let tiers = bodies.is_some() || sigs.is_some();
     let params = grid_wire::methods::ScopeParams {
@@ -1212,6 +1230,16 @@ fn scope(args: &[&str], json: bool) -> u8 {
 /// The depth `grid scope` walks when none is named. Stated here rather than
 /// only in the daemon, because the horizon banner has to name the real one.
 const DEFAULT_SCOPE_DEPTH: u64 = 0;
+
+/// `grid scope --orient`: no bodies, signatures two hops out — H4, landing in
+/// an unfamiliar tree. Bodies are what a pack spends its budget on, and the
+/// question here is shape, not text.
+const ORIENT: (u64, u64) = (0, 2);
+
+/// `grid scope --edit`: bodies at one hop, signatures at three — A1.1, the
+/// first step of the edit loop. The definitions being changed and their
+/// immediate callers in full, and the interface of everything within reach.
+const EDIT: (u64, u64) = (1, 3);
 
 /// `grid todo <plan> [<head-rev|snap:id>]` — the gate verdict as a
 /// worklist. Always exit 0 when it answers: remaining work is a report, not

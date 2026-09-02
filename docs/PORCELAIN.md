@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.12.0
+version: 2.13.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -261,7 +261,13 @@ by one `# horizon: bodies complete through <N|none>, sigs through <M|none>,
 ≈<T> tokens (bytes/4)` line that names the depth each tier is complete to.
 The record grammar above does not apply to those lines and no consumer should
 parse them as records: `--json` is the record form, and for `scope` it is the
-`ScopePack`'s additive `bodies`, `sigs` and `horizon`. The budget is spent in
+`ScopePack`'s additive `bodies`, `sigs` and `horizon`. Two named presets stand
+for the two depth pairs worth knowing: `--orient` is `--bodies 0 --sigs 2`
+(the shape of an unfamiliar tree, no bodies paid for) and `--edit` is
+`--bodies 1 --sigs 3` (what the first step of an edit loop needs). Each only
+*supplies* a depth — an explicit `--bodies` or `--sigs` beside one wins,
+whichever order they were typed in — and neither touches `--depth`,
+`--budget` or `--since`. The budget is spent in
 whole hop layers, farthest first, so the horizon is never a claim about a
 layer that was cut in half; a body layer that will not fit is demoted to its
 sigs before it is dropped, and a pack that packed nothing still prints its
