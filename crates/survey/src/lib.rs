@@ -255,6 +255,13 @@ pub fn run_at(root: &Path, rev: &str, cache: &mut Cache) -> Result<Survey, Surve
 /// Order-independence is what makes cache misses safe to extract on scoped
 /// threads: each miss is pure over its own source, and results land back by
 /// index. Returns the facts in source order plus the cache-hit count.
+///
+/// Misses are handed out largest file first from one shared counter, so no
+/// thread is left holding the biggest crate's biggest files while the rest
+/// sit idle: contiguous chunks of equal *count* put a 325KB chunk and a
+/// 22KB chunk on two threads and made the phase's wall time the slowest
+/// thread's — 55ms for 330ms of CPU on this repository, against 33ms with
+/// every thread finishing within a millisecond of the others.
 fn extract_all<'s>(
     sources: &'s [SourceFile],
     cache: &mut Cache,
@@ -280,23 +287,27 @@ fn extract_all<'s>(
             misses.push(i);
         }
     }
+    misses.sort_by_key(|&i| std::cmp::Reverse(sources[i].source.len()));
     let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let next = std::sync::atomic::AtomicUsize::new(0);
     let extracted: Vec<(usize, FileFacts)> = std::thread::scope(|scope| {
-        let chunk = misses.len().div_ceil(threads.max(1)).max(1);
-        let handles: Vec<_> = misses
-            .chunks(chunk)
-            .map(|chunk| {
+        let handles: Vec<_> = (0..threads.min(misses.len()))
+            .map(|_| {
+                let (next, misses) = (&next, &misses);
                 scope.spawn(move || {
-                    chunk
-                        .iter()
-                        .map(|&i| (i, extract(sources[i].lang, &sources[i].source)))
-                        .collect::<Vec<_>>()
+                    let mut out = Vec::new();
+                    while let Some(&i) =
+                        misses.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                    {
+                        out.push((i, extract(sources[i].lang, &sources[i].source)));
+                    }
+                    out
                 })
             })
             .collect();
         handles
             .into_iter()
-            // A panicked worker loses its chunk here; the sequential refill
+            // A panicked worker loses what it held; the sequential refill
             // below re-extracts anything still empty, so the segment bytes
             // cannot depend on whether a thread died.
             .filter_map(|h| h.join().ok())
@@ -574,19 +585,61 @@ impl DeclinedTotals {
 }
 
 /// Phase 3 over every file: the edges and the declined totals.
+///
+/// A file's resolution is a pure function of its own facts and the finished
+/// index, so the files resolve on scoped threads, each taking the next index
+/// from one shared counter; the fold below then runs in source order, so
+/// the edge list and the declined rows are what the serial loop produced.
+/// A file a panicked worker dropped is resolved in the fold, in place.
 fn resolve_all(
     index: &DefIndex,
     per_file: &[(&SourceFile, FileFacts)],
     module_for: &dyn Fn(&SourceFile) -> String,
 ) -> (Vec<ResolvedEdge>, DeclinedTotals) {
+    let modules: Vec<String> = per_file.iter().map(|(file, _)| module_for(file)).collect();
+    let one = |i: usize| -> Option<Resolved> {
+        let (file, facts) = per_file.get(i)?;
+        let module = modules.get(i)?;
+        Some(match file.lang {
+            Lang::Py => resolve::resolve(index, module, &facts.refs.imports, &facts.refs.refs),
+            Lang::Rs => resolve_rs::resolve(index, module, &facts.refs.imports, &facts.refs.refs),
+            Lang::Ts | Lang::Js => Resolved::default(),
+        })
+    };
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut slots: Vec<Option<Resolved>> = per_file.iter().map(|_| None).collect();
+    let done: Vec<(usize, Resolved)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads.min(per_file.len()))
+            .map(|_| {
+                let (next, one) = (&next, &one);
+                scope.spawn(move || {
+                    let mut out = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(resolved) = one(i) else { break };
+                        out.push((i, resolved));
+                    }
+                    out
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok())
+            .flatten()
+            .collect()
+    });
+    for (i, resolved) in done {
+        if let Some(slot) = slots.get_mut(i) {
+            *slot = Some(resolved);
+        }
+    }
     let mut edges = Vec::new();
     let mut declined = DeclinedTotals::default();
-    for (file, facts) in per_file {
-        let module = module_for(file);
-        let resolved = match file.lang {
-            Lang::Py => resolve::resolve(index, &module, &facts.refs.imports, &facts.refs.refs),
-            Lang::Rs => resolve_rs::resolve(index, &module, &facts.refs.imports, &facts.refs.refs),
-            Lang::Ts | Lang::Js => Resolved::default(),
+    for (i, slot) in slots.into_iter().enumerate() {
+        let Some(resolved) = slot.or_else(|| one(i)) else {
+            continue;
         };
         declined.add(&resolved);
         edges.extend(resolved.edges);

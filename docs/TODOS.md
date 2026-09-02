@@ -649,3 +649,39 @@ streams (T-27).
   and gate, test and trace, declarations) is a mechanical move that would let
   the ceiling fall again. Not attempted here because a refusal-class fix is
   the wrong change to bury a file split inside.
+
+## From the 2026-09-02 performance review (forge #44)
+
+Measured on the merged tree at `06a82a7`, Apple M4 Max, release, warm
+store, hyperfine unless stated. The five fixes the review ranked first are
+landed on `perf/review`; these three were measured and not taken, because
+each changes a shape rather than a schedule.
+
+- **T-56 (small)** `grid hotspots` spends 292ms ± 10 in `git log --numstat
+  --format= -n 1000` (`rpc::git_file_churn`) to count commits per path; it
+  never reads the numbers. `git log --name-only` gives the same count in
+  59ms ± 1, but not the same count for a renamed path — `numstat` prints
+  `{old => new}` and the code skips it, `name-only` prints the new name and
+  counts it — so it moves a published (heuristic) column. The number-
+  preserving form is a memo of the churn map under `.grid/` keyed by the
+  HEAD sha, computed once per commit; that is a new derived file with an
+  invalidation rule, and `grid_cache::Cache` is a closure cache, not a
+  place for it. Not taken here for that reason.
+- **T-57 (medium)** `grid edit apply` proves its compare-and-swap by
+  `edit::locate_all`: discovery (two git spawns) and then `grid_survey::
+  extract` for every file on one thread, no cache — 264.5ms ± 14 to refuse
+  a stale `base_datum`, the same to succeed, on a tree the chart already
+  holds every datum and span of. `build_and_write` then runs `crate_roots`
+  and discovers again. The write path gets slower with the tree while the
+  read path does not. The fix is `ChartDelta::open` + `locate` for the
+  candidate, one parse of the target file to prove the datum is current
+  (so a file edited since the last survey still conflicts, C15), and the
+  full scan only when the store holds no snapshot; ~40 lines, but it
+  changes what `edit apply` reads, so it wants the `edit_apply.rs`
+  conservatism cases run red first, not a perf branch.
+- **T-58 (small)** `grid_survey::Cache` never evicts: one `FileFacts` per
+  content hash ever seen, and a resident `rpc::Chart` or `watch::Session`
+  adds one per save of a file and drops none. Not a speed problem (a hit
+  clones in 1.9ms for the whole tree); a resource one for the session the
+  incremental-survey plan builds on, which inherits it. `retain` the
+  hashes the survey just saw, after `extract_all`; five lines.
