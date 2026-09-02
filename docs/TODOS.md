@@ -1,0 +1,333 @@
+# TODOS — the journeys, their pressure test, and what is next
+
+Written 2026-09-01, after the drift, naming, and agent-loop plans landed.
+This file is the working list. A plan document is written when an item
+here is ready to be a contract; this file says what is worth one and why.
+
+## Who grid is for
+
+Two users. A **coding agent** in its edit loop — the primary user, every
+turn. A **human reviewer or maintainer** reading what the agent did — the
+secondary user, once per change. CI is the agent's journey run one more
+time with everything on.
+
+## The core journeys
+
+### Agent
+
+**A1. Edit loop** — every task, every turn.
+
+1. `grid scope <target> --bodies 1 --sigs 3 --budget T` — context with a
+   stated horizon; read two hundred lines, not two thousand.
+2. Edit (`grid edit apply`, or a plain write).
+3. PostToolUse hook: `grid check --quick` — drift suspects and uncompiled
+   callers; exit 3 stops the agent before it claims done.
+4. `grid test` — run what the change reaches, replay the rest, name the
+   changed definitions no test reaches and the tests whose verdict
+   flipped under an unchanged closure.
+5. Pre-commit: `grid check` — the full composite; a refactor certificate or
+   a gate.
+
+The point: the agent's claims ("only refactored", "tests cover it", "no
+API change") become checked predicates instead of prose.
+
+**A2. Plan → implement → gate** — multi-step tasks.
+
+1. Plan mode writes the plan file: promised defs (with `interface`),
+   promised edges. 2. `grid plan lint`. 3. Implement; `grid drift --plan`
+shows the callers nobody promised. 4. `grid gate` — hold on an
+unpromised interface move or a promise not made good.
+
+**A3. A test went red.** `grid suspects <test> --closure <last-green>` —
+changed definitions inside the test's closure, ranked by hops, declined
+count stated. Milliseconds, no rerun, no bisect, no history.
+
+**A4. Parallel agents.** `grid interfere <other-worktree>` before a merge
+— a moved signature here against a new caller there, with no file in
+common.
+
+### Human
+
+**H1. Review the agent's PR.** `grid check <base> <head> --plan f --why
+--json` — interface moves, unpromised work, uncompiled callers, stale
+verdicts, weak tests, uncovered changes, clones, compat findings,
+covenant fires. Read that first, the diff second.
+
+**H2. "Can I change this?"** `grid uses X` and `grid scope X --sigs 2`,
+then stub the new signature and `grid drift`. Decide with numbers.
+
+**H3. The compiler-blind cases.** Declare once — `grid covenant A B --via
+protocol` across a process or language boundary, a `persisted` invariant
+for a serialized type — and A1/H1 gate on it forever.
+
+**H4. Orient in an unfamiliar repo.** `grid scope <entry> --bodies 1
+--sigs 2`, `grid explain <any word>`, and `grid scope --since <snapshot>`
+on return.
+
+### CI
+
+`grid test --trace --all` (refreshes the traces local selection reads),
+`grid check --compile -- --all-targets`, `grid gate <plan>`.
+
+### Not core
+
+Kept, not led with: `watch`, `bisect`, `hotspots`, `orphans --traced`,
+`log`, the Ochiai mode of `suspects`, `trace diff`. Future products, not
+this one: binary analysis, a package corpus, vulnerability reachability.
+
+A1 is most of the value. If an agent learns only `scope`, `check`, `test`
+and one hook line, grid is used every turn; the rest is discovered through
+exit 3 and `grid explain`.
+
+## Pressure test, round two
+
+Each journey was run against the tree as it stands (2026-09-01, 1813 defs,
+3419 proven edges, 11,985 declined). What broke or leaked, and the item it
+produced.
+
+**A1.3 — the hook is noisy.** Every `grid check --quick` prints the same
+`miss 11985 unresolved references unchecked (…)` and, until a compile
+record exists, `warn - no compile record since @…`. On a PostToolUse hook
+that fires per edit, that is two lines of unchanged text into the agent's
+context every turn. The honest counts are right; the delivery is wrong.
+→ T-01, T-02.
+
+**A1.4 — `grid test` is inert without traces.** On this repo every test is
+selected (`391 no-trace`, `34 unresolved`) because no trace exists and
+`cargo llvm-cov` is not installed. Until someone runs `--trace --all`
+once, `grid test` is `cargo nextest run` plus bookkeeping. The plan knew
+this; the first-run experience does not say it loudly enough. → T-03,
+T-04, T-05.
+
+**A1 — drift is blind to method calls.** The honesty number is now true
+and it is ugly: 8,852 of 11,985 declined references on this repo are
+`x.m()`. A moved signature reached only through a method call produces no
+suspect. On Rust `cargo check` covers it; on Python nothing does. This is
+the single largest gap between grid's promise and its evidence. → T-06.
+
+**A1 — every `check` says `miss 391 unattributed entries`.** Verdicts that
+`grid test` recorded without a trace have no trace id, so `--tests`
+cannot attribute them, forever. The count only grows. → T-07.
+
+**A2 — authoring a plan is JSON by hand.** `grid plan new` exists; an agent
+still has to write callsign patterns and promise kinds. The journey is
+right; the on-ramp is steep. → T-08.
+
+**A3 — `--closure <since>` needs a snapshot the agent must remember.**
+The verdict log already knows the last snapshot each test passed at.
+→ T-09.
+
+**A4 — interference needs both stores at the same epoch.** Against the
+sibling worktree it refused correctly (epoch 3, superseded). Refusal is
+right; the hint should name the command. → T-10.
+
+**H1 — the review pack is records, not a document.** A reviewer on GitHub
+wants a comment, not thirty porcelain lines. → T-11.
+
+**H3 — `persisted` is hand-edited JSON.** `grid covenant` has a verb;
+`persisted` does not. → T-12.
+
+**CI — traces stay in CI.** `.grid/traces` is per machine. CI refreshes
+them; the local store never sees them unless someone copies the
+directory. → T-13.
+
+**Cross-cutting — the survey inside every verb.** ~94ms of every `check`
+is the worktree survey a hook must re-run to see the edit. The budgets
+that miss (`--quick` 141ms vs 50, full 204ms vs 200) miss for that reason
+alone. → T-14.
+
+**Untested live paths.** `grid test --trace` on Rust (needs `cargo
+llvm-cov`), the pytest inventory and pytest-cov path, `--coverage-json`
+against a real coverage.py report (fixture only). They are implemented to
+the recipes and have not run for real. → T-15.
+
+**Platform.** The daemon is `std::os::unix::net`; Windows is out and not
+stated anywhere. → T-16.
+
+## Next steps, exhaustive
+
+Priority: **P0** blocks a core journey; **P1** makes a core journey
+pleasant; **P2** extends; **P3** research. Size: S (a day), M (days), L (a
+plan).
+
+### Honesty number and the resolver
+
+- **T-06 (P0, L) Method-call resolution for typed receivers.** Resolve
+  `x.m()` when the receiver's type is syntactically written: a parameter
+  annotated `x: &Foo` / `x: Foo`, `self` (done), a local bound by a struct
+  literal or a `Foo::new()`-shaped path call, a field access on such a
+  receiver whose struct field type is charted. Inherent methods only;
+  when a trait in scope also provides `m`, decline and count. Grade
+  **proven** only where the language's rules fix it (annotated parameter,
+  inherent method, no trait candidate); **modeled** for the inferred
+  local. Python: annotated parameters (`x: Foo`) and `self` only. Measure
+  the declined split before and after on grid and yi; the target is
+  `method` cut by half. Its own plan.
+- **T-17 (P1, M) Per-definition declined counts.** A segment fact (epoch
+  5, batch with anything else that earns a bump) so `suspects --closure`
+  and `check` can say how much of *this* closure the chart could not
+  follow, instead of the repo-wide number.
+- **T-18 (P1, S) `use super::x` inside inline modules.** The Rust resolver
+  binds `use super::*` and `crate::x` but not `use super::x;` in an inline
+  `mod` (step 3's observation). Fixtures currently work around it.
+- **T-19 (P2, M) Macro-generated callers.** Unreachable from source; see
+  the binary-side idea under Future — the compiled artifact names macro
+  output the survey declined.
+- **T-20 (P2, S) Builtins vs internal in Python.** `len(...)` counts as
+  `internal`; a small builtin table would move it to `external`.
+
+### Agent-loop ergonomics
+
+- **T-01 (P0, S) Hook delivery.** Document the exact PostToolUse wrapper:
+  silent on exit 0, and on exit 3 re-run with output to stderr and exit 2
+  so Claude Code feeds it back. One shell line in README; no new flag.
+- **T-02 (P1, S) Unchanged counts do not repeat.** `check --quick` prints
+  the `unchecked` line and the no-compile-record warning only when they
+  changed since the last check in this store (a one-line state file).
+  Stated in PORCELAIN as a `--quick` property; the full form always
+  prints them.
+- **T-03 (P0, S) First-run banner for `grid test`.** When zero traces are
+  retained: one stderr line naming the fact and the two commands (install
+  `cargo-llvm-cov` / `pytest-cov`; run `grid test --trace --all` once).
+- **T-04 (P1, S) `just traces` recipe.** Install check plus the CI form.
+- **T-05 (P1, M) Single-run per-test tracing on Rust.** A nextest wrapper
+  script keyed by test name sets `LLVM_PROFILE_FILE`, making `--trace`
+  one invocation instead of one per test. Configuration shipped as a
+  documented template, not code.
+- **T-07 (P0, S) Attribute `grid test` verdicts without a trace.** Record
+  a synthetic trace id (`test:<inventory id>`) so `stale.rs` can attribute
+  them; the `unattributed` count becomes what it should be — verdicts
+  recorded by something other than `grid test`.
+- **T-08 (P1, M) Plan authoring on-ramp.** `grid plan new --from-diff
+  <base>` drafts promises from a working diff (defs touched, edges added)
+  for the agent to prune; `grid plan new --defs a.b c.d` for the tiny
+  case. The gate stays the judge.
+- **T-09 (P1, S) Default `since` for `suspects --closure`.** The last
+  snapshot at which the test recorded `pass` (from the verdict log); say
+  which one was used.
+- **T-10 (P1, S) Refusal hints name the command.** `interfere` on a
+  superseded other store says `run grid survey in <root>`; every
+  superseded-store refusal does the same.
+- **T-11 (P1, S) `grid check --format md`.** One markdown document for a
+  PR comment: gates, then tail, then the certificate. Porcelain stays the
+  record form; `--json` the wire form.
+- **T-12 (P1, S) `grid invariant persisted <pattern>`** (and `--list`),
+  the `covenant` verb's shape, writing `.grid/invariants.json`.
+- **T-21 (P1, S) `scope` default depths.** With `--bodies` alone, `--sigs`
+  defaults to 3; on a hub the hop-1 body layer rarely fits a small budget
+  and demotes to sigs silently-but-stated. Consider `--bodies 0 --sigs 2`
+  as the documented "orient" preset and `--bodies 1 --sigs 3` as "edit".
+- **T-22 (P2, S) `grid explain` for exit codes and record tags in
+  context** (`grid explain miss`, `grid explain 3`).
+
+### Traces across machines
+
+- **T-13 (P1, M) Trace transport.** `grid trace export <dir>` / `grid
+  trace import <dir>` (content-addressed files, idempotent), so CI's
+  `.grid/traces` can travel as an artifact and local selection reads it.
+  Decay grading already handles a trace from a different snapshot.
+- **T-23 (P2, M) Packed trace index.** `retained()` scans one file per
+  trace; past ~10k traces a membership-style packed image (marked
+  `ponytail:` today).
+
+### Performance
+
+- **T-14 (P1, L) Incremental worktree survey by file event.** The survey
+  inside `check --quick` is the whole budget miss. `grid watch` already
+  holds a session with per-file re-survey; a hook that hands `check` the
+  edited path (`--touched <file>`) could re-survey that file only and
+  reuse the session's chart. Phases 2/3 are O(tree) by claim C13 (edges
+  are never cached); the upgrade is a resolver that invalidates by
+  reference — a survey-architecture change with its own plan.
+- **T-24 (P1, S) `check` opens the store once.** Sections currently
+  compose verbs that each open the store and resolve the base rev
+  (~13ms each, one git spawn for a rev). Pass the opened chart down.
+- **T-25 (P2, S) `suspects --closure` by rev spawns `rev-parse`.** Resolve
+  through the store's rev label first (as `check` does); 15.8ms → ~4ms.
+- **T-26 (P2, S) Body reads in `scope --bodies`.** Memoized per file
+  already; a hub with 200 hop-1 callers across 60 files is 60 reads —
+  fine; state the ceiling.
+
+### Correctness warts
+
+- **T-27 (P1, S) `grid test` runner output is captured then replayed.**
+  Stream it (`ponytail:` today); a 12s nextest run with no output looks
+  hung.
+- **T-28 (P1, S) `unresolved` tests from `proptest!` and other macro-
+  defined tests.** Always run — correct — but noisy (34 on this repo).
+  Name the macro in the `miss` reason so the reader knows why.
+- **T-29 (P2, S) `cargo test -- --list` fallback compiles the whole
+  workspace.** Say so on stderr when nextest is absent and suggest it.
+- **T-30 (P2, M) Compat: tuple-struct members and enum variant payloads**
+  are skipped (`ponytail:`); a removed payload field is a compat break.
+- **T-31 (P2, S) `check --compile` `examples/` not modeled** for cfg
+  joining (marked).
+
+### Untested-live paths and platform
+
+- **T-15 (P0, S) Run the recipes for real once.** Install `cargo-llvm-cov`
+  and `pytest-cov` on one machine, run `grid test --trace --all` on this
+  repo and on a Python fixture, ingest, then `grid test` again and watch
+  replay happen. Record the numbers in README.
+- **T-16 (P2, S) State the platform.** macOS and Linux; Windows needs a
+  named-pipe daemon or a `--no-daemon` mode. Say so in README.
+- **T-32 (P2, M) Python end-to-end on a real repo.** yi's Python side has
+  been surveyed; run A1 there with pytest and coverage.py.
+
+### Documentation and tooling
+
+- **T-33 (P1, S) README rewrite** around the journeys above (done with
+  this file), with the stale numbers and epochs corrected.
+- **T-34 (P1, M) Repo tooling port from yi** — CI, lint config, guards,
+  skills, comment enforcement (in progress on `claude/grid-tooling`).
+- **T-35 (P1, S) `docs/PORCELAIN.md` text-mode section** covers `scope
+  --bodies` and `explain`; add `check --format md` when T-11 lands.
+- **T-36 (P2, S) A walkthrough doc** — one real session transcript of A1
+  on this repo, records and exit codes shown.
+
+### Future products (each its own plan; none started)
+
+- **T-40 (P2, L) TypeScript/JavaScript frontend** on `swc`, datum over the
+  type-erased AST so `.ts` source and transpiled bundles agree; types in
+  the sig; stack-graph push/pop resolution with grid's acceptance policy
+  (`docs/research/ANALYSIS.md`).
+- **T-41 (P3, L) Binary frontend (Mach-O, arm64) via spawned platform
+  tools** — functions from `LC_FUNCTION_STARTS`, address-erased datums,
+  direct-call edges, `links_against` imports, DWARF bridge to source
+  datums; the four fates (materialized / inlined / folded / dropped);
+  build diff; reproducible-build certificate; size attribution. Cheapest
+  experiment first: hash `target/release/grid`'s functions across two
+  builds and see whether datums are stable on this toolchain.
+- **T-42 (P3, L) Package corpus.** Charts of registry packages at
+  versions as a shared, content-addressed store; shape index across it.
+  Enables vendored-code recognition, attestation of installed
+  dependencies, and function-level vulnerability reachability (advisory
+  names a function; grid answers reachable / unreachable with a horizon /
+  cannot say with the declined share).
+- **T-43 (P3, M) Datum-keyed knowledge.** Notes, invariants, review
+  findings keyed by datum rather than `file:line`, surviving rename, move
+  and vendoring; export/import with the store.
+- **T-44 (P3, L) Non-code frontends.** SQL schema, OpenAPI/protobuf,
+  Terraform — definitions and references, same drift and gate.
+
+### Research questions (no code until answered)
+
+- **R-1** What share of the `method` declined count does T-06's syntactic
+  rule recover on grid and yi? Measure before designing type inference.
+- **R-2** Is a per-file incremental resolver (T-14) sound under C13, or
+  does it need the SCC-shared closure work from ANALYSIS.md?
+- **R-3** Are address-erased function datums stable across rebuilds on
+  the same toolchain (T-41's gate)?
+- **R-4** Do `.ts` source and Bun/esbuild bundle output agree under a
+  type-erased datum (T-40's gate)?
+
+## Recorded ceilings (from `ponytail:` markers in the tree)
+
+The per-test `cargo llvm-cov` loop; `Store::retained` O(traces); bytes/4
+as the token estimate; one memoized file read per body; `TokenStream::
+to_string` spacing for Rust sigs; `--since` resolving without a survey;
+runner output captured not streamed; `cargo test --list` names-only
+fallback; `uncovered` recomputed per check; the membership image's
+O(chain) rewrite; the watch session's O(tree) phases; `examples/` not
+cfg-joined; compat's tuple-struct and payload skips. Each names its
+upgrade path where it sits.
