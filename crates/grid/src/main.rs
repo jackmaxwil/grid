@@ -360,7 +360,7 @@ fn cache(args: &[&str], json: bool) -> u8 {
             };
             let mut results = Vec::with_capacity(entries.len());
             for entry in entries {
-                let (datum, verdict) = entry.split_once('=').unwrap_or((entry, "pass"));
+                let (datum, verdict) = entry.split_once('=').unwrap_or((entry, ""));
                 results.push(grid_wire::CacheResultEntry {
                     datum: grid_wire::Datum(datum.to_string()),
                     verdict: match verdict {
@@ -368,7 +368,7 @@ fn cache(args: &[&str], json: bool) -> u8 {
                         "fail" => grid_wire::CacheResultEntryVerdict::Fail,
                         other => {
                             hint(&format!(
-                                "grid: verdict must be pass or fail, got `{other}`"
+                                "grid: verdict must be pass or fail, got `{other}` — record it as {datum}=pass or {datum}=fail"
                             ));
                             return exit::BAD_INPUT;
                         }

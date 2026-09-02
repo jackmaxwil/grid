@@ -646,6 +646,28 @@ fn cache_miss_then_record_then_hit() {
     assert_eq!(fields[0], "miss");
     assert_eq!(fields[1], caller);
 
+    // Conservatism: a datum with no `=verdict` is bad input, never a pass.
+    // In a verb whose whole job is recording outcomes, an absent one must
+    // not be recorded as green.
+    let unsaid = grid(dir.path(), &["cache", "record", "test", env, &caller]);
+    assert_eq!(
+        code(&unsaid),
+        2,
+        "a missing verdict is refused: {}",
+        stderr(&unsaid)
+    );
+    assert!(
+        stderr(&unsaid).contains("=pass"),
+        "the refusal names the form: {}",
+        stderr(&unsaid)
+    );
+    let still_cold = grid(dir.path(), &["cache", "lookup", "test", env, &caller]);
+    assert_eq!(
+        columns(stdout(&still_cold).lines().next().expect("a record"))[0],
+        "miss",
+        "nothing was recorded"
+    );
+
     let recorded = grid(
         dir.path(),
         &["cache", "record", "test", env, &format!("{caller}=pass")],
