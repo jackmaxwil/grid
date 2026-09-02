@@ -180,12 +180,12 @@ standing claim skipped itself before the evidence was ever looked for**: C5,
 C10, and all thirty `10+` rows. And a row naming four evidence files passed if
 any one of them existed, so a claim could lose its actual evidence and stay
 green behind a surviving sibling. Both are fixed here, and both fixes were
-seen red first: C44 with its check deleted, C5 with `check-unsafe-confined.sh`
+seen red first: C47 with its check deleted, C5 with `check-unsafe-confined.sh`
 deleted. Two evidence columns carried prose fragments rather than filenames
 (`incremental≡full` on C2, `(cache)` on C4); those are now file lists, and
 the statements already said what the fragments were reaching for.
 
-`docs/ASSURANCE.md` gains **C44**: `crates/wire/src/lib.rs` and `methods.rs`
+`docs/ASSURANCE.md` gains **C47**: `crates/wire/src/lib.rs` and `methods.rs`
 are byte-identical to what `gen-wire.py` writes and `rustfmt` normalizes. That
 is the claim `check_wire_drift.py` is the evidence for, and it makes the
 generated-code rule part of the assurance case rather than a habit. The row

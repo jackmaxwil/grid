@@ -61,7 +61,7 @@ Standing rules:
   Never hand-edit either; edit the contract and run `just wire`.
   `check_wire_drift.py` fails when that is owed. (`errors.rs` beside them is
   hand-written and the generator does not touch it, so the check cannot see a
-  change to it either — C44 says as much.)
+  change to it either — C47 says as much.)
 - `grid-datum` is the parser-free identity vocabulary every frontend emits, so
   a `grid-lang-*` crate depends on it and never the reverse. Adding a language
   adds a `grid-lang-*` crate, never a parser above one.
