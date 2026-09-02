@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.11.0
+version: 2.12.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -214,6 +214,18 @@ only direction that matters, and a state file grid cannot read or write
 suppresses nothing. The full `grid check` always prints both, and `--json` is
 the record form and is never filtered. Suppressing a line never moves the exit
 code.
+
+`grid invariant persisted <pattern> [--note <text>]` declares a standing
+rule and `grid invariant --list` prints the repo's set; both emit `inv
+standing <id>` records, the same record `grid todo` prints for a plan's own
+rules, with the id `persisted:<pattern>`. Declaring the same pattern twice is
+one rule. The pattern is resolved against the live chart and one that matches
+nothing is bad input (exit `2`) with the closest charted callsigns on stderr
+and nothing written — a rule that can never fire reads as protection and is
+not. `persisted` is the only kind this verb writes; `forbid-edge` and
+`require-edge` are authored in `.grid/invariants.json` by hand and survive a
+`grid invariant` call byte for byte, which is also how any rule is removed.
+`--note` rides as the rule's `description`.
 
 `grid interfere <other-root> [--base <rev>]` compares two worktrees of one
 repository against their common base — the merge base of the two heads unless

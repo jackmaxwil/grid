@@ -90,6 +90,7 @@ fn help() {
          drift --tests                known tests whose recorded verdict no longer applies\n  \
          drift --compat               changed Deserialize types old bytes cannot read\n  \
          covenant <A> <B> --via <w>   declare a coupling no language establishes\n  \
+         invariant persisted <p>      declare that old bytes of a type exist; --list shows the repo's rules\n  \
          watch [base]                 signed drift deltas, one file event per stdin line\n  \
          interfere <other-worktree>   what another worktree's edits and yours collide over\n  \
          resolve <name|file|f:line>   where it is; a bare file lists its defs\n  \
@@ -179,6 +180,7 @@ fn main() -> ExitCode {
         Some((&"diff", args)) => diff(args, json),
         Some((&"drift", args)) => drift_verb(args, json),
         Some((&"covenant", args)) => covenant_verb(args, json),
+        Some((&"invariant", args)) => invariant_verb(args, json),
         Some((&"watch", args)) => watch_verb(args, json),
         Some((&"resolve", args)) => resolve(args, json),
         Some((&"gate", args)) => gate(args, json),
@@ -753,6 +755,112 @@ fn covenant_verb(args: &[&str], json: bool) -> u8 {
         return emit_json(&covenants);
     }
     print!("{}", porcelain::covenants(&covenants));
+    exit::OK
+}
+
+const INVARIANT_USAGE: &str =
+    "usage: grid invariant persisted <pattern> [--note <text>] | grid invariant --list";
+
+/// `grid invariant persisted <pattern> [--note <text>]` and `grid invariant
+/// --list` — the repo's standing rules, written the way a covenant is.
+///
+/// `persisted` is the human fact no static check can establish: bytes on disk
+/// were written by an older version of this type, so a Deserialize
+/// compatibility finding on it gates instead of ranking. It was declarable
+/// only by hand-editing `.grid/invariants.json`, which is why nobody
+/// declared one.
+///
+/// `persisted` is the only rule kind this verb writes. `forbid-edge` and
+/// `require-edge` stay hand-authored: they carry a relation, a grade floor
+/// and two patterns, and a flag surface for them would be a plan file with
+/// worse ergonomics. The file is read whole and written whole, so a
+/// hand-authored rule survives a `grid invariant` call untouched — and
+/// removing a rule is editing the file, exactly as it is for a covenant.
+///
+/// The pattern is resolved against the live chart and one that matches
+/// nothing is refused: a rule about code that does not exist will never fire,
+/// and writing it down silently is worse than not writing it.
+fn invariant_verb(args: &[&str], json: bool) -> u8 {
+    let mut note = None;
+    let mut positional = Vec::new();
+    let mut rest = args;
+    while let Some((arg, tail)) = rest.split_first() {
+        rest = tail;
+        match *arg {
+            "--list" => positional.push("--list"),
+            "--note" => {
+                let Some((value, tail)) = rest.split_first() else {
+                    hint(INVARIANT_USAGE);
+                    return exit::BAD_INPUT;
+                };
+                note = Some((*value).to_owned());
+                rest = tail;
+            }
+            other if other.starts_with("--") => {
+                hint(&format!("grid: unknown flag `{other}`\n{INVARIANT_USAGE}"));
+                return exit::BAD_INPUT;
+            }
+            other => positional.push(other),
+        }
+    }
+    let mut invariants = match standing::load(root()) {
+        Ok(rows) => rows,
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            return exit::BAD_INPUT;
+        }
+    };
+    let pattern = match positional.as_slice() {
+        ["--list"] => {
+            if json {
+                return emit_json(&invariants);
+            }
+            print!("{}", porcelain::invariants(&invariants));
+            return exit::OK;
+        }
+        ["persisted", pattern] => *pattern,
+        _ => {
+            hint(INVARIANT_USAGE);
+            return exit::BAD_INPUT;
+        }
+    };
+    match rpc::matching(root(), pattern) {
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            return exit::INTERNAL;
+        }
+        // The `resolve` contract, restated, as `grid covenant` restates it: a
+        // pattern that matches nothing is bad input with the closest charted
+        // callsigns, never a silently written rule.
+        Ok(0) => {
+            hint(&miss(pattern));
+            return exit::BAD_INPUT;
+        }
+        Ok(_) => {}
+    }
+    let fresh = grid_wire::Invariant {
+        // Content, not a counter: the id a violation prints is
+        // `persisted:<pattern>` already, so declaring the same pattern twice
+        // is one rule and reads as one everywhere.
+        id: format!("persisted:{pattern}"),
+        description: note,
+        rule: grid_wire::InvariantRule::Persisted {
+            persisted: grid_wire::CallsignPattern(pattern.to_owned()),
+        },
+    };
+    if let Some(held) = invariants.iter_mut().find(|i| i.id == fresh.id) {
+        *held = fresh;
+    } else {
+        invariants.push(fresh);
+    }
+    if let Err(e) = standing::save(root(), &invariants) {
+        hint(&format!("grid: {e}"));
+        return exit::INTERNAL;
+    }
+    if json {
+        return emit_json(&invariants);
+    }
+    print!("{}", porcelain::invariants(&invariants));
     exit::OK
 }
 

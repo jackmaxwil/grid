@@ -304,3 +304,132 @@ fn the_check_is_silent_unless_it_is_asked_for() {
     );
     assert!(warnings(&grid(dir.path(), &["drift"])).is_empty());
 }
+
+/// The `inv` records a listing prints: `(status, id)`.
+fn invs(out: &Output) -> Vec<(String, String)> {
+    stdout(out)
+        .lines()
+        .filter(|l| l.starts_with("inv"))
+        .filter_map(|l| {
+            let mut c = l.split_whitespace();
+            c.next()?;
+            Some((c.next()?.to_owned(), c.next()?.to_owned()))
+        })
+        .collect()
+}
+
+/// T-12, ground truth: `grid invariant persisted <pattern>` declares the
+/// human fact by hand no longer. The rule it writes is the rule the gate
+/// reads, and `--list` says what the repo has declared.
+#[test]
+fn the_invariant_verb_declares_a_persisted_rule_the_gate_then_fires_on() {
+    let dir = repo(
+        "#[derive(Deserialize)]\npub struct C {\n    pub a: u32,\n}\n",
+        "#[derive(Deserialize)]\npub struct C {\n    pub a: u32,\n    pub retries: u32,\n}\n",
+    );
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+
+    // Undeclared, the same change ranks and does not gate.
+    let before = grid(dir.path(), &["drift", "--compat"]);
+    assert_eq!(code(&before), 0, "{}", stdout(&before));
+
+    let declared = grid(
+        dir.path(),
+        &["invariant", "persisted", "app.C", "--note", "on disk"],
+    );
+    assert_eq!(code(&declared), 0, "{}", stderr(&declared));
+    assert_eq!(
+        invs(&declared),
+        [("standing".to_owned(), "persisted:app.C".to_owned())],
+        "the write echoes the rule set: {}",
+        stdout(&declared)
+    );
+    assert_eq!(
+        invs(&grid(dir.path(), &["invariant", "--list"])),
+        invs(&declared),
+        "--list is the same set"
+    );
+
+    // The gate reads it: the same finding is now modeled evidence, exit 3.
+    let after = grid(dir.path(), &["drift", "--compat"]);
+    assert_eq!(
+        code(&after),
+        3,
+        "a declared boundary gates:\n{}{}",
+        stdout(&after),
+        stderr(&after)
+    );
+    assert!(
+        stdout(&after).contains("persisted:app.C") && stdout(&after).contains("required field"),
+        "the record names the declaration this verb wrote:\n{}",
+        stdout(&after)
+    );
+
+    // Declaring the same pattern twice is one rule, not two.
+    assert_eq!(
+        code(&grid(dir.path(), &["invariant", "persisted", "app.C"])),
+        0
+    );
+    assert_eq!(invs(&grid(dir.path(), &["invariant", "--list"])).len(), 1);
+
+    // The note rides as the rule's description, and `--json` is the record
+    // form.
+    let listed: Vec<serde_json::Value> = serde_json::from_str(&stdout(&grid(
+        dir.path(),
+        &["invariant", "--list", "--json"],
+    )))
+    .expect("--json is an Invariant list");
+    assert_eq!(listed[0]["rule"]["persisted"], "app.C", "{listed:?}");
+}
+
+/// T-12, conservatism: a pattern that matches nothing is refused and nothing
+/// is written. A declared rule that can never fire reads as protection and
+/// is not — it is the one state worse than no rule, because a reader sees a
+/// declaration and stops looking. The hand-authored rule kinds this verb
+/// does not write survive it untouched.
+#[test]
+fn an_invariant_over_nothing_is_refused_and_hand_authored_rules_survive() {
+    let dir = repo(
+        "#[derive(Deserialize)]\npub struct C {\n    pub a: u32,\n}\n",
+        "#[derive(Deserialize)]\npub struct C {\n    pub a: u32,\n    pub retries: u32,\n}\n",
+    );
+    // A rule kind `grid invariant` never writes, authored by hand.
+    let hand = "[{\"id\": \"no-app-to-db\", \"rule\": {\"forbid_edge\": \
+                {\"src\": \"app.**\", \"dst\": \"db.**\"}}}]";
+    write(dir.path(), ".grid/invariants.json", hand);
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+
+    let out = grid(dir.path(), &["invariant", "persisted", "app.NoSuchType"]);
+    assert_eq!(
+        code(&out),
+        2,
+        "a rule about code that does not exist is bad input: {}",
+        stdout(&out)
+    );
+    assert!(
+        stdout(&out).is_empty(),
+        "a refusal writes no records: {}",
+        stdout(&out)
+    );
+    assert!(
+        stderr(&out).contains("nothing is called `app.NoSuchType`"),
+        "and says so: {}",
+        stderr(&out)
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(".grid/invariants.json")).expect("read"),
+        hand,
+        "nothing was written, and the hand-authored rule is byte-identical"
+    );
+
+    // A rule this verb *does* write leaves the hand-authored one alone.
+    assert_eq!(
+        code(&grid(dir.path(), &["invariant", "persisted", "app.C"])),
+        0
+    );
+    let ids: Vec<String> = invs(&grid(dir.path(), &["invariant", "--list"]))
+        .into_iter()
+        .map(|(_, id)| id)
+        .collect();
+    assert_eq!(ids, ["no-app-to-db", "persisted:app.C"], "both rules stand");
+}

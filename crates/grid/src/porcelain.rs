@@ -15,7 +15,7 @@ use grid_wire::{
 };
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "2.11.0";
+pub const VERSION: &str = "2.12.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -629,6 +629,19 @@ pub fn covenants(rows: &[grid_wire::Covenant]) -> String {
     let mut out = String::new();
     for c in rows {
         record(&mut out, "covenant", &[&c.a.0, &c.b.0, &c.via]);
+    }
+    out
+}
+
+/// The repo's standing invariants, as `inv standing <id>` — the same record
+/// `grid todo` prints for a plan's own, because a rule that holds for the
+/// repo and a rule a plan added are the same kind of thing and are checked
+/// by the same gate.
+#[must_use]
+pub fn invariants(rows: &[grid_wire::Invariant]) -> String {
+    let mut out = String::new();
+    for inv in rows {
+        record(&mut out, "inv", &["standing", &inv.id]);
     }
     out
 }

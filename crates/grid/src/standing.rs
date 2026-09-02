@@ -33,6 +33,23 @@ pub fn load(root: &Path) -> Result<Vec<Invariant>, String> {
         .map_err(|e| format!("{} is not a valid invariant list: {e}", path.display()))
 }
 
+/// Write the invariant set back, pretty-printed so a human can edit it —
+/// which is how one is removed, and how the two rule kinds `grid invariant`
+/// does not write (`forbid-edge`, `require-edge`) are authored at all.
+///
+/// # Errors
+/// A human-readable message when the file cannot be written.
+pub fn save(root: &Path, invariants: &[Invariant]) -> Result<(), String> {
+    let path = root.join(FILE);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    let body = serde_json::to_string_pretty(invariants)
+        .map_err(|e| format!("cannot serialize invariants: {e}"))?;
+    std::fs::write(&path, body + "\n").map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
 /// A plan with the repo's standing invariants folded into its own. Order is
 /// standing-first so a plan's additions read as additions.
 #[must_use]
