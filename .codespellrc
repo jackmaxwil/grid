@@ -1,0 +1,6 @@
+# Domain words, not typos: `datum`/`datums` is grid's unit of identity, `aground` is the
+# walk's own verdict, `unparseable` a valid variant (yi's allowlist carries it too), `readd`
+# a fixture function name, `caf` and `ba`/`nd` hex fragments in committed test vectors.
+[codespell]
+skip = ./target,./.git,./Cargo.lock,./.grid,./docs/research,./crates/wire/src
+ignore-words-list = datum,datums,crate,ba,nd,aground,unparseable,readd,caf,re-declared,ser,fo,inout

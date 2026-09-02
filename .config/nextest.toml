@@ -1,0 +1,15 @@
+# Ported from yi's .config/nextest.toml for the same reason it exists there.
+[profile.default]
+retries = 1
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+# Every test in these binaries spawns the built `grid` as a child, and that child opens a
+# store and may boot a daemon. Turned loose in one global pool they oversubscribe the machine
+# and blow the slow-timeout. The cap is a scheduling bound, not a coverage one — every test
+# still runs. Raise it when the runners grow.
+[test-groups]
+subprocess = { max-threads = 3 }
+
+[[profile.default.overrides]]
+filter = 'binary(conformance) + binary(porcelain) + binary(check) + binary(compile) + binary(compat) + binary(interfere) + binary(drift) + binary(edit_apply) + binary(attribution) + binary(pack) + binary(wave10) + binary(crash_safety)'
+test-group = 'subprocess'

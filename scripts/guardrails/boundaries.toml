@@ -1,0 +1,30 @@
+# Dependency direction as an allowlist, ported from yi's boundaries.toml.
+# Unknown crate = error, stale entry = error, undeclared internal dep = error.
+#
+# The layering is load-bearing for the assurance case: `grid-chart` is the
+# crate an adversarial segment image reaches, and ASSURANCE.md's C1 argument
+# rests on it staying a two-dependency TCB. `grid-datum` is the parser-free
+# identity vocabulary every frontend emits, so a `grid-lang-*` crate depends
+# on it and never the other way round.
+"grid-wire" = []
+"grid-datum" = []
+"grid-lang-py" = ["grid-datum"]
+"grid-lang-rs" = ["grid-datum"]
+"grid-chart" = ["grid-wire"]
+"grid-chart-io" = ["grid-chart", "grid-wire"]
+"grid-cache" = ["grid-chart", "grid-wire"]
+"grid-trace" = ["grid-chart", "grid-wire"]
+"grid-walk" = ["grid-chart", "grid-wire"]
+"grid-gate" = ["grid-wire"]
+"grid-survey" = ["grid-chart", "grid-datum", "grid-lang-py", "grid-lang-rs", "grid-wire"]
+"grid" = [
+  "grid-cache",
+  "grid-chart",
+  "grid-chart-io",
+  "grid-gate",
+  "grid-lang-rs",
+  "grid-survey",
+  "grid-trace",
+  "grid-walk",
+  "grid-wire",
+]

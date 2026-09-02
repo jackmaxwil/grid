@@ -1,4 +1,4 @@
-//! Canonicalization: parse -> alpha-rename locals -> erase ranges -> stable
+//! Canonicalize by parse -> alpha-rename locals -> erase ranges -> stable
 //! serialization. Deterministic by construction: the folded AST carries `()`
 //! ranges, so formatting never reaches the canonical bytes, and derived
 //! `Debug` on a fixed AST type is a stable byte encoding within a crate

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Fast tier: everything that reads the source as it stands. No build, no suite — a hook
+# slower than a couple of seconds is a hook people pass --no-verify to. Ported from yi's
+# scripts/hooks/pre-commit. Installed by `just hooks`, never automatically.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+# git exports its own repository context to a hook and every child inherits it, so a test
+# that shells out to git operates on this repo instead of its own fixture. Grid's survey and
+# rev-blob tests do exactly that, which is how yi's worktree tests failed only under push.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_QUARANTINE_PATH GIT_EDITOR
+
+# A merge lands on main by definition, so it is the one commit shape allowed there.
+branch=$(git symbolic-ref --quiet --short HEAD || echo "")
+if [ "$branch" = main ] && [ ! -e "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
+  echo "pre-commit: refusing a direct commit on main"
+  echo "  branch first: git switch -c <name>"
+  exit 1
+fi
+
+exec just precommit

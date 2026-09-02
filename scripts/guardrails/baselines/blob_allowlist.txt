@@ -1,0 +1,6 @@
+# Papers the design argues from, deliberately vendored so the argument does not
+# depend on a URL staying up. docs/research/README.md says which claim reads which.
+docs/research/dag-reachability-2212.03945.pdf
+docs/research/dbsp-ivm-vldb2023.pdf
+docs/research/hyperdiff-fse2023-hal-04189855.pdf
+docs/research/stack-graphs-2211.01224.pdf
