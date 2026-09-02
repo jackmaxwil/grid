@@ -10,6 +10,11 @@ deviation list. No new dependencies: `grid` gained path dependencies on
 `grid-lang-rs` (step 3) and `blake3` (step 2), both already in the TCB.
 ASSURANCE.md gained C33–C43.
 
+Reviewed 2026-09-01: 14 findings fixed in 5a258a3, 27fef25, 0764f3b,
+2a7c8a7 (F1–F9, F13, F15–F17, F21 and the two decidable halves of F14),
+the rest recorded in docs/TODOS.md. PORCELAIN is 2.10.0, not the 2.1.0
+this document names: every step after 2 bumped it once more.
+
 Deviations from this document, one line each; the reasoning is in the commit
 that made each one.
 

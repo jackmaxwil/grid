@@ -163,7 +163,8 @@ decided (`cfg_attr`, a custom key, a target fact the record lacks, or
 `pre-epoch-4 snapshot` for a chart written before the cfg column), which
 never moves the exit. Compiled under `-- --tests`, `-- --features x` or
 `-- --all-features`, the same callers print nothing. With `--plan` the
-verdict prints first and the compile records follow; `--json` emits the
+composite prints in its usual order — drift, the compile records, then
+the verdict; `--json` emits the
 `CompileReport` alone without a plan and the `CheckResult` with one. A tree
 with no `Cargo.toml` has no compile to wrap: one hint, exit `0`.
 
@@ -261,28 +262,10 @@ conclusion grid never licenses.
 
 ## Versioning
 
-Semver. Adding a record type or a trailing column is minor — as is widening
-a record's message, which carried 2.0.0 to 2.1.0 (`grid survey`'s closing
-`miss`, and the declined split inside `grid drift`'s), and giving existing
-tags a new verb's meanings, which carried 2.1.0 to 2.2.0 (`grid test`'s
-`hit`/`miss` addressed by test id, and its `done` line) and 2.2.0 to 2.3.0
-(`grid check --compile`'s `drift` reason `uncompiled:<cfg>` and its `warn`)
-and 2.3.0 to 2.4.0 (`grid gate`'s `def` record, trailing `unaccounted:
-interface` when a def promise's `interface` claim is why it holds). Adding a
-text-mode output is minor too, which carried 2.4.0 to 2.5.0 (`grid scope
---bodies`'s document and its `# horizon:` line), and one more evidence mode
-inside an existing verb carried 2.5.0 to 2.6.0 (`grid suspects --closure`'s
-`hit` records with `closure` in the score column, its `fork`, and its closing
-`miss`) and 2.6.0 to 2.7.0 (`grid drift --compat`'s `warn <type>  compat:
-<rule>`, its `inv violated persisted:<type>`, and its closing `miss`) and 2.7.0 to 2.8.0
-(`grid interfere`'s `warn <callsign>  both-touched` and its `drift` reason
-`interfere:<other-root>`) and 2.8.0 to 2.9.0 (`grid check`'s composite: the
-`done  refactor` certificate, `warn <new>  clone-of <existing>`, `warn <def>
-uncovered` outside `grid test`, its `warn -  no compile record since
-@<prefix>`, and `grid orphans --traced`'s trailing `trace N` column) and
-2.9.0 to 2.10.0 (`snapshot`'s `@rev+<prefix>` id for a dirty worktree, and
-`grid test`'s `done` counting replayed `fail` verdicts as failed)
-— changing column
-order or meaning is major — and so is renaming a tag, which is what carried
-1.6.0 to 2.0.0 (`docs/plans/2026-09-01-naming.md`). The daemon reports this
+Semver. Adding a record type, a trailing column, a text-mode output, or a
+new verb's meaning for an existing tag is minor; widening a record's
+message is minor. Changing column order or meaning is major — and so is
+renaming a tag, which is what carried 1.6.0 to 2.0.0
+(`docs/plans/2026-09-01-naming.md`). One line per bump lives in the commit
+that made it (`git log --grep PORCELAIN`). The daemon reports this
 version via `grid version` and the wire contract's `x-porcelain` field.

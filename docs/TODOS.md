@@ -173,8 +173,8 @@ plan).
 - **T-19 (P2, M) Macro-generated callers.** Unreachable from source; see
   the binary-side idea under Future — the compiled artifact names macro
   output the survey declined.
-- **T-20 (P2, S) Builtins vs internal in Python.** `len(...)` counts as
-  `internal`; a small builtin table would move it to `external`.
+- **T-20 — done** (2a7c8a7): Python builtins and Rust prelude names left
+  unbound count as `external`; `internal` on this repo went 1460 → 740.
 
 ### Agent-loop ergonomics
 
@@ -320,6 +320,83 @@ plan).
   the same toolchain (T-41's gate)?
 - **R-4** Do `.ts` source and Bun/esbuild bundle output agree under a
   type-erased datum (T-40's gate)?
+
+## From the 2026-09-01 review
+
+Findings of the high-effort review of `claude/grid-agent-loop` that were
+not fixed in 5a258a3..2a7c8a7, one line each, with the reviewer's
+location and severity. Nothing here gates; each is a wart with a named
+fix.
+
+- **F10 (medium)** `crates/grid/src/rpc.rs` `renderables` / `pack_text` —
+  a definition with no location, no `line_end`, an unreadable file, an
+  empty slice or no sig text is dropped from its layer while the horizon
+  still certifies "bodies complete through k". Count drops per layer and
+  emit `## <callsign> - (body unavailable, hop k)`, or lower the certified
+  depth to the last layer with zero drops.
+- **F11 (medium)** `rpc.rs` `body_at` — bodies are worktree lines at the
+  live snapshot's locations with no survey and no re-hash; after an edit
+  above a definition the text under `## callsign` is another definition's.
+  Survey first (~92ms) and say so in the horizon line, or re-hash the
+  slice through the frontend and mark a mismatch.
+- **F12 (medium)** `crates/grid/src/check.rs:147` — `--quick` runs drift
+  at the proven floor, so the hook drops observed-grade suspects, which
+  gate; the plan's Status says "stays plain drift byte for byte" and is
+  wrong, PORCELAIN/ONTOLOGY are right. Either drop the floor override
+  (measure: `observed_inbound` is the only extra store read) or keep it
+  and state the loss where the hook is documented.
+- **F14 (medium, two of four)** `crates/grid/src/compat.rs:165-172` — a
+  field replaced by one with `#[serde(default)]` or an `Option` type is
+  still "renamed without alias"; `crates/lang-rs/src/serde_shape.rs:170`
+  — `#[cfg_attr(feature = "x", serde(deny_unknown_fields))]` is neither
+  `Hidden` nor read (treat a `cfg_attr` text containing `serde` as
+  `Hidden`). Container `default` and `flatten` were fixed in 2a7c8a7.
+- **F18 (medium)** `crates/wire/tests/conformance.rs` — only examples
+  round-trip; no example carries `cfg`, `interface_unaccounted`,
+  `nondeterministic`, `compat`, `declined`, `traces`, `compat_unchecked`,
+  `unresolved_*`, `persisted`, `bodies`/`sigs`/`horizon`, `clones`,
+  `refactor`, `stale`, `weak`, so a rename is invisible. One test walking
+  `components.schemas.*.properties` against a populated instance per type;
+  and `closure_since`'s description says "base-side half" where the code
+  is the head-side `Added` half.
+- **F19 (medium/low)** `check.rs:139-215`, `compile.rs:265-273`,
+  `rpc.rs:305-360` — one `grid check` computes the base/head diff three
+  times, opens the store three times, reads traces and the verdict log
+  twice; pass `(&ChartDelta, &[Changed], base, head)` into
+  `compile::report` and lift the trace/cache reads into one `Loaded`.
+  (T-24 is the same item from the other side.)
+- **F20 (low)** `crates/grid/src/interfere.rs:131-140` — `unresolved_refs:
+  None` prints `miss ? unresolved references uncounted (head was not
+  surveyed)` though both heads were surveyed; carry the two `Ran`s'
+  declined splits or print nothing.
+- **F22 (low)** `hit`'s second column is a `{:.6}` float or the word
+  `closure` (`porcelain.rs` `suspects`): a column-meaning change shipped
+  as 2.6.0 under PORCELAIN's own major rule; `suspects_closure` in
+  `main.rs` prints a hand-padded `miss` outside `porcelain.rs`; ASSURANCE
+  C36/C35/C40/C41 name `src/` modules as evidence and C37 "cargo target
+  directory", C42 "does not hold the base" (now covered by interfere.rs),
+  C36 `not-recorded`, C41 "from a macro" have no test of their own;
+  ONTOLOGY rows `trace`, `check`, `refactor`, `closure`, `uncompiled`,
+  `compat`, `horizon`, `interference`, `selected` exceed the file's own
+  three-line rule.
+- **F23 (low)** `crates/survey/src/files.rs:559` sizes an allocation from
+  a `cat-file` header (`take(size+1).read_to_end` and check the length);
+  `:509/:538` discard the child's exit status with stderr nulled, so a git
+  without `--batch -z` surfaces as "answers ran out". `main.rs:1317`
+  `observations.len() as u64`; `check.rs:697` byte-slices a hash string;
+  `crates/chart/src/lib.rs:565` `idx as usize` and no check that cfg-table
+  entry 0 is the empty predicate.
+- **F24 (low)** the survey-level cfg join (`inherited_cfgs`, `mod x;`
+  declarations and `tests/` dirs — `crates/survey/src/lib.rs:277-304`)
+  has no test: passing `""` keeps every suite green. `files.rs:564`'s
+  non-blob branch is unpinned. 25 of this repo's tests are `unresolved`
+  (every `proptest!`-generated one): always run, never selected (T-28).
+- **Cut list, skipped** — `runner.rs` `Rust::CargoTest` fallback (kept,
+  as the reviewer said); `CheckParams.compile` stays on the wire,
+  documented "Ignored".
+- **Flake** — `crates/chart-io/tests/crash_safety.rs:59` tripped its own
+  "never observed a published epoch" guard once under a full parallel
+  suite; 3/3 green alone. The harness's kill window is time-based.
 
 ## Recorded ceilings (from `ponytail:` markers in the tree)
 
