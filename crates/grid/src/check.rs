@@ -67,6 +67,64 @@ const MAX_ENDPOINTS: usize = 32;
 /// The base a plan-less check measures from: `grid drift`'s default.
 const DEFAULT_BASE: &str = "HEAD~1";
 
+/// Where `--quick` remembers the lines it printed last time, so it can tell
+/// a count that moved from one that did not. Engine state under `.grid`,
+/// safe to delete: losing it costs one repeated line.
+const QUICK_STATE: &str = ".grid/check-quick.last";
+
+/// Is this one of the two lines a `--quick` hook prints unchanged every
+/// turn — the drift section's declined-reference count, and the check's own
+/// "no compile record" warning?
+///
+/// Matched on the rendered line rather than on the wire fields because what
+/// repeats is the *text*: two runs whose counts differ by one produce
+/// different lines, and that is exactly the difference worth printing.
+fn repeated(line: &str) -> bool {
+    let mut columns = line.split_whitespace();
+    match columns.next() {
+        Some("miss") => line.contains("unresolved references "),
+        Some("warn") => columns.next() == Some("-") && line.contains("no compile record since @"),
+        _ => false,
+    }
+}
+
+/// `--quick`'s repeat filter: drop the two lines above when their content is
+/// what this store printed last time.
+///
+/// A `PostToolUse` hook fires once per edit and those two lines are the same
+/// text every turn — two lines of unchanged context into an agent's window,
+/// forever. The counts are honest and worth saying; saying the same ones
+/// again says nothing. What is remembered is a hash of the lines themselves,
+/// so a count that *moved* — one more declined reference, a compile record
+/// that just went stale — is printed. A state file grid cannot read or write
+/// suppresses nothing: forgetting must cost a repeated line, never a dropped
+/// one. The full `grid check` never calls this, and `--json` is the record
+/// form and is never filtered.
+#[must_use]
+pub fn quiet(text: &str, root: &Path) -> String {
+    let lines: Vec<&str> = text.lines().filter(|line| repeated(line)).collect();
+    if lines.is_empty() {
+        return text.to_owned();
+    }
+    let now = blake3::hash(lines.join("\n").as_bytes())
+        .to_hex()
+        .to_string();
+    let path = root.join(QUICK_STATE);
+    if std::fs::read_to_string(&path).is_ok_and(|last| last.trim() == now) {
+        let mut out = String::new();
+        for line in text.lines().filter(|line| !repeated(line)) {
+            out.push_str(line);
+            out.push('\n');
+        }
+        return out;
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&path, now + "\n");
+    text.to_owned()
+}
+
 /// Why a check could not be produced.
 #[derive(Debug)]
 pub enum Error {

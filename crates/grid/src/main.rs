@@ -1686,13 +1686,19 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
             hint(&format!("grid: {e}"));
             exit::BAD_INPUT
         }
-        Ok(pack) => check_emit(&pack, why, json),
+        Ok(pack) => check_emit(&pack, why, json, quick),
     }
 }
 
 /// Print a check's answer and compute its exit: 3 exactly when a gating
 /// section fired, the same predicate that withholds the refactor certificate.
-fn check_emit(pack: &grid_wire::CheckResult, why: bool, json: bool) -> u8 {
+///
+/// Under `--quick` the two lines a hook would otherwise repeat verbatim
+/// every turn are dropped when their content has not moved since the last
+/// `--quick` in this store ([`check::quiet`]). The full check never filters,
+/// and `--json` is the record form: it carries every count whatever a
+/// previous run printed.
+fn check_emit(pack: &grid_wire::CheckResult, why: bool, json: bool, quick: bool) -> u8 {
     let code = if check::gated(pack) {
         exit::DIVERGENCE
     } else {
@@ -1706,7 +1712,15 @@ fn check_emit(pack: &grid_wire::CheckResult, why: bool, json: bool) -> u8 {
             failure => failure,
         };
     }
-    print!("{}", check::porcelain(pack, &namer(), why));
+    let text = check::porcelain(pack, &namer(), why);
+    print!(
+        "{}",
+        if quick {
+            check::quiet(&text, root())
+        } else {
+            text
+        }
+    );
     if code == exit::DIVERGENCE {
         hint("grid: something this change did was not checked — the records above say what; `grid explain <word>` says why it gates");
     }

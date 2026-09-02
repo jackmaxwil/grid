@@ -729,3 +729,112 @@ fn every_section_answers_about_the_tree_the_check_surveyed() {
         );
     }
 }
+
+/// The two lines a `PostToolUse` hook would otherwise repeat verbatim on
+/// every edit: the declined-reference count and the missing compile record.
+fn repeated_lines(out: &Output) -> Vec<String> {
+    stdout(out)
+        .lines()
+        .filter(|l| l.contains("unresolved references ") || l.contains("no compile record since @"))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A repo with something to decline (a `std` name) and no compile record, so
+/// both repeated lines are emitted.
+fn hook_repo() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(
+        dir.path(),
+        &[(
+            "crates/app/src/lib.rs",
+            "pub fn one() -> String { String::new() }\n",
+        )],
+    );
+    commit(dir.path(), "one");
+    commit(dir.path(), "two");
+    dir
+}
+
+/// T-02, ground truth: `--quick` says the unchanged counts once. The second
+/// run in the same store drops them; the full `check` never does; and
+/// `--json` is the record form, so it carries them whatever was printed.
+#[test]
+fn quick_says_the_unchanged_counts_once_and_the_full_check_always_says_them() {
+    let dir = hook_repo();
+    let first = grid(dir.path(), &["check", "--quick"]);
+    assert_eq!(code(&first), 0, "{}", stderr(&first));
+    assert_eq!(
+        repeated_lines(&first).len(),
+        2,
+        "the first --quick says both: {}",
+        stdout(&first)
+    );
+
+    let second = grid(dir.path(), &["check", "--quick"]);
+    assert!(
+        repeated_lines(&second).is_empty(),
+        "nothing moved, so nothing is repeated: {}",
+        stdout(&second)
+    );
+    assert_eq!(code(&second), 0, "suppressing a line moves no exit code");
+
+    let full = grid(dir.path(), &["check"]);
+    assert_eq!(
+        repeated_lines(&full).len(),
+        2,
+        "the full check is the record and always says them: {}",
+        stdout(&full)
+    );
+
+    let quiet = grid(dir.path(), &["check", "--quick"]);
+    assert!(
+        repeated_lines(&quiet).is_empty(),
+        "the full check does not disturb what --quick remembers: {}",
+        stdout(&quiet)
+    );
+    let raw = json(&grid(dir.path(), &["check", "--quick", "--json"]));
+    assert!(
+        raw["drift"]["unchecked"]["unresolved_refs"]
+            .as_u64()
+            .is_some(),
+        "--json is never filtered: {raw}"
+    );
+}
+
+/// T-02, conservatism: a count that *moved* is printed, whatever the last
+/// run printed. Suppressing on "I have said something before" rather than on
+/// "I have said exactly this before" would hide the one direction that
+/// matters — the honesty number getting worse.
+#[test]
+fn a_declined_count_that_moved_is_always_printed() {
+    let dir = hook_repo();
+    assert_eq!(
+        repeated_lines(&grid(dir.path(), &["check", "--quick"])).len(),
+        2
+    );
+    assert!(repeated_lines(&grid(dir.path(), &["check", "--quick"])).is_empty());
+
+    // One more `std` name the resolver declines: the count moves by one.
+    write(
+        dir.path(),
+        &[(
+            "crates/app/src/lib.rs",
+            "pub fn one() -> String { String::new() }\n\
+             pub fn two() -> Vec<u8> { Vec::new() }\n",
+        )],
+    );
+    let moved = grid(dir.path(), &["check", "--quick"]);
+    let lines = repeated_lines(&moved);
+    assert!(
+        lines.iter().any(|l| l.contains("unresolved references ")),
+        "a count that moved is said again: {}",
+        stdout(&moved)
+    );
+    // And having said it, it goes quiet again on the next unchanged turn.
+    assert!(
+        repeated_lines(&grid(dir.path(), &["check", "--quick"])).is_empty(),
+        "the new count is now the remembered one"
+    );
+}

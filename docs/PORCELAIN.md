@@ -198,6 +198,18 @@ refusal prints nothing on stdout. The default base is the plan's, else
 `HEAD~1`; head defaults to `HEAD`, the worktree. `--quick` prints the drift
 section at the proven floor and the compile section only.
 
+`--quick` has one property the full check does not: **it says an unchanged
+count once**. The closing `miss <n>  unresolved references …` line and the
+check's own `warn -  no compile record since @<prefix>` are printed only when
+their text differs from what the last `--quick` in this store printed —
+remembered as a hash of those lines in `.grid/check-quick.last`, engine state,
+safe to delete. A hook fires per edit and those two lines are otherwise
+identical every turn. A count that *moved* is always printed, which is the
+only direction that matters, and a state file grid cannot read or write
+suppresses nothing. The full `grid check` always prints both, and `--json` is
+the record form and is never filtered. Suppressing a line never moves the exit
+code.
+
 `grid interfere <other-root> [--base <rev>]` compares two worktrees of one
 repository against their common base — the merge base of the two heads unless
 `--base` names one. A definition both sides moved is `warn <callsign>
