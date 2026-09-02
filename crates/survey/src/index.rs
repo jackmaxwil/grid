@@ -9,17 +9,29 @@ use std::collections::HashMap;
 use grid_datum::{DefKind, Definition};
 use grid_wire::Lang;
 
-/// 1-based line of `at` in `source` — counted once per definition at survey
-/// time, because the snapshot is of this exact text.
-fn line_of(source: &str, at: usize) -> u32 {
-    let head = source.get(..at).unwrap_or_default();
-    u32::try_from(
-        head.bytes()
-            .filter(|b| *b == b'\n')
-            .count()
-            .saturating_add(1),
-    )
-    .unwrap_or(u32::MAX)
+/// The byte offset of every newline in one file, indexed once so a
+/// definition's line is a binary search. Counting newlines from the top of
+/// the file per definition made a survey quadratic in definitions *per
+/// file*: one 5 MB generated file took 94 s where the same 144,000
+/// definitions across 144 files took 1.2 s (verb sweep, B7).
+struct Lines(Vec<usize>);
+
+impl Lines {
+    fn of(source: &str) -> Self {
+        Self(
+            source
+                .bytes()
+                .enumerate()
+                .filter(|(_, b)| *b == b'\n')
+                .map(|(at, _)| at)
+                .collect(),
+        )
+    }
+
+    /// 1-based line of byte `at`: one more than the newlines before it.
+    fn line(&self, at: usize) -> u32 {
+        u32::try_from(self.0.partition_point(|&nl| nl < at).saturating_add(1)).unwrap_or(u32::MAX)
+    }
 }
 
 /// One indexed definition, keyed by its absolute dotted name.
@@ -91,6 +103,7 @@ impl DefIndex {
         if let Some(root) = module.split('.').next() {
             self.roots.insert(root.to_owned());
         }
+        let lines = Lines::of(source);
         for def in defs {
             let absolute = format!("{module}.{}", def.callsign);
             // `prefix.Foo@Trait.m`: the type's last segment and the method.
@@ -111,8 +124,8 @@ impl DefIndex {
                 method: def.method.clone(),
                 facts: grid_chart::DefFacts {
                     path: path.to_owned(),
-                    line: line_of(source, def.span.start),
-                    line_end: line_of(source, def.span.end),
+                    line: lines.line(def.span.start),
+                    line_end: lines.line(def.span.end),
                     span: (
                         u32::try_from(def.span.start).unwrap_or(u32::MAX),
                         u32::try_from(def.span.end).unwrap_or(u32::MAX),
@@ -288,4 +301,29 @@ fn hex_bytes(wire: &str) -> [u8; 32] {
             .unwrap_or(0);
     }
     out
+}
+
+#[cfg(test)]
+mod lines {
+    use super::Lines;
+
+    /// The same answer the from-the-top scan gave, at every offset that
+    /// matters: the first byte, a byte on a newline, the byte after one, and
+    /// one past the end of the file.
+    #[test]
+    fn a_line_is_one_more_than_the_newlines_before_it() {
+        let source = "ab\ncd\n\nef";
+        let scan = |at: usize| {
+            u32::try_from(source.get(..at).unwrap_or_default().matches('\n').count() + 1)
+                .expect("small")
+        };
+        let lines = Lines::of(source);
+        for at in 0..=source.len() {
+            assert_eq!(lines.line(at), scan(at), "offset {at}");
+        }
+        assert_eq!(lines.line(0), 1);
+        assert_eq!(lines.line(2), 1, "the newline byte is still on its line");
+        assert_eq!(lines.line(3), 2);
+        assert_eq!(lines.line(7), 4);
+    }
 }
