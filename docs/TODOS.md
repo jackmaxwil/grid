@@ -205,7 +205,11 @@ plan).
   wrapper and its `.config/nextest.toml`, keyed by `NEXTEST_BINARY_ID` and
   `NEXTEST_TEST_NAME` — verified writing one `.profraw` per test from one
   nextest run — and `grid test --trace` counts those profiles and says what
-  is still missing. Ingesting them is T-45.
+  is still missing. Ingesting them is T-45. The wrapper stands down when
+  `GRID_TEST` is in its environment, which every runner grid drives sets:
+  with both armed, the profile went to the wrapper's file and the report
+  grid read had every count zero, which `trace_of_lcov` now refuses as a
+  lost profile rather than retaining as a test that reached nothing.
 - **T-45 (P1, M) Ingest the wrapper's per-test profiles.** T-05 shipped the
   nextest wrapper template and grid notices the `.profraw` files it leaves
   (one per test, named by the test id), but still runs `cargo llvm-cov

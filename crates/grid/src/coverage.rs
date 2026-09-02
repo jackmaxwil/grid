@@ -219,14 +219,21 @@ impl Mapper {
 /// Map an lcov report onto the live chart as observations from `test`.
 ///
 /// # Errors
-/// A message when the store cannot be opened, or when the text holds no
-/// `SF:` record at all — an empty or absent report is bad input, never a
-/// trace claiming the test reached nothing (the same posture the JSON path
-/// takes with text that is not a report). An lcov record grid does not read
-/// is skipped, which is the format's own rule and not a parse failure.
+/// A message when the store cannot be opened, when the text holds no `SF:`
+/// record at all, or when no `DA:` line has a count above zero — an empty,
+/// absent or all-zero report is bad input, never a trace claiming the test
+/// reached nothing (the same posture the JSON path takes). A test that ran
+/// executed at least its own body, so an all-zero report is a profile that
+/// was written somewhere else — a second `LLVM_PROFILE_FILE` in the
+/// environment — and retaining it would license a replay on the static
+/// closure alone. An lcov record grid does not read is skipped, which is the
+/// format's own rule and not a parse failure.
 pub fn trace_of_lcov(root: &std::path::Path, lcov: &str, test: &str) -> Result<Mapped, String> {
     if !lcov.lines().any(|line| line.starts_with("SF:")) {
         return Err("not an lcov report: no SF: record (an empty report is not a test that reached nothing)".to_owned());
+    }
+    if !lcov.lines().any(|line| executed(line).is_some()) {
+        return Err("every DA: count is zero: a profile lost to another LLVM_PROFILE_FILE, not a test that reached nothing".to_owned());
     }
     let mut mapper = Mapper::open(root).map_err(|e| e.to_string())?;
     let mut current: Option<usize> = None;
@@ -235,24 +242,19 @@ pub fn trace_of_lcov(root: &std::path::Path, lcov: &str, test: &str) -> Result<M
             current = mapper.file(sf);
             continue;
         }
-        let Some(da) = line.strip_prefix("DA:") else {
-            continue;
-        };
-        let Some((line_no, count)) = da.split_once(',') else {
-            continue;
-        };
-        let (Ok(line_no), Ok(count)) = (line_no.parse::<u32>(), count.parse::<u64>()) else {
-            continue;
-        };
-        if count == 0 {
-            continue;
-        }
-        let Some(file) = current else {
+        let (Some(line_no), Some(file)) = (executed(line), current) else {
             continue;
         };
         mapper.line(file, line_no);
     }
     Ok(mapper.finish(format!("trace:lcov:{test}"), test))
+}
+
+/// The line number of a `DA:<line>,<count>` record whose count is above
+/// zero; `None` for any other line, an unparsable one included.
+fn executed(line: &str) -> Option<u32> {
+    let (line_no, count) = line.strip_prefix("DA:")?.split_once(',')?;
+    (count.parse::<u64>().ok()? > 0).then(|| line_no.parse().ok())?
 }
 
 /// Map a coverage.py JSON report onto the live chart as observations from
@@ -264,9 +266,11 @@ pub fn trace_of_lcov(root: &std::path::Path, lcov: &str, test: &str) -> Result<M
 /// all 1, and an observed edge claims reach either way.
 ///
 /// # Errors
-/// A message when the store cannot be opened, or when the text is not a
-/// coverage.py JSON report. A report grid cannot parse is bad input; it is
-/// never read as a test that reached nothing.
+/// A message when the store cannot be opened, when the text is not a
+/// coverage.py JSON report, or when no file has an executed line. A report
+/// grid cannot parse is bad input, and one with nothing executed is a lost
+/// context — the test ran its own body; neither is read as a test that
+/// reached nothing.
 pub fn trace_of_coverage_json(
     root: &std::path::Path,
     json: &str,
@@ -275,6 +279,16 @@ pub fn trace_of_coverage_json(
     let report: CoverageReport = serde_json::from_str(json).map_err(|e| {
         format!("not a coverage.py JSON report: {e} (expected files.<path>.executed_lines)")
     })?;
+    if report
+        .files
+        .values()
+        .all(|file| file.executed_lines.is_empty())
+    {
+        return Err(
+            "no executed line in any file: a lost context, not a test that reached nothing"
+                .to_owned(),
+        );
+    }
     let mut mapper = Mapper::open(root).map_err(|e| e.to_string())?;
     for (path, file) in &report.files {
         let Some(index) = mapper.file(path) else {
@@ -305,5 +319,35 @@ mod tests {
                 out.map(|m| m.trace.observations.len())
             );
         }
+    }
+
+    /// A report with `SF:` records and every `DA:` count zero is a lost
+    /// profile — a test that ran executed at least its own body — never a
+    /// test that reached nothing charted. Retained, it would license a
+    /// replay on the static closure alone; refused, the verdict is kept
+    /// untraced. The same for a coverage.py report whose every
+    /// `executed_lines` is empty.
+    #[test]
+    fn an_all_zero_report_is_a_lost_profile_not_an_empty_trace() {
+        use crate::testplan::fixtures::{owned, python, repo};
+        let dir = repo(&owned(&python(1, 2, 9, [1, 2, 3])));
+        let core = dir.path().join("pkg/core.py").display().to_string();
+        let lcov = format!("SF:{core}\nDA:1,0\nDA:2,0\nDA:5,0\nend_of_record\n");
+        let out = trace_of_lcov(dir.path(), &lcov, "t");
+        assert!(
+            out.is_err(),
+            "every DA: count is zero: a lost profile, not a trace of {:?} observations",
+            out.map(|m| m.trace.observations.len())
+        );
+        let json = format!(r#"{{"files":{{"{core}":{{"executed_lines":[]}}}}}}"#);
+        let out = super::trace_of_coverage_json(dir.path(), &json, "t");
+        assert!(
+            out.is_err(),
+            "no executed line at all: a lost profile, not a trace of {:?} observations",
+            out.map(|m| m.trace.observations.len())
+        );
+        // And one executed line is still a report.
+        let lcov = format!("SF:{core}\nDA:1,0\nDA:2,1\nend_of_record\n");
+        assert!(trace_of_lcov(dir.path(), &lcov, "t").is_ok());
     }
 }

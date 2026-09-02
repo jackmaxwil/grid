@@ -19,7 +19,18 @@
 # and comes back out of one. `grid test --trace` notices these files and says
 # so; turning them into one trace per test without a second export is
 # `docs/TODOS.md` T-45.
+#
+# Under a runner grid drives (`GRID_TEST` is set) this wrapper does nothing:
+# grid's own `cargo llvm-cov` is the tracer there, and redirecting the
+# profile away from where it reads leaves it a report with every count
+# zero — which grid refuses, so every test would run untraced. The rule is
+# here rather than in the install steps so that following them cannot arm
+# both.
 set -eu
+
+if [ -n "${GRID_TEST:-}" ]; then
+	exec "$@"
+fi
 
 dir="${GRID_LLVM_PROFILE_DIR:-${NEXTEST_WORKSPACE_ROOT:-.}/target/grid-profiles}"
 mkdir -p "$dir"

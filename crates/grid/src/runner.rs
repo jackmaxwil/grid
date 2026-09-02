@@ -650,6 +650,11 @@ fn passthrough(program: &str, root: &Path, args: &[String]) -> Result<String, St
         .env("CARGO_TERM_COLOR", "never")
         .env("NO_COLOR", "1")
         .env("PY_COLORS", "0")
+        // Says "grid is driving" to anything in the test process's
+        // environment that would otherwise trace on its own — the nextest
+        // wrapper template stands down on it, because two tracers writing
+        // one profile to two places is a report with every count zero.
+        .env("GRID_TEST", "1")
         // A runner grid drives is not an interactive one; a child that asks
         // the terminal a question would hang a hook forever.
         .stdin(Stdio::null())
@@ -744,6 +749,49 @@ mod tests {
         }
         std::fs::write(dir.path().join("coverage.lcov"), []).expect("write");
         assert_eq!(super::per_test_profiles(dir.path()), 2);
+    }
+
+    /// The wrapper template stands down under a runner grid drives: grid's
+    /// own `cargo llvm-cov` is the tracer there, and a wrapper that
+    /// redirected every profile into `target/grid-profiles` left the report
+    /// grid reads with every count zero — an empty trace per test, and a
+    /// replay licensed on nothing. The rule is the wrapper's, not the user's:
+    /// following the install steps cannot arm both.
+    #[test]
+    fn the_wrapper_template_arms_nothing_under_a_runner_grid_drives() {
+        let template = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/templates/grid-trace-wrapper.sh"
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let show = ["-c", "printf %s \"${LLVM_PROFILE_FILE:-unset}\" >&2"];
+        let args: Vec<String> = [template, "/bin/sh", show[0], show[1]]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        let out = super::passthrough("/bin/sh", dir.path(), &args).expect("the wrapper ran");
+        assert!(
+            out.contains("unset"),
+            "under grid the wrapper leaves the profile where cargo llvm-cov put it: {out}"
+        );
+        assert!(
+            !dir.path().join("target/grid-profiles").exists(),
+            "and creates no profile directory of its own"
+        );
+        // On its own — the user's `cargo llvm-cov nextest --no-report` — it
+        // still names one profile per test.
+        let own = std::process::Command::new("/bin/sh")
+            .args(&args)
+            .current_dir(dir.path())
+            .env("NEXTEST_BINARY_ID", "fx::t")
+            .env("NEXTEST_TEST_NAME", "a")
+            .output()
+            .expect("the wrapper ran");
+        let profile = String::from_utf8_lossy(&own.stderr);
+        assert!(
+            profile.ends_with("/target/grid-profiles/fx%3A%3At%20a.profraw"),
+            "{profile}"
+        );
     }
 
     /// Both of the child's streams are drained while it runs, and the parse
