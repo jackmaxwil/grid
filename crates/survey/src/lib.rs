@@ -473,17 +473,19 @@ impl DeclinedTotals {
     /// The rows as the segment stores them — `u16` per column, saturating —
     /// and how many definitions saturated.
     fn rows(&self) -> (HashMap<grid_chart::DatumId, grid_chart::Declined>, u64) {
+        let narrow = |n: u32| u16::try_from(n).unwrap_or(u16::MAX);
         let mut saturated = 0u64;
-        let mut narrow = |n: u32| {
-            u16::try_from(n).unwrap_or_else(|_| {
-                saturated = saturated.saturating_add(1);
-                u16::MAX
-            })
-        };
         let rows = self
             .per_def
             .iter()
             .map(|(datum, row)| {
+                // One definition, however many of its columns overflow.
+                if [row.external, row.method, row.internal, row.refused]
+                    .iter()
+                    .any(|n| u16::try_from(*n).is_err())
+                {
+                    saturated = saturated.saturating_add(1);
+                }
                 (
                     grid_chart::DatumId(*datum),
                     grid_chart::Declined {

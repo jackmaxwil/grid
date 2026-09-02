@@ -268,6 +268,26 @@ fn a_per_definition_counter_saturates_and_is_reported() {
     assert_eq!(rows[0].1.method, u16::MAX, "{rows:?}");
 }
 
+/// Saturation is counted per definition, not per column: one definition
+/// whose `method` and `external` both overflow is one saturated definition.
+#[test]
+fn a_definition_saturating_two_columns_is_counted_once() {
+    let method = "y.m();".repeat(70_000);
+    let external = "x.m();".repeat(70_000);
+    let src = format!("pub fn f(x: Vec<u8>) {{ for y in x {{ {method} }} {external} }}\n");
+    let dir = repo(&[
+        ("Cargo.toml", "[package]\nname = \"fixture\"\n"),
+        ("src/lib.rs", &src),
+    ]);
+    let s = survey(dir.path());
+    assert_eq!(s.declined_method, 70_000, "{s:?}");
+    assert_eq!(s.declined_external, 70_000, "{s:?}");
+    let rows = per_def(&s);
+    assert_eq!(rows.len(), 1);
+    assert_eq!((rows[0].1.method, rows[0].1.external), (u16::MAX, u16::MAX));
+    assert_eq!(s.declined_saturated, 1, "one definition saturated");
+}
+
 /// A prelude name is not a hole in this tree: `Some(..)`, `Ok(..)`,
 /// `drop(..)` and a derived or implemented prelude trait were never the
 /// tree's to hold, and counting them `internal` inflated the one number
