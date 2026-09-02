@@ -1,0 +1,32 @@
+{
+  "plan_id": "plan:from-diff-540b6d950494",
+  "base": {
+    "snapshot": "snap:b3:2a8c7d3736f8ddbb61f9fba6a3c0ebe4c26016a9daa9782ca5ca540b6d950494"
+  },
+  "delta": {
+    "defs": [
+      {
+        "action": "modify",
+        "callsign": "scripts.forge_tracking.hygiene",
+        "interface": false
+      },
+      {
+        "action": "modify",
+        "callsign": "scripts.forge_tracking.selfcheck",
+        "interface": false
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.forge_tracking.selfcheck.pinned_issue_pages"
+      }
+    ],
+    "edges": [
+      {
+        "action": "add",
+        "src": "scripts.forge_tracking.selfcheck",
+        "relation": "calls",
+        "dst": "scripts.forge_tracking.selfcheck.pinned_issue_pages"
+      }
+    ]
+  }
+}
