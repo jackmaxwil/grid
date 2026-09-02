@@ -8,6 +8,16 @@
 //!
 //! The conservatism half is the four refusal rules, each removable one at a
 //! time as a named mutation, plus the receivers no rule may type.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::print_stderr
+)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
