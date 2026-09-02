@@ -208,11 +208,27 @@ declarations and the plans a change is gated against:
 a negation under `.grid/` is never reached and the declaration would be
 ignored anyway.
 
-Gates before any commit: `cargo fmt --all --check`, `cargo clippy
---workspace --all-targets` (pedantic, deny), `cargo test --workspace`,
+Gates before any commit: `just check` — `fmt-check`, `clippy --workspace
+--all-targets` (all + pedantic, denied), the guardrails, and the suite. The
+three are independent lanes, and CI runs each through `just lane`, which
+carries the invariant that the gate regenerated nothing into a split run.
+
+`just guardrails` on its own runs the checks under `scripts/guardrails/` —
+manifest and crate-boundary law, source-shape ceilings, comment discipline,
+the `GRID_*` env surface, blob size, the dependency budget, commit style,
 `cargo deny check`, `scripts/check-assurance-links.sh`,
-`scripts/check-unsafe-confined.sh`. `just check` bundles them; `just
-fuzz`, `just miri`, `just soak`, `just verify` for the deeper rungs.
+`scripts/check-unsafe-confined.sh`, and the proof that `crates/wire` is still
+byte-identical to what `scripts/gen-wire.py` writes from the contract.
+`codespell`, `cargo-deny`, `cargo-machete` and `cargo-nextest` are used when
+they are on `PATH` and announced when they are not; none of them is a
+dependency.
+
+`just hooks` points git at `.githooks/`: `just precommit` (the build-free
+subset) on commit, the whole gate on push. Nothing installs them for you.
+
+Deeper rungs, by the claim they evidence: `just miri` (C1), `just verify`
+(kani, C3), `just soak` (C11), `just fuzz <target>`. `just har` runs the
+assurance lane. `docs/TOOLING.md` says where each mechanism came from.
 
 ## Architecture
 

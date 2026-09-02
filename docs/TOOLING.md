@@ -135,8 +135,28 @@ same three, plus one grid-specific piece yi has no equivalent for:
 `check-unsafe-confined.sh`, and the verification rungs a claim's evidence
 column names) as one verb.
 
+`scripts/check-assurance-links.sh` is grid's own and predates this port, and
+porting yi's habits found two holes in it. Its wave-parsing case chain was
+three overlapping arms rather than one exclusive one, and the third arm also
+matched the `N+` form and then failed its own equality test — so **every
+standing claim skipped itself before the evidence was ever looked for**: C5,
+C10, and all thirty `10+` rows. And a row naming four evidence files passed if
+any one of them existed, so a claim could lose its actual evidence and stay
+green behind a surviving sibling. Both are fixed here, and both fixes were
+seen red first: C44 with its check deleted, C5 with `check-unsafe-confined.sh`
+deleted. Two evidence columns carried prose fragments rather than filenames
+(`incremental≡full` on C2, `(cache)` on C4); those are now file lists, and
+the statements already said what the fragments were reaching for.
+
+`docs/ASSURANCE.md` gains **C44**: every file under `crates/wire/src` is
+byte-identical to what `gen-wire.py` writes and `rustfmt` normalizes. That is
+the claim `check_wire_drift.py` is the evidence for, and it makes the
+generated-code rule part of the assurance case rather than a habit.
+
 Dependency rule, unchanged and restated: no new **runtime** crate dependency.
 `Cargo.lock` must not gain a package for tooling. Every tool this port adds —
-`codespell`, `cargo-nextest`, `cargo-machete` — is a binary on `PATH`, checked
-for and announced-skipped when absent, exactly as yi treats codespell. None
-of them is a `dev-dependency`, so the lockfile does not move.
+`codespell`, `cargo-nextest`, `cargo-machete`, `cargo-fuzz`, `kani` — is a
+binary on `PATH`, checked for and announced-skipped when absent, exactly as yi
+treats codespell. None of them is a `dev-dependency`, so the lockfile does not
+move: `git diff` on `Cargo.lock` is empty across the whole port, and
+`docs/ASSURANCE.md`'s dependency section says so in its own words.
