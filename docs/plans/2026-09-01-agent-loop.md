@@ -1,9 +1,11 @@
 # Agent loop: the honesty number, `grid test`, `grid check`, `grid scope --bodies`
 
-Status: **proposed**, 2026-09-01. Follows the drift plan
-(`2026-09-01-drift.md`, implemented) and the naming plan
-(`2026-09-01-naming.md`, which lands first so every verb here is born with
-its final name — this document already uses those names). Scope: what
+Status: **proposed, ready to execute**, 2026-09-01. Follows the drift
+plan (`2026-09-01-drift.md`, implemented) and the naming plan
+(`2026-09-01-naming.md`, implemented and merged as PR #2, so every verb here
+is born with its final name — this document uses those names, and Part IV
+step 9 is reconciled against the `grid.check` the naming plan actually
+shipped). Scope: what
 survived a pressure test of grid's value to a coding agent on a Rust,
 Rust + Python, or Python repository — the areas the test kept, at the
 minimum each needs. Authority: ONTOLOGY.md for vocabulary, PORCELAIN.md
@@ -407,6 +409,14 @@ stays `ls-tree`. Two spawns per rev survey, total.
 **Perf.** yi `grid survey HEAD~1`: ~10s → under 1s (the survey itself is
 ~270ms). Grid: no measurable change (92 files).
 
+#### 0c. One retired word the naming sweep missed
+
+`crates/grid/src/main.rs` still prints `usage: grid cache check|record …`
+on a malformed `cache` invocation (the conservatism test exercises the
+good paths and the top-level usage, not this hint). One line; the
+conservatism test gains the malformed-`cache` invocation so it stays
+caught.
+
 #### 0b. The declined count says what it declined
 
 **Problem.** One number for three populations, and Rust method calls are
@@ -655,10 +665,11 @@ chart plus the flags the compile ran with.
 - The changed set is the same `C` as `grid drift` (sig moved or unknown);
   a body-only edit has no uncompiled-caller problem.
 
-**Wire (additive).** `grid.check` (step 9) embeds `CompileReport {
-compiled_with: CompileRecord, uncompiled: Vec<DriftSuspect>, unknown:
-Vec<DriftWarning> }`; `DriftSuspect.reason` carries `uncompiled:<cfg>`;
-`DefRef` gains `cfg: Option<String>`.
+**Wire (additive).** `CheckResult` (step 9) gains `compile:
+Option<CompileReport>` where `CompileReport { compiled_with: CompileRecord,
+uncompiled: Vec<DriftSuspect>, unknown: Vec<DriftWarning> }`;
+`DriftSuspect.reason` carries `uncompiled:<cfg>`; `DefRef` gains
+`cfg: Option<String>`.
 
 **Tests.**
 - Ground truth: `#[cfg(test)] mod tests { fn t() { changed() } }` → one
@@ -852,7 +863,7 @@ brainstorm's "every derive is a boundary" to what is actually decidable.
   no attribute vocabulary to read yet — recorded, not built.
 
 **Wire (additive).** `CompatFinding { def: DefRef, rule: String, declared:
-bool }` on `CheckReport` (step 9); `InvariantRule` gains the `persisted`
+bool }` on `CheckResult` (step 9); `InvariantRule` gains the `persisted`
 variant.
 
 **Tests.** Ground truth per rule (six fixtures, each the smallest struct
@@ -941,7 +952,7 @@ grid check [base] [head] [--plan <file>] [--quick] [--why] [--json]
 - `--quick`: drift + compile record only, no trace or verdict-log reads;
   the PostToolUse form, budgeted under 50ms.
 - Composition rule: every section is the corresponding verb's own result
-  (`CheckReport` embeds `DriftReport`, `CompileReport`, `GateVerdict`,
+  (`CheckResult` embeds `DriftReport`, `CompileReport`, `GateVerdict`,
   `Vec<StaleTest>`, `Vec<WeakTest>`, `Vec<CompatFinding>`, …), not a
   re-implementation; a section that **refuses** (aground, unknown
   snapshot, superseded store) refuses the whole check with that reason
@@ -951,9 +962,24 @@ grid check [base] [head] [--plan <file>] [--quick] [--why] [--json]
   the workspace-level unused-`pub` question rustc cannot ask (it checks
   per crate). Heuristic; `pub` in a published crate stays a maybe.
 
-**Wire (additive).** `grid.check` → `CheckReport`; `CloneFinding`; the
-orphans result gains `traces: Option<u64>` per item (a new struct if the
-item is a bare `DefRef` today — never a repurposed column).
+**Wire.** `grid.check` already exists after the naming plan as the folded
+review pack: `CheckParams { plan: PlanId, head, trace }` →
+`CheckResult { verdict: GateVerdict, why: Option<CheckWhy> }`. Step 9
+widens it in place rather than adding a second method: `CheckParams.plan`
+becomes `Option<PlanId>` and `CheckParams` gains `base: Option<SnapshotOrRev>`
+and `quick: Option<bool>`; `CheckResult.verdict` becomes
+`Option<GateVerdict>` (absent without a plan), and `CheckResult` gains the
+optional sections `drift: Option<DriftReport>`, `compile:
+Option<CompileReport>`, `stale: Option<Vec<StaleTest>>`, `weak:
+Option<Vec<WeakTest>>`, `uncovered: Option<Vec<DefRef>>`, `clones:
+Option<Vec<CloneFinding>>`, `compat: Option<Vec<CompatFinding>>`,
+`refactor: Option<RefactorCertificate>`. Loosening `plan` and `verdict`
+from required to optional is not additive by the letter of the rule; it
+is taken as wire 1.1 while epoch 1 has no consumer (it shipped the same
+day), recorded here as the one exception and the reason. `CloneFinding`
+and `RefactorCertificate` are new structs. The orphans result gains
+`traces: Option<u64>` per item (a new struct if the item is a bare
+`DefRef` today — never a repurposed column).
 
 **Porcelain.** Sections print in gate-first order with the existing
 records (`drift`, `def`, `inv`, `miss`, `warn`, `done`); the version bumps
