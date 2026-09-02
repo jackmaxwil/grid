@@ -1153,3 +1153,101 @@ fn a_format_word_the_compile_report_cannot_honour_is_bad_input() {
         stderr(&out)
     );
 }
+
+/// T-11, conservatism: a word a human authored cannot break the document.
+///
+/// Every bullet is ``- `what` — why — `file:line` ``, and `why` carries
+/// declaration-authored text — a covenant's `via` word, a `cfg` predicate, a
+/// compat rule name. A backtick in one of those closes the code span it sits
+/// in and swallows the rest of the line, so the reviewer reads a bullet that
+/// says something other than what grid found. The document is a review
+/// surface: a finding rendered wrong is worse than a finding rendered plain.
+#[test]
+fn a_backtick_in_a_declared_word_does_not_break_the_document() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(
+        dir.path(),
+        &[
+            ("pkg/__init__.py", ""),
+            (
+                "pkg/writer.py",
+                "def encode(tag):\n    return {\"n\": tag}\n",
+            ),
+            (
+                "pkg/reader.py",
+                "def decode(blob):\n    return blob[\"n\"]\n",
+            ),
+        ],
+    );
+    commit(dir.path(), "before");
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    // A `via` word with a backtick in it. Nothing refuses this — it is a
+    // human's note about a boundary, and grid does not police prose.
+    let declared = grid(
+        dir.path(),
+        &[
+            "covenant",
+            "pkg.writer.encode",
+            "pkg.reader.decode",
+            "--via",
+            "wire`schema",
+        ],
+    );
+    assert_eq!(code(&declared), 0, "{}", stderr(&declared));
+    // One side moves, so the covenant fires and the reason reaches a bullet.
+    write(
+        dir.path(),
+        &[(
+            "pkg/writer.py",
+            "def encode(tag):\n    return {\"n\": str(tag)}\n",
+        )],
+    );
+    commit(dir.path(), "after");
+
+    let doc = stdout(&grid(dir.path(), &["check", "--format", "md"]));
+    let fires: Vec<&str> = doc
+        .lines()
+        .filter(|l| l.starts_with("- ") && l.contains("covenant:"))
+        .collect();
+    assert_eq!(fires.len(), 1, "the covenant fired once:\n{doc}");
+    assert_eq!(
+        fires[0].matches('`').count() % 2,
+        0,
+        "every code span the bullet opened is closed: {}",
+        fires[0]
+    );
+    assert!(
+        fires[0].contains("covenant:wire'schema"),
+        "and the word is still legible, substituted rather than dropped: {}",
+        fires[0]
+    );
+}
+
+/// T-11: `--why` is not silently swallowed by `--format md`.
+///
+/// The document has no section for the gate's fulfilling paths, so `--why`
+/// adds nothing to it. That is the `--quick` case rather than the `--format
+/// md`-beside-`--compile` case: `--why` adds content to a form the caller
+/// still gets, so it is hinted, not refused. What it must not be is silent.
+#[test]
+fn why_beside_format_md_is_hinted_rather_than_swallowed() {
+    let dir = loaded_repo();
+    let plain = grid(dir.path(), &["check", "--format", "md"]);
+    let with_why = grid(dir.path(), &["check", "--format", "md", "--why"]);
+    assert_eq!(
+        stdout(&with_why),
+        stdout(&plain),
+        "the document is the same one either way"
+    );
+    assert!(
+        stderr(&with_why).contains("--why"),
+        "and the flag that changed nothing says so: {}",
+        stderr(&with_why)
+    );
+    assert!(
+        !stderr(&plain).contains("--why"),
+        "a caller who did not ask is not told: {}",
+        stderr(&plain)
+    );
+}

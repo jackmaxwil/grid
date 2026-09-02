@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.15.0
+version: 2.16.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -293,7 +293,10 @@ be re-keyed) and the compile report's undecided `cfg` predicates. A gate is
 loud in either form, but a check that quietly stopped running looks exactly
 like a check that passed, and the document is what a human reviews from. Every bullet is
 ``- `callsign` — reason — `file:line` ``, the three columns keeping their
-meaning throughout: what, why, where. A section with nothing in it is omitted
+meaning throughout: what, why, where. A backtick in a value the document
+renders — a callsign, a path, a covenant's `via` word, a `cfg` predicate, a
+compat rule name — is substituted with `'` so it cannot close the span it
+sits in and swallow the rest of the bullet. A section with nothing in it is omitted
 rather than printed empty. Nothing is computed for this form — every bullet is
 a field of the same `CheckResult` the records render, so the two cannot
 disagree about what gated — and the exit code is the composite's own. A
@@ -305,7 +308,10 @@ bad input; an unknown format word is bad input rather than a silent fall back
 to records, and so is `--format md` beside `--compile` with no `--plan`,
 where the compile record's own report is the whole answer and has no
 document form. (`--quick` in that position is hinted rather than refused: it
-filters an output form instead of choosing one.) `--quick`'s repeat filter is porcelain's alone: a review comment
+filters an output form instead of choosing one. `--why` beside `--format md`
+is hinted for the same reason — the document has no section for the gate's
+fulfilling paths, so the flag adds nothing, but it is never dropped in
+silence.) `--quick`'s repeat filter is porcelain's alone: a review comment
 that omitted a count because a hook had already seen it would be a comment
 about a different check.
 

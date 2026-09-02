@@ -607,9 +607,9 @@ pub fn markdown(answer: &CheckResult, name: &crate::porcelain::NameOf) -> String
     // so the message stands on its own.
     let line = |w: &DriftWarning| {
         if w.subject == "-" {
-            w.message.clone()
+            flat(&w.message)
         } else {
-            format!("{}: {}", w.subject, w.message)
+            format!("{}: {}", flat(&w.subject), flat(&w.message))
         }
     };
     // Every `warn` the records emit, from all three places that emit one: the
@@ -774,20 +774,37 @@ fn section(out: &mut String, title: &str, rows: impl Iterator<Item = String>) {
     }
 }
 
+/// A value that goes into the document as itself: a callsign, a path, a
+/// covenant's `via` word, a `cfg` predicate, a compat rule name.
+///
+/// A backtick in one of those closes the code span it sits in and swallows
+/// the rest of the line, so the reviewer reads a bullet saying something
+/// other than what grid found. Substituted rather than backslash-escaped
+/// because markdown does not honour a backslash inside a code span, and a
+/// bullet is read, not parsed. `*` and `_` are left alone: inside a span
+/// they are literal, and in the reason they are a cosmetic risk, not a
+/// legibility one.
+fn flat(text: &str) -> String {
+    text.replace('`', "'")
+}
+
 /// One bullet: the callsign in backticks, the reason, and `file:line` in
 /// backticks — the one shape every section uses, so the three columns keep
 /// their meaning throughout the document: what, why, where.
 fn bullet(what: &str, why: &str, at: Option<&DefRefMaterialization>) -> String {
+    let what = flat(what);
     match at {
-        Some(at) => format!("- `{what}` — {why} — `{}:{}`\n", at.file, at.line),
+        Some(at) => format!("- `{what}` — {why} — `{}:{}`\n", flat(&at.file), at.line),
         None => format!("- `{what}` — {why}\n"),
     }
 }
 
 fn named(def: &DefRef, show: &impl Fn(&Datum) -> String) -> String {
-    def.callsign
-        .as_ref()
-        .map_or_else(|| show(&def.datum), |c| c.0.clone())
+    flat(
+        &def.callsign
+            .as_ref()
+            .map_or_else(|| show(&def.datum), |c| c.0.clone()),
+    )
 }
 
 /// A suspect's bullet: the dependent, what it depends on and how, and where
@@ -796,7 +813,7 @@ fn suspect_bullet(suspect: &grid_wire::DriftSuspect, show: &impl Fn(&Datum) -> S
     let relation = grid_gate::lint::relation_name(suspect.relation);
     let changed = named(&suspect.changed, show);
     let grade = grade(suspect.grade);
-    let why = match suspect.reason.as_deref() {
+    let why = match suspect.reason.as_deref().map(flat) {
         Some(reason) => format!("{relation} `{changed}` ({grade}, {reason})"),
         None => format!("{relation} `{changed}` ({grade})"),
     };
@@ -810,7 +827,7 @@ fn suspect_bullet(suspect: &grid_wire::DriftSuspect, show: &impl Fn(&Datum) -> S
 fn compat_bullet(finding: &grid_wire::CompatFinding, show: &impl Fn(&Datum) -> String) -> String {
     bullet(
         &named(&finding.def, show),
-        &format!("compat: {}", finding.rule),
+        &format!("compat: {}", flat(&finding.rule)),
         finding.def.materialization.as_ref(),
     )
 }

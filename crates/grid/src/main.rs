@@ -1955,6 +1955,14 @@ fn check_emit(pack: &grid_wire::CheckResult, form: &Form, why: bool, quick: bool
             }
         }
         Form::Markdown => {
+            // The document has no section for the gate's fulfilling paths, so
+            // `--why` adds nothing to it. Hinted rather than refused: it adds
+            // content to a form the caller still gets, which is `--quick`'s
+            // case, not the one `check_conflicts` turns away. What it must
+            // not be is silent.
+            if why {
+                hint("grid: --why adds the gate's fulfilling paths to the records; the document has no section for them, so --why is ignored");
+            }
             print!("{}", check::markdown(pack, &namer()));
             return code;
         }
