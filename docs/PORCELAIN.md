@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.11.0
+version: 2.16.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -50,9 +50,14 @@ success: insufficient history is bad input (exit `2`) with the explanation on
 stderr and no stdout records. Seeded test fixtures exercise this grammar but
 are not production-history claims.
 
-`grid suspects <test> --closure <snapshot|rev>` is the same verb's second
+`grid suspects <test> --closure [<snapshot|rev>]` is the same verb's second
 evidence mode, for the failure that has no history at all — the test passed
-at the last snapshot and fails now. Its rows are the same `hit` records with
+at the last snapshot and fails now. With no snapshot after it, the flag uses
+the last one at which that test recorded a `pass` — the verdict log's entry,
+through the trace it names, to the snapshot that trace was mapped against —
+and one stderr line says which snapshot answered. No such record is bad input
+(exit `2`) with the two ways out on stderr, never a ranking against head,
+which would be empty and read as "nothing in the closure moved". Its rows are the same `hit` records with
 the word `closure` where the Ochiai score sits, and `via <k> hops, datum
 moved` as the evidence: the definitions the test's closure at head can reach
 whose datum that snapshot did not hold — a body that moved, or one that
@@ -198,6 +203,30 @@ refusal prints nothing on stdout. The default base is the plan's, else
 `HEAD~1`; head defaults to `HEAD`, the worktree. `--quick` prints the drift
 section at the proven floor and the compile section only.
 
+`--quick` has one property the full check does not: **it says an unchanged
+count once**. The closing `miss <n>  unresolved references …` line and the
+check's own `warn -  no compile record since @<prefix>` are printed only when
+their text differs from what the last `--quick` in this store printed —
+remembered as a hash of those lines in `.grid/check-quick.last`, engine state,
+safe to delete. A hook fires per edit and those two lines are otherwise
+identical every turn. A count that *moved* is always printed, which is the
+only direction that matters, and a state file grid cannot read or write
+suppresses nothing. The full `grid check` always prints both, and `--json` is
+the record form and is never filtered. Suppressing a line never moves the exit
+code.
+
+`grid invariant persisted <pattern> [--note <text>]` declares a standing
+rule and `grid invariant --list` prints the repo's set; both emit `inv
+standing <id>` records, the same record `grid todo` prints for a plan's own
+rules, with the id `persisted:<pattern>`. Declaring the same pattern twice is
+one rule. The pattern is resolved against the live chart and one that matches
+nothing is bad input (exit `2`) with the closest charted callsigns on stderr
+and nothing written — a rule that can never fire reads as protection and is
+not. `persisted` is the only kind this verb writes; `forbid-edge` and
+`require-edge` are authored in `.grid/invariants.json` by hand and survive a
+`grid invariant` call byte for byte, which is also how any rule is removed.
+`--note` rides as the rule's `description`.
+
 `grid interfere <other-root> [--base <rev>]` compares two worktrees of one
 repository against their common base — the merge base of the two heads unless
 `--base` names one. A definition both sides moved is `warn <callsign>
@@ -224,20 +253,67 @@ a file grid cannot read is not a file with nothing in it.
 
 ## Text-mode output
 
-Two verbs answer in prose rather than records, because their answer *is*
-prose: `grid explain <word>` and `grid scope --bodies`/`--sigs`. Their stdout
-is a document — `## <callsign>  <file:line>  (body, hop k)` and `## sig
-<callsign>  <file:line>  (hop k)` headers, each followed by the text, closed
-by one `# horizon: bodies complete through <N|none>, sigs through <M|none>,
-≈<T> tokens (bytes/4)` line that names the depth each tier is complete to.
-The record grammar above does not apply to those lines and no consumer should
-parse them as records: `--json` is the record form, and for `scope` it is the
-`ScopePack`'s additive `bodies`, `sigs` and `horizon`. The budget is spent in
-whole hop layers, farthest first, so the horizon is never a claim about a
-layer that was cut in half; a body layer that will not fit is demoted to its
-sigs before it is dropped, and a pack that packed nothing still prints its
-horizon line. Without `--bodies` and `--sigs`, `grid scope` prints the same
-`ref`/`edge`/`inv` records it always has.
+Three verbs answer in prose rather than records, because their answer *is*
+prose: `grid explain <word>`, `grid scope --bodies`/`--sigs`, and `grid check
+--format md`. **The rule over all of them: `--json` is always the record
+form.** A text mode is a rendering for a human reader — a terminal, a review
+comment — and no consumer should parse one; every fact in one is a field of
+the same wire result, and the wire result is what a machine reads. The record
+grammar above does not apply to any line in this section.
+
+`grid explain <word>` and `grid scope --bodies`/`--sigs` print a document —
+`## <callsign>  <file:line>  (body, hop k)` and `## sig <callsign>
+<file:line>  (hop k)` headers, each followed by the text, closed by one
+`# horizon: bodies complete through <N|none>, sigs through <M|none>, ≈<T>
+tokens (bytes/4)` line that names the depth each tier is complete to. For
+`scope` the record form is the `ScopePack`'s additive `bodies`, `sigs` and
+`horizon`. Two named presets stand for the two depth pairs worth knowing:
+`--orient` is `--bodies 0 --sigs 2` (the shape of an unfamiliar tree, no
+bodies paid for) and `--edit` is `--bodies 1 --sigs 3` (what the first step of
+an edit loop needs). Each only *supplies* a depth — an explicit `--bodies` or
+`--sigs` beside one wins, whichever order they were typed in — and neither
+touches `--depth`, `--budget` or `--since`. The budget is spent in whole hop
+layers, farthest first, so the horizon is never a claim about a layer that was
+cut in half; a body layer that will not fit is demoted to its sigs before it
+is dropped, and a pack that packed nothing still prints its horizon line.
+Without `--bodies` and `--sigs`, `grid scope` prints the same `ref`/`edge`/
+`inv` records it always has.
+
+`grid check --format md` is the composite as one markdown document, for
+pasting into a pull request. A `# grid check @<base> → @<head>` heading, then
+one line saying what the exit code means, then `## Gates` — `### Drift
+suspects`, `### Covenant fires`, `### Uncompiled callers`, `### Adherence`,
+`### Stale verdicts`, `### Declared compat`, in the porcelain's own gate-first
+order — then `## Tail` (`### Weak tests`, `### Uncovered`, `### Clone-of`,
+`### Compat`), then `## Certificate` when no gate fired, and — after a `---`
+rule — a `Not checked:` footer carrying the unchecked counts and **every
+`warn` the records carry**: the composite's own, the drift report's (a
+covenant whose pattern matches nothing, a test whose verdicts can no longer
+be re-keyed) and the compile report's undecided `cfg` predicates. A gate is
+loud in either form, but a check that quietly stopped running looks exactly
+like a check that passed, and the document is what a human reviews from. Every bullet is
+``- `callsign` — reason — `file:line` ``, the three columns keeping their
+meaning throughout: what, why, where. A backtick in a value the document
+renders — a callsign, a path, a covenant's `via` word, a `cfg` predicate, a
+compat rule name — is substituted with `'` so it cannot close the span it
+sits in and swallow the rest of the bullet. A section with nothing in it is omitted
+rather than printed empty. Nothing is computed for this form — every bullet is
+a field of the same `CheckResult` the records render, so the two cannot
+disagree about what gated — and the exit code is the composite's own. A
+section that refuses refuses the *whole* document: exit `1` or `2`, the reason
+on stderr, and nothing at all on stdout, because a document with a heading, no
+gates and a footer is the same shape as a clean check and a reviewer skims
+shape. `--format md` and `--json` are two output forms and asking for both is
+bad input; an unknown format word is bad input rather than a silent fall back
+to records, and so is `--format md` beside `--compile` with no `--plan`,
+where the compile record's own report is the whole answer and has no
+document form. (`--quick` in that position is hinted rather than refused: it
+filters an output form instead of choosing one. `--why` beside `--format md`
+is hinted for the same reason — the document has no section for the gate's
+fulfilling paths, so the flag adds nothing, but it is never dropped in
+silence.) `--quick`'s repeat filter is porcelain's alone: a review comment
+that omitted a count because a hook had already seen it would be a comment
+about a different check.
 
 ## Glyphs
 
@@ -265,6 +341,17 @@ orphans, zero edges) exits `0` with no records; a name that resolves to
 *nothing* is bad input (`2`), and the stderr hint lists the closest charted
 callsigns — silence was read as "does not exist", which is the one
 conclusion grid never licenses.
+
+A refusal a survey would fix says so, in one hint line that names the
+command **and the tree to run it in** — `hint: run \`grid survey\` in <root>`,
+or `hint: run \`grid survey <rev>\` in <root>`. It is one line because it is
+one action; it names the tree because the tree is usually not the one the
+reader is standing in (`grid interfere` refuses about *the other* worktree),
+and a superseded store — which opens empty, and so looks exactly like a store
+nobody surveyed — says which format epoch it superseded before the same
+command. A refusal a survey does *not* fix (a rev git cannot name, a snapshot
+id that names content the store never held) carries no such line: a hint that
+would not work is worse than none.
 
 ## Versioning
 

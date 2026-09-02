@@ -190,7 +190,7 @@ plan).
   the `unchecked` line and the no-compile-record warning only when they
   changed since the last check in this store (a one-line state file).
   Stated in PORCELAIN as a `--quick` property; the full form always
-  prints them.
+  prints them. (done eb946ff)
 - **T-03 (P0, S) First-run banner for `grid test`.** When zero traces are
   retained: one stderr line naming the fact and the two commands (install
   `cargo-llvm-cov` / `pytest-cov`; run `grid test --trace --all` once).
@@ -209,19 +209,19 @@ plan).
   case. The gate stays the judge.
 - **T-09 (P1, S) Default `since` for `suspects --closure`.** The last
   snapshot at which the test recorded `pass` (from the verdict log); say
-  which one was used.
+  which one was used. (done 6dfb18c)
 - **T-10 (P1, S) Refusal hints name the command.** `interfere` on a
   superseded other store says `run grid survey in <root>`; every
-  superseded-store refusal does the same.
+  superseded-store refusal does the same. (done 545faae)
 - **T-11 (P1, S) `grid check --format md`.** One markdown document for a
   PR comment: gates, then tail, then the certificate. Porcelain stays the
-  record form; `--json` the wire form.
+  record form; `--json` the wire form. (done 7702ec7)
 - **T-12 (P1, S) `grid invariant persisted <pattern>`** (and `--list`),
-  the `covenant` verb's shape, writing `.grid/invariants.json`.
+  the `covenant` verb's shape, writing `.grid/invariants.json`. (done a558a9e)
 - **T-21 (P1, S) `scope` default depths.** With `--bodies` alone, `--sigs`
   defaults to 3; on a hub the hop-1 body layer rarely fits a small budget
   and demotes to sigs silently-but-stated. Consider `--bodies 0 --sigs 2`
-  as the documented "orient" preset and `--bodies 1 --sigs 3` as "edit".
+  as the documented "orient" preset and `--bodies 1 --sigs 3` as "edit". (done af265fe)
 - **T-22 (P2, S) `grid explain` for exit codes and record tags in
   context** (`grid explain miss`, `grid explain 3`).
 
@@ -246,7 +246,7 @@ plan).
   reference — a survey-architecture change with its own plan.
 - **T-24 (P1, S) `check` opens the store once.** Sections currently
   compose verbs that each open the store and resolve the base rev
-  (~13ms each, one git spawn for a rev). Pass the opened chart down.
+  (~13ms each, one git spawn for a rev). Pass the opened chart down. (done e27b8c5)
 - **T-25 (P2, S) `suspects --closure` by rev spawns `rev-parse`.** Resolve
   through the store's rev label first (as `check` does); 15.8ms → ~4ms.
 - **T-26 (P2, S) Body reads in `scope --bodies`.** Memoized per file
@@ -286,7 +286,8 @@ plan).
 - **T-34 (P1, M) Repo tooling port from yi** — CI, lint config, guards,
   skills, comment enforcement (in progress on `claude/grid-tooling`).
 - **T-35 (P1, S) `docs/PORCELAIN.md` text-mode section** covers `scope
-  --bodies` and `explain`; add `check --format md` when T-11 lands.
+  --bodies`, `explain` and `check --format md`, under the stated rule that
+  `--json` is always the record form. (done 7702ec7)
 - **T-36 (P2, S) A walkthrough doc** — one real session transcript of A1
   on this repo, records and exit codes shown.
 
@@ -452,6 +453,44 @@ fix.
 - **Flake** — `crates/chart-io/tests/crash_safety.rs:59` tripped its own
   "never observed a published epoch" guard once under a full parallel
   suite; 3/3 green alone. The harness's kill window is time-based.
+
+## From the 2026-09-02 review of `claude/grid-p1-check` (forge PR #23)
+
+F1–F7 and F10 were fixed on that branch. What was left, and why.
+
+- **P-F4b (medium)** `crates/grid/src/standing.rs` `save` and
+  `crates/grid/src/covenant.rs` `save` publish by rename now, but neither
+  takes a lock, so two concurrent `grid invariant` (or `grid covenant`)
+  calls read-modify-write the whole file and one declaration is lost with
+  no error. Left out of the atomicity fix on purpose: a different failure
+  with a different remedy (an `O_EXCL` lock file beside the declaration, or
+  a compare-and-swap on the bytes read). Rare today — both verbs are
+  hand-run — and it becomes real the moment an agent loop writes them.
+- **P-F8 (low)** `crates/grid/src/suspects.rs` `last_pass` breaks a tie on
+  `trace_id` lexicographically because `recorded_at` is RFC 3339 at second
+  resolution (`cache/src/lib.rs:276`). Two passes recorded in the same
+  second against different snapshots resolve to whichever trace id sorts
+  higher, which may be the older snapshot, while the stderr line says "the
+  last snapshot ... recorded a pass at". Deterministic, and it names the
+  snapshot it chose, so the answer stays checkable; the honest fix is
+  sub-second resolution on `recorded_at`, which is a cache record change
+  and an epoch question rather than a tie-break tweak.
+- **P-F9 (low)** `standing::save` re-serializes with `to_string_pretty`, so
+  a compactly authored `.grid/invariants.json` is reformatted on the first
+  successful write. `deny_unknown_fields` on `Invariant` and `EdgeRule`
+  (`wire/src/lib.rs:327,338`) means nothing is dropped, so the claim holds
+  semantically; a558a9e's body said "survives a `grid invariant` call byte
+  for byte", which is stronger than what
+  `compat.rs::an_invariant_over_nothing_is_refused_and_hand_authored_rules_survive`
+  asserts — bytes on the refusal path, ids on the write path. Wording debt,
+  not a defect: the fix is to say "survives" and leave the assertion where
+  it is.
+- **P-plan (medium)** the `self-gate` CI job runs `grid gate
+  .grid/plans/*.json` and fails a source-changing pull request that carries
+  none. The ignore rules no longer forbid one, but no branch has written one
+  yet, so the job still fails on any pull request touching `.rs`/`.py`/
+  `.pyi`. Either every such branch carries a plan, or the job's guard grows
+  a case for a branch that predates the convention.
 
 ## Recorded ceilings (from `ponytail:` markers in the tree)
 

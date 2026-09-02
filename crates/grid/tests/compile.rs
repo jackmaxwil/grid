@@ -240,6 +240,17 @@ fn an_undecidable_cfg_warns_and_never_gates() {
         "a warning never moves the exit:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
+
+    // T-11, conservatism: the same `warn` reaches `--format md`. The record
+    // just written is the one the composite reads, and "I could not decide
+    // this predicate" is exactly what the document's `Not checked:` footer
+    // claims to carry — a review comment that dropped it would say a caller
+    // was checked when nobody knows whether it was.
+    let doc = stdout(&grid(dir.path(), &["check", "--format", "md"]));
+    assert!(
+        doc.contains("app.proof: cfg unknown: kani"),
+        "the compile report's undecided predicates reach the document:\n{doc}"
+    );
 }
 
 /// Property: with every feature and every test target compiled, a repo

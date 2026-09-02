@@ -385,3 +385,97 @@ fn json_carries_the_tiers_and_the_horizon_as_fields() {
         "the estimate is exactly bytes/4 over what was packed"
     );
 }
+
+/// T-21, ground truth: the two named presets are exactly the flag pairs they
+/// stand for, byte for byte — a shorthand that answered a different question
+/// than the long form would be a second engine.
+#[test]
+fn the_named_presets_are_the_flag_pairs_they_stand_for() {
+    let dir = chain();
+    assert_eq!(
+        run(dir.path(), &["scope", "pkg.chain.a", "--orient"]),
+        run(
+            dir.path(),
+            &["scope", "pkg.chain.a", "--bodies", "0", "--sigs", "2"]
+        ),
+        "--orient is --bodies 0 --sigs 2"
+    );
+    assert_eq!(
+        run(dir.path(), &["scope", "pkg.chain.a", "--edit"]),
+        run(
+            dir.path(),
+            &["scope", "pkg.chain.a", "--bodies", "1", "--sigs", "3"]
+        ),
+        "--edit is --bodies 1 --sigs 3"
+    );
+    // And they are different questions, so the equality above says something.
+    assert_ne!(
+        run(dir.path(), &["scope", "pkg.chain.a", "--orient"]),
+        run(dir.path(), &["scope", "pkg.chain.a", "--edit"])
+    );
+    assert!(
+        run(dir.path(), &["scope", "pkg.chain.a", "--edit"]).contains("## pkg.chain.b"),
+        "and the preset packs a real document, so the equalities say something"
+    );
+    // A preset composes with the flags it does not name.
+    assert_eq!(
+        run(
+            dir.path(),
+            &["scope", "pkg.chain.a", "--edit", "--budget", "40"]
+        ),
+        run(
+            dir.path(),
+            &[
+                "scope",
+                "pkg.chain.a",
+                "--bodies",
+                "1",
+                "--sigs",
+                "3",
+                "--budget",
+                "40"
+            ]
+        ),
+    );
+}
+
+/// T-21, conservatism: a preset only *supplies* a depth. An explicit
+/// `--bodies` or `--sigs` beside one is what the caller actually asked for
+/// and wins, whichever order it was typed in — a shorthand that overrode a
+/// typed number would hand back less context than the command says, and the
+/// horizon line would certify that smaller pack as if it were the answer.
+#[test]
+fn an_explicit_depth_beside_a_preset_wins_in_either_order() {
+    let dir = chain();
+    let want = run(
+        dir.path(),
+        &["scope", "pkg.chain.a", "--bodies", "2", "--sigs", "2"],
+    );
+    assert_eq!(
+        run(
+            dir.path(),
+            &["scope", "pkg.chain.a", "--orient", "--bodies", "2"]
+        ),
+        want,
+        "the typed --bodies wins over --orient's 0"
+    );
+    assert_eq!(
+        run(
+            dir.path(),
+            &["scope", "pkg.chain.a", "--bodies", "2", "--orient"]
+        ),
+        want,
+        "and wins when it was typed first"
+    );
+    assert_eq!(
+        run(
+            dir.path(),
+            &["scope", "pkg.chain.a", "--edit", "--sigs", "1"]
+        ),
+        run(
+            dir.path(),
+            &["scope", "pkg.chain.a", "--bodies", "1", "--sigs", "1"]
+        ),
+        "the typed --sigs wins over --edit's 3"
+    );
+}

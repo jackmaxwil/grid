@@ -327,7 +327,9 @@ impl Session {
             self.sources = Some(grid_survey::files::sources(&self.root)?);
         }
         let Some((sources, roots)) = &self.sources else {
-            return Err(chart_provider::Error::NoSnapshot);
+            return Err(chart_provider::Error::NoSnapshot(
+                chart_provider::Recovery::at(&self.root, None),
+            ));
         };
         Ok(grid_survey::run_sources(sources, roots, &mut self.cache)?)
     }

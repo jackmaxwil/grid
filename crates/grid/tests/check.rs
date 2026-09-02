@@ -666,3 +666,588 @@ fn orphans_traced_counts_the_traces_that_hit_each_orphan() {
         "plain orphans are DefRefs"
     );
 }
+
+/// Conservatism (T-24): one check opens the store *once*, and it opens it
+/// **after** the head survey. Opening it earlier is the cheap-looking way to
+/// open it once and it is the wrong one: the chart handed down to every
+/// section would then be the epoch from before the edit, and the records
+/// would describe a tree this check never judged — here, a caller whose
+/// `file:line` is where it used to be. The uncommitted edit is exactly the
+/// state a `PostToolUse` hook runs in.
+#[test]
+fn every_section_answers_about_the_tree_the_check_surveyed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(dir.path(), &[("crates/app/src/lib.rs", CFG_BEFORE)]);
+    commit(dir.path(), "one");
+    // A second commit so `HEAD~1` — the default base — names the first one.
+    commit(dir.path(), "two");
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    // The edit stays in the worktree: nothing is committed after the survey,
+    // so only a survey run inside the check can see it. It adds a required
+    // field (so `Cfg`'s interface moves) and pushes the untouched caller two
+    // lines down without changing what it is (so it stays a suspect, at a
+    // new line).
+    write(
+        dir.path(),
+        &[(
+            "crates/app/src/lib.rs",
+            "#[derive(serde::Deserialize)]\npub struct Cfg { pub a: u32, pub b: u32 }\n\n\n\
+             pub fn untouched() -> Cfg { Cfg { a: 1 } }\n",
+        )],
+    );
+
+    for args in [&["check"][..], &["check", "--quick"][..]] {
+        let out = grid(dir.path(), args);
+        let suspects = records(&out, "drift");
+        let row = suspects
+            .iter()
+            .find(|(_, rest)| rest.contains("app.untouched"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "{args:?} must see the worktree edit and name its untouched caller: {}\n{}",
+                    stdout(&out),
+                    stderr(&out)
+                )
+            });
+        assert!(
+            row.1.ends_with("crates/app/src/lib.rs:5"),
+            "{args:?} locates the caller in the tree it surveyed (line 5), not the one it \
+             opened the store on (line 3): {}",
+            row.1
+        );
+        assert_eq!(
+            code(&out),
+            3,
+            "{args:?} gates on a suspect it can see: {}",
+            stdout(&out)
+        );
+        assert!(
+            !stdout(&out).contains("done    refactor"),
+            "{args:?} certifies no refactor while a gate fires: {}",
+            stdout(&out)
+        );
+    }
+}
+
+/// The two lines a `PostToolUse` hook would otherwise repeat verbatim on
+/// every edit: the declined-reference count and the missing compile record.
+fn repeated_lines(out: &Output) -> Vec<String> {
+    stdout(out)
+        .lines()
+        .filter(|l| l.contains("unresolved references ") || l.contains("no compile record since @"))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A repo with something to decline (a `std` name) and no compile record, so
+/// both repeated lines are emitted.
+fn hook_repo() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(
+        dir.path(),
+        &[(
+            "crates/app/src/lib.rs",
+            "pub fn one() -> String { String::new() }\n",
+        )],
+    );
+    commit(dir.path(), "one");
+    commit(dir.path(), "two");
+    dir
+}
+
+/// T-02, ground truth: `--quick` says the unchanged counts once. The second
+/// run in the same store drops them; the full `check` never does; and
+/// `--json` is the record form, so it carries them whatever was printed.
+#[test]
+fn quick_says_the_unchanged_counts_once_and_the_full_check_always_says_them() {
+    let dir = hook_repo();
+    let first = grid(dir.path(), &["check", "--quick"]);
+    assert_eq!(code(&first), 0, "{}", stderr(&first));
+    assert_eq!(
+        repeated_lines(&first).len(),
+        2,
+        "the first --quick says both: {}",
+        stdout(&first)
+    );
+
+    let second = grid(dir.path(), &["check", "--quick"]);
+    assert!(
+        repeated_lines(&second).is_empty(),
+        "nothing moved, so nothing is repeated: {}",
+        stdout(&second)
+    );
+    assert_eq!(code(&second), 0, "suppressing a line moves no exit code");
+
+    let full = grid(dir.path(), &["check"]);
+    assert_eq!(
+        repeated_lines(&full).len(),
+        2,
+        "the full check is the record and always says them: {}",
+        stdout(&full)
+    );
+
+    let quiet = grid(dir.path(), &["check", "--quick"]);
+    assert!(
+        repeated_lines(&quiet).is_empty(),
+        "the full check does not disturb what --quick remembers: {}",
+        stdout(&quiet)
+    );
+    let raw = json(&grid(dir.path(), &["check", "--quick", "--json"]));
+    assert!(
+        raw["drift"]["unchecked"]["unresolved_refs"]
+            .as_u64()
+            .is_some(),
+        "--json is never filtered: {raw}"
+    );
+}
+
+/// T-02, conservatism: a count that *moved* is printed, whatever the last
+/// run printed. Suppressing on "I have said something before" rather than on
+/// "I have said exactly this before" would hide the one direction that
+/// matters — the honesty number getting worse.
+#[test]
+fn a_declined_count_that_moved_is_always_printed() {
+    let dir = hook_repo();
+    assert_eq!(
+        repeated_lines(&grid(dir.path(), &["check", "--quick"])).len(),
+        2
+    );
+    assert!(repeated_lines(&grid(dir.path(), &["check", "--quick"])).is_empty());
+
+    // One more `std` name the resolver declines: the count moves by one.
+    write(
+        dir.path(),
+        &[(
+            "crates/app/src/lib.rs",
+            "pub fn one() -> String { String::new() }\n\
+             pub fn two() -> Vec<u8> { Vec::new() }\n",
+        )],
+    );
+    let moved = grid(dir.path(), &["check", "--quick"]);
+    let lines = repeated_lines(&moved);
+    assert!(
+        lines.iter().any(|l| l.contains("unresolved references ")),
+        "a count that moved is said again: {}",
+        stdout(&moved)
+    );
+    // And having said it, it goes quiet again on the next unchanged turn.
+    assert!(
+        repeated_lines(&grid(dir.path(), &["check", "--quick"])).is_empty(),
+        "the new count is now the remembered one"
+    );
+}
+
+/// T-10, ground truth: a verb that refuses for a base this store does not
+/// hold prints one hint line with the command *and* the tree to run it in.
+/// "run `grid survey` first" with no tree named is unfollowable from a hook,
+/// a subdirectory, or a sibling worktree.
+///
+/// `check` and `drift` are not in the loop because they survey their base on
+/// demand and so never reach this refusal; the two they can reach — a rev git
+/// cannot name, a snapshot id the store never held — are not fixed by a
+/// survey, and the last assertion pins that they do not pretend otherwise.
+#[test]
+fn a_missing_base_refusal_names_the_command_and_the_tree() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(dir.path(), &[("crates/app/src/lib.rs", CFG_BEFORE)]);
+    commit(dir.path(), "one");
+    write(
+        dir.path(),
+        &[("crates/app/src/lib.rs", "pub fn only() -> u32 { 1 }\n")],
+    );
+    commit(dir.path(), "two");
+    // Only the second commit is ever surveyed, so `HEAD~1` is a tree this
+    // store does not hold — and neither verb below surveys on demand.
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+
+    for args in [
+        &["scope", "app.only", "--since", "HEAD~1"][..],
+        &["suspects", "app.only", "--closure", "HEAD~1"][..],
+    ] {
+        let out = grid(dir.path(), args);
+        assert_eq!(
+            code(&out),
+            2,
+            "{args:?} refuses a base it does not hold: {}",
+            stdout(&out)
+        );
+        assert!(
+            stderr(&out).contains("no snapshot of the tree at HEAD~1"),
+            "{args:?} says which coordinate it could not answer: {}",
+            stderr(&out)
+        );
+        assert!(
+            stderr(&out).contains("hint: run `grid survey HEAD~1` in ."),
+            "{args:?} names the command and the tree: {}",
+            stderr(&out)
+        );
+    }
+
+    // And a refusal a survey does not fix offers no survey: a hint that does
+    // not work is worse than none.
+    let bad = grid(dir.path(), &["check", "deadbeef"]);
+    assert!(code(&bad) != 0, "{}", stdout(&bad));
+    assert!(
+        !stderr(&bad).contains("hint: run `grid survey"),
+        "a rev git cannot name is git's answer, not a survey's: {}",
+        stderr(&bad)
+    );
+}
+
+/// T-11, ground truth: `--format md` is one document over the same judgment
+/// the porcelain prints — headings for the gate-first order, one bullet per
+/// finding as `callsign — reason — file:line`, the certificate, and what was
+/// not checked as a footer. The records and `--json` are untouched by it.
+#[test]
+fn format_md_is_one_document_over_the_same_judgment() {
+    let dir = loaded_repo();
+    let records = stdout(&grid(dir.path(), &["check"]));
+    let raw = json(&grid(dir.path(), &["check", "--json"]));
+
+    let out = grid(dir.path(), &["check", "--format", "md"]);
+    let doc = stdout(&out);
+    assert_eq!(code(&out), 3, "the exit is the composite's own: {doc}");
+
+    let head = doc.lines().next().expect("a heading");
+    assert!(
+        head.starts_with("# grid check @") && head.contains(" → @"),
+        "the heading names base and head: {head}"
+    );
+    assert!(
+        doc.contains("**Exit 3** — something this change did was not checked"),
+        "and what the exit means: {doc}"
+    );
+    assert!(
+        doc.contains("\n## Gates\n") && doc.contains("\n### Drift suspects\n"),
+        "gates first, by section: {doc}"
+    );
+    assert!(
+        doc.lines().any(
+            |l| l.starts_with("- `app.untouched` — constructs `app.Cfg` (proven)")
+                && l.ends_with("— `crates/app/src/lib.rs:3`")
+        ),
+        "one bullet per finding — callsign, reason, file:line: {doc}"
+    );
+    assert!(
+        doc.contains("\n### Stale verdicts\n") && doc.contains("- `test_lib.test_covered`"),
+        "every gating section is a section: {doc}"
+    );
+    assert!(
+        doc.contains("\n## Tail\n") && doc.contains("\n### Compat\n"),
+        "and the ranked findings are below the gates: {doc}"
+    );
+    assert!(
+        !doc.contains("## Certificate"),
+        "a gate fired, so there is no certificate: {doc}"
+    );
+    assert!(
+        doc.contains("\n---\n\nNot checked: ") && doc.contains("unresolved references"),
+        "the counts close the document as a footer: {doc}"
+    );
+
+    // The other two forms are what they were: three renderings, one judgment.
+    assert_eq!(stdout(&grid(dir.path(), &["check"])), records);
+    assert_eq!(json(&grid(dir.path(), &["check", "--json"])), raw);
+    assert!(!records.contains("# grid check"), "porcelain is records");
+
+    // A green check gets the certificate line and no Gates section.
+    let green = tempfile::tempdir().expect("tempdir");
+    git(green.path(), &["init", "-q", "-b", "main"]);
+    write(
+        green.path(),
+        &[
+            ("pkg/__init__.py", ""),
+            ("pkg/a.py", "def f():\n    return 1\n"),
+        ],
+    );
+    commit(green.path(), "one");
+    commit(green.path(), "two");
+    let clean = grid(green.path(), &["check", "--format", "md"]);
+    assert_eq!(code(&clean), 0, "{}", stderr(&clean));
+    assert!(
+        stdout(&clean).contains("**Exit 0** — no gate fired")
+            && stdout(&clean).contains("## Certificate")
+            && stdout(&clean).contains("**refactor** — interfaces held")
+            && !stdout(&clean).contains("## Gates"),
+        "{}",
+        stdout(&clean)
+    );
+
+    // Two output forms at once is a contradiction, not a precedence rule.
+    let both = grid(dir.path(), &["check", "--format", "md", "--json"]);
+    assert_eq!(code(&both), 2, "{}", stdout(&both));
+    let unknown = grid(dir.path(), &["check", "--format", "html"]);
+    assert_eq!(code(&unknown), 2);
+    assert!(
+        stderr(&unknown).contains("unknown format `html`"),
+        "{}",
+        stderr(&unknown)
+    );
+}
+
+/// T-11, conservatism: a section that refuses refuses the whole document.
+/// The temptation is the opposite one — a pull-request comment that says
+/// "grid could not read the trace store" is friendlier than no comment — and
+/// it is exactly wrong: a document with a heading, no gates and a footer is
+/// the same shape as a clean check, and a reviewer skims shape. So
+/// `--format md` refuses the way the records do: the reason on stderr, the
+/// exit code of the section that refused, and nothing at all on stdout.
+#[test]
+fn format_md_with_a_refusing_section_emits_no_document() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(
+        dir.path(),
+        &[
+            ("pkg/__init__.py", ""),
+            ("pkg/a.py", "def f():\n    return 1\n"),
+        ],
+    );
+    commit(dir.path(), "before");
+    write(dir.path(), &[("pkg/a.py", "def f():\n    return 2\n")]);
+    commit(dir.path(), "after");
+    assert_eq!(code(&grid(dir.path(), &["check", "--format", "md"])), 0);
+    // A trace store grid cannot read: unknown contents, not empty contents.
+    write(dir.path(), &[(".grid/traces/bad.json", "{")]);
+
+    let out = grid(dir.path(), &["check", "--format", "md"]);
+    assert_eq!(
+        code(&out),
+        1,
+        "the refusing section's exit, not a friendlier one:\n{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert_eq!(
+        stdout(&out),
+        "",
+        "and no document at all, not a document with the gates missing: {:?}",
+        stdout(&out)
+    );
+    assert!(
+        stderr(&out).contains("bad.json"),
+        "the reason is still said: {}",
+        stderr(&out)
+    );
+
+    // A bad-input refusal is the same posture with the input's exit code.
+    let bad = grid(dir.path(), &["check", "--format", "md", "deadbeef"]);
+    assert_eq!(code(&bad), 2, "{}", stdout(&bad));
+    assert_eq!(stdout(&bad), "", "{:?}", stdout(&bad));
+}
+
+/// T-11, conservatism: every `warn` the records carry reaches the document.
+///
+/// The document is a *review* surface, and the one thing a reviewer cannot
+/// recover from it is a check that quietly stopped running. A covenant whose
+/// pattern matches nothing at head is exactly that — the declaration is no
+/// longer checked — and the records say so with a `warn`. A document that
+/// showed a clean certificate over the same result would be the porcelain
+/// and the document disagreeing about what was *checked*, which is the half
+/// nobody notices.
+#[test]
+fn format_md_carries_every_warn_the_records_carry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(
+        dir.path(),
+        &[
+            ("pkg/__init__.py", ""),
+            (
+                "pkg/writer.py",
+                "def encode(tag):\n    return {\"n\": tag}\n",
+            ),
+            (
+                "pkg/reader.py",
+                "def decode(blob):\n    return blob[\"n\"]\n",
+            ),
+        ],
+    );
+    commit(dir.path(), "before");
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let declared = grid(
+        dir.path(),
+        &[
+            "covenant",
+            "pkg.writer.encode",
+            "pkg.reader.decode",
+            "--via",
+            "schema",
+        ],
+    );
+    assert_eq!(code(&declared), 0, "{}", stderr(&declared));
+    // Both sides are deleted out from under the declaration. Neither pattern
+    // matches anything at head, so the covenant is no longer checked at all —
+    // and because both sides moved together it fires nothing, which is what
+    // makes the document look clean.
+    std::fs::remove_file(dir.path().join("pkg/writer.py")).expect("remove");
+    std::fs::remove_file(dir.path().join("pkg/reader.py")).expect("remove");
+    commit(dir.path(), "drop both sides");
+
+    let records = grid(dir.path(), &["check"]);
+    let printed = stdout(&records);
+    assert!(
+        printed
+            .lines()
+            .any(|l| l.starts_with("warn ") && l.contains("matches nothing")),
+        "the records say the declaration stopped being checked:\n{printed}"
+    );
+
+    let out = grid(dir.path(), &["check", "--format", "md"]);
+    let doc = stdout(&out);
+    assert!(
+        doc.contains("covenant:schema matches nothing"),
+        "and so must the document — a review surface that hides what stopped \
+         being checked is worse than no review surface:\n{doc}"
+    );
+    assert!(
+        doc.contains("pkg.reader.decode"),
+        "naming the pattern that stopped matching, as the record does:\n{doc}"
+    );
+    // And the document is otherwise exactly the shape a reviewer skims past:
+    // exit 0, a certificate, no gates. That is what makes the omission the
+    // dangerous one rather than a cosmetic one.
+    assert_eq!(code(&out), 0, "{doc}");
+    assert!(
+        doc.contains("## Certificate") && !doc.contains("## Gates"),
+        "{doc}"
+    );
+}
+
+/// T-11, conservatism: a format word grid will not honour is bad input.
+///
+/// `--compile` with no `--plan` short-circuits into the compile record's own
+/// report, which has no document form — so `--format md` in that position was
+/// parsed and dropped, and the caller who asked for a pull-request comment
+/// got padded porcelain columns to paste into one. That is the same sin
+/// `is_markdown` refuses on purpose for an unknown format word, and the same
+/// answer applies: exit 2, before the compile runs, rather than a silent fall
+/// back to records.
+///
+/// `--quick` in the same position keeps its hint. It filters an output form
+/// rather than choosing one, so ignoring it still hands the caller the thing
+/// they asked for; ignoring `--format md` does not.
+#[test]
+fn a_format_word_the_compile_report_cannot_honour_is_bad_input() {
+    let dir = loaded_repo();
+    let out = grid(dir.path(), &["check", "--compile", "--format", "md"]);
+    assert_eq!(
+        code(&out),
+        2,
+        "a format grid will not honour is refused, not dropped:\n{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert_eq!(
+        stdout(&out),
+        "",
+        "and nothing is printed in the form that was not asked for: {:?}",
+        stdout(&out)
+    );
+    assert!(
+        stderr(&out).contains("--compile") && stderr(&out).contains("--plan"),
+        "the refusal names both halves of the combination: {}",
+        stderr(&out)
+    );
+}
+
+/// T-11, conservatism: a word a human authored cannot break the document.
+///
+/// Every bullet is ``- `what` — why — `file:line` ``, and `why` carries
+/// declaration-authored text — a covenant's `via` word, a `cfg` predicate, a
+/// compat rule name. A backtick in one of those closes the code span it sits
+/// in and swallows the rest of the line, so the reviewer reads a bullet that
+/// says something other than what grid found. The document is a review
+/// surface: a finding rendered wrong is worse than a finding rendered plain.
+#[test]
+fn a_backtick_in_a_declared_word_does_not_break_the_document() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(
+        dir.path(),
+        &[
+            ("pkg/__init__.py", ""),
+            (
+                "pkg/writer.py",
+                "def encode(tag):\n    return {\"n\": tag}\n",
+            ),
+            (
+                "pkg/reader.py",
+                "def decode(blob):\n    return blob[\"n\"]\n",
+            ),
+        ],
+    );
+    commit(dir.path(), "before");
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    // A `via` word with a backtick in it. Nothing refuses this — it is a
+    // human's note about a boundary, and grid does not police prose.
+    let declared = grid(
+        dir.path(),
+        &[
+            "covenant",
+            "pkg.writer.encode",
+            "pkg.reader.decode",
+            "--via",
+            "wire`schema",
+        ],
+    );
+    assert_eq!(code(&declared), 0, "{}", stderr(&declared));
+    // One side moves, so the covenant fires and the reason reaches a bullet.
+    write(
+        dir.path(),
+        &[(
+            "pkg/writer.py",
+            "def encode(tag):\n    return {\"n\": str(tag)}\n",
+        )],
+    );
+    commit(dir.path(), "after");
+
+    let doc = stdout(&grid(dir.path(), &["check", "--format", "md"]));
+    let fires: Vec<&str> = doc
+        .lines()
+        .filter(|l| l.starts_with("- ") && l.contains("covenant:"))
+        .collect();
+    assert_eq!(fires.len(), 1, "the covenant fired once:\n{doc}");
+    assert_eq!(
+        fires[0].matches('`').count() % 2,
+        0,
+        "every code span the bullet opened is closed: {}",
+        fires[0]
+    );
+    assert!(
+        fires[0].contains("covenant:wire'schema"),
+        "and the word is still legible, substituted rather than dropped: {}",
+        fires[0]
+    );
+}
+
+/// T-11: `--why` is not silently swallowed by `--format md`.
+///
+/// The document has no section for the gate's fulfilling paths, so `--why`
+/// adds nothing to it. That is the `--quick` case rather than the `--format
+/// md`-beside-`--compile` case: `--why` adds content to a form the caller
+/// still gets, so it is hinted, not refused. What it must not be is silent.
+#[test]
+fn why_beside_format_md_is_hinted_rather_than_swallowed() {
+    let dir = loaded_repo();
+    let plain = grid(dir.path(), &["check", "--format", "md"]);
+    let with_why = grid(dir.path(), &["check", "--format", "md", "--why"]);
+    assert_eq!(
+        stdout(&with_why),
+        stdout(&plain),
+        "the document is the same one either way"
+    );
+    assert!(
+        stderr(&with_why).contains("--why"),
+        "and the flag that changed nothing says so: {}",
+        stderr(&with_why)
+    );
+    assert!(
+        !stderr(&plain).contains("--why"),
+        "a caller who did not ask is not told: {}",
+        stderr(&plain)
+    );
+}

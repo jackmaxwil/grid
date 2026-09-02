@@ -210,6 +210,93 @@ pub struct Closure {
     pub fork: Option<grid_wire::TraceDiff>,
 }
 
+/// The last snapshot at which `test` recorded a `pass`.
+///
+/// `--closure` is pointed at the snapshot the test was green at, and an
+/// agent should not have to remember which one that was: the store already
+/// knows. The verdict log holds one verdict per closure key with the trace
+/// that produced it, and a retained trace names the test it ran and the
+/// snapshot it was mapped against — so the default is that join, the same
+/// attribution `grid drift --tests` uses, and not a new record anywhere.
+/// Newest wins, by the time the verdict was recorded.
+///
+/// It refuses rather than guessing. "No pass on record" is not "green at
+/// head": answering the closure question against head would rank nothing,
+/// and an empty ranking reads as "nothing in the closure moved", which is
+/// the opposite claim.
+///
+/// The name is resolved the way [`rank_closure`] resolves it — through the
+/// chart, by unique suffix, the Display policy every other input follows —
+/// and not by string equality against `trace.command`. The two must agree:
+/// a name the named form answers to and the bare form refuses is a refusal
+/// that states something untrue, since the pass it says is not on record is.
+///
+/// # Errors
+/// [`Error::UnknownSince`] when no passing verdict for this test names a
+/// retained trace that records a snapshot; [`Error::Chart`] when the trace
+/// store or the verdict log cannot be read.
+pub fn last_pass(root: &Path, test: &str) -> Result<SnapshotOrRev, Error> {
+    let unreadable =
+        |e: &dyn std::fmt::Display| Error::Chart(chart_provider::Error::Config(e.to_string()));
+    let traces = crate::rpc::trace_dir(root)
+        .and_then(grid_trace::Store::open)
+        .and_then(|store| store.retained())
+        .map_err(|e| unreadable(&e))?;
+    // The live callsigns the argument names. A trace's command is another
+    // spelling of the same definition exactly when it is a suffix of one of
+    // them — the same rule `ChartDelta::resolve` applies to the argument
+    // itself, run once over the chart rather than per trace.
+    let chart = ChartDelta::open(root)?;
+    let named: Vec<String> = chart
+        .resolve(&grid_wire::Locator::Callsign {
+            callsign: grid_wire::Callsign(test.to_owned()),
+        })
+        .into_iter()
+        .filter_map(|d| d.callsign.map(|c| c.0))
+        .collect();
+    let is_this_test = |command: &str| {
+        command == test
+            || named
+                .iter()
+                .any(|c| chart_provider::suffix_matches(c, command))
+    };
+    // Only this test's traces, and only those that recorded the coordinate a
+    // closure diff can be taken against. A trace with no snapshot names a
+    // tree nobody can name back.
+    let at: BTreeMap<&str, &grid_wire::SnapshotId> = traces
+        .iter()
+        .filter(|stored| stored.trace.command.as_deref().is_some_and(&is_this_test))
+        .filter_map(|stored| {
+            Some((
+                stored.trace.trace_id.as_str(),
+                stored.trace.snapshot.as_ref()?,
+            ))
+        })
+        .collect();
+    let cache =
+        grid_cache::Cache::open(crate::rpc::cache_path(root)).map_err(|e| unreadable(&e))?;
+    let newest = cache
+        .entries()
+        .filter(|(_, entry)| entry.verdict == grid_cache::Verdict::Pass)
+        .filter_map(|(_, entry)| {
+            let id = entry.trace_id.as_deref()?;
+            // Trace id as the tie-break, so two verdicts recorded in the same
+            // second still order deterministically.
+            Some((entry.recorded_at.as_str(), id, *at.get(id)?))
+        })
+        .max_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    match newest {
+        Some((_, _, snapshot)) => Ok(SnapshotOrRev::Snapshot {
+            snapshot: snapshot.clone(),
+        }),
+        None => Err(Error::UnknownSince(format!(
+            "`--closure` with no snapshot uses the last one `{test}` recorded a pass at, and \
+             nothing on record says: name one (`grid suspects {test} --closure <snapshot|rev>`), \
+             or record one with `grid test --trace`"
+        ))),
+    }
+}
+
 /// Attribution with no run history: the definitions the test can reach at
 /// head whose bodies moved since a named snapshot, ranked by hop distance.
 ///
@@ -229,9 +316,7 @@ pub fn rank_closure(
     let chart = ChartDelta::open(root)?;
     let head = chart.head();
     if head.segments().is_empty() {
-        return Err(Error::UnknownSince(
-            "no snapshot published: run `grid survey` first".into(),
-        ));
+        return Err(Error::UnknownSince(chart.no_snapshot().to_string()));
     }
     let test = test_datum(&chart, &params.test)?;
     // The candidate set and its refusal are `grid_cache`'s: one definition of
@@ -315,9 +400,10 @@ fn moved_at(root: &Path, since: &str, head: &str) -> Result<BTreeSet<DatumId>, E
         .membership()
         .map_err(chart_provider::Error::Store)?
         .ok_or_else(|| {
-            Error::UnknownSince(
-                "no membership image beside the chart: run `grid survey` first".into(),
-            )
+            Error::UnknownSince(format!(
+                "no membership image beside the chart\n{}",
+                chart_provider::Recovery::at(root, None)
+            ))
         })?;
     Ok(membership
         .changed_between(since, head)

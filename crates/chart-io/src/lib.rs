@@ -550,7 +550,16 @@ fn hex(bytes: &[u8; 32]) -> String {
 
 /// Durable, all-or-nothing file write: temp file, fsync, atomic rename, fsync
 /// the directory so the rename itself survives power loss.
-fn write_atomic(dir: &Path, path: &Path, bytes: &[u8], tmp_name: &str) -> std::io::Result<()> {
+///
+/// Public because the segment store is not the only thing in `.grid` worth
+/// this guarantee: the repo's declaration files (`invariants.json`,
+/// `covenants.json`) are hand-authored content a truncate-in-place can
+/// destroy, and there is no reason to write the same three lines twice.
+///
+/// # Errors
+/// Whatever the create, write, fsync or rename returned. On any of them the
+/// file at `path` is untouched — that is the point.
+pub fn write_atomic(dir: &Path, path: &Path, bytes: &[u8], tmp_name: &str) -> std::io::Result<()> {
     let tmp = dir.join(tmp_name);
     {
         let mut f = fs::File::create(&tmp)?;

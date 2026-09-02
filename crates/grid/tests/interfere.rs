@@ -402,3 +402,51 @@ fn a_dirty_worktree_on_the_base_commit_is_never_taken_for_the_base() {
         "surveying the base on demand left this worktree live"
     );
 }
+
+/// T-10, conservatism: a refusal about the *other* worktree names the other
+/// worktree. "Run `grid survey`" with no tree behind it is the version a
+/// reader follows in the wrong directory — it succeeds there, changes
+/// nothing about the store that refused, and the next run refuses again.
+/// Every one of these refusals therefore carries the command and the path.
+#[test]
+fn a_refusal_about_the_other_worktree_names_that_worktree() {
+    let Pair { repo, a, b, base } = pair();
+    let _repo = repo;
+    write(&a, TARGET, "pub fn target(x: u32) -> u32 { x + 1 }\n");
+    settle(&a, &base);
+    let theirs = b.to_str().expect("path");
+    // The verb canonicalizes the other root before it opens anything, and the
+    // hint names what it opened.
+    let named = b.canonicalize().expect("canonicalize");
+    let named = named.display().to_string();
+
+    // Never surveyed there at all.
+    let unsurveyed = grid(&a, &["interfere", theirs]);
+    assert_eq!(code(&unsurveyed), 2, "{}", stderr(&unsurveyed));
+    assert!(
+        stderr(&unsurveyed).contains(&format!("hint: run `grid survey` in {named}")),
+        "the hint names the other worktree, not this one:\n{}",
+        stderr(&unsurveyed)
+    );
+    assert!(
+        !stderr(&unsurveyed).contains("hint: run `grid survey` in .\n"),
+        "and never this one:\n{}",
+        stderr(&unsurveyed)
+    );
+
+    // Surveyed there, then superseded: the same fix, a different reason, and
+    // the reason is said too.
+    settle(&b, &base);
+    let manifest = b.join(".grid/chart/manifest");
+    let mut bytes = std::fs::read(&manifest).expect("read manifest");
+    bytes[17..21].copy_from_slice(&3u32.to_le_bytes());
+    std::fs::write(&manifest, bytes).expect("write manifest");
+    let superseded = grid(&a, &["interfere", theirs]);
+    assert_eq!(code(&superseded), 2, "{}", stderr(&superseded));
+    assert!(
+        stderr(&superseded).contains("superseded")
+            && stderr(&superseded).contains(&format!("hint: run `grid survey` in {named}")),
+        "a superseded store says why and where:\n{}",
+        stderr(&superseded)
+    );
+}

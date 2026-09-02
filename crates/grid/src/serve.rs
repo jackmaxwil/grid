@@ -134,7 +134,7 @@ fn chart_error(e: &crate::chart_provider::Error) -> (i32, String) {
     use crate::chart_provider::Error as E;
     let code = match e {
         E::NoSnapshotForRev(_) | E::Store(_) | E::NotLive(_) => WireError::UnknownSnapshot.code(),
-        E::NoSnapshot => WireError::NoSnapshot.code(),
+        E::NoSnapshot(_) => WireError::NoSnapshot.code(),
         E::Survey(_) => WireError::SurveyFailed.code(),
         E::Config(_) => WireError::InvalidPlan.code(),
         E::Plan(_) => WireError::UnknownPlan.code(),
@@ -182,7 +182,10 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
                 || {
                     Err((
                         WireError::NoSnapshot.code(),
-                        "no snapshot published: run `grid survey`".to_string(),
+                        crate::chart_provider::Error::NoSnapshot(
+                            crate::chart_provider::Recovery::at(root, None),
+                        )
+                        .to_string(),
                     ))
                 },
                 |s| Ok(encode(&s)),

@@ -90,23 +90,26 @@ fn help() {
          drift --tests                known tests whose recorded verdict no longer applies\n  \
          drift --compat               changed Deserialize types old bytes cannot read\n  \
          covenant <A> <B> --via <w>   declare a coupling no language establishes\n  \
+         invariant persisted <p>      declare that old bytes of a type exist; --list shows the repo's rules\n  \
          watch [base]                 signed drift deltas, one file event per stdin line\n  \
          interfere <other-worktree>   what another worktree's edits and yours collide over\n  \
          resolve <name|file|f:line>   where it is; a bare file lists its defs\n  \
          uses <name> [--relation r]   proven inbound edges\n  \
          scope <pattern> [--depth N]  context pack around an edit\n  \
          scope <p> --bodies N         the same, with the text and its horizon\n  \
+         scope <p> --orient|--edit    the two named depth presets (0/2 and 1/3)\n  \
          orphans [--under p] [--traced]  no proven caller (not the same as dead); --traced adds trace N\n  \
          hotspots [--under p]         complexity x churn, descending\n  \
          roots                        import name -> directory map\n  \
          log <name>                   a definition's history in identity space\n  \
-         suspects <test> [--closure <since>]  likely culprits, ranked\n  \
+         suspects <test> [--closure [<since>]]  likely culprits, ranked; bare --closure uses the last snapshot it passed at\n  \
          test [base] [--trace|--all]  run what the change can reach; replay the rest; exit 3 on red\n  \
          gate <plan> [head]           promise vs delta; exit 3 on hold\n  \
          plan lint <file>             validate a promise file\n  \
          todo <plan>                  the promise as a worklist\n  \
          check [base] [head] [--quick]  everything the change did that nobody checked; exit 3\n  \
          check --plan <p> [--why]     the same, plus the gate verdict and why it says so\n  \
+         check --format md            the same, as one markdown document for a PR comment\n  \
          check --compile [-- args]    wrap cargo check; the callers it did not compile; exit 3\n  \
          cache lookup|record ...      test verdicts keyed by identity closure\n  \
          edit apply <file>            compare-and-swap edits by datum\n  \
@@ -179,6 +182,7 @@ fn main() -> ExitCode {
         Some((&"diff", args)) => diff(args, json),
         Some((&"drift", args)) => drift_verb(args, json),
         Some((&"covenant", args)) => covenant_verb(args, json),
+        Some((&"invariant", args)) => invariant_verb(args, json),
         Some((&"watch", args)) => watch_verb(args, json),
         Some((&"resolve", args)) => resolve(args, json),
         Some((&"gate", args)) => gate(args, json),
@@ -709,20 +713,8 @@ fn covenant_verb(args: &[&str], json: bool) -> u8 {
         return exit::BAD_INPUT;
     }
     for pattern in [*a, *b] {
-        match rpc::matching(root(), pattern) {
-            Err(e) => {
-                hint(&format!("grid: {e}"));
-                return exit::INTERNAL;
-            }
-            // The `resolve` contract, restated: a name that resolves to
-            // nothing is bad input, and the hint lists the closest charted
-            // callsigns — silence was read as "does not exist", which is the
-            // one conclusion grid never licenses.
-            Ok(0) => {
-                hint(&miss(pattern));
-                return exit::BAD_INPUT;
-            }
-            Ok(_) => {}
+        if let Err(code) = charted(pattern) {
+            return code;
         }
     }
     let mut covenants = match covenant::load(root()) {
@@ -753,6 +745,101 @@ fn covenant_verb(args: &[&str], json: bool) -> u8 {
         return emit_json(&covenants);
     }
     print!("{}", porcelain::covenants(&covenants));
+    exit::OK
+}
+
+const INVARIANT_USAGE: &str =
+    "usage: grid invariant persisted <pattern> [--note <text>] | grid invariant --list";
+
+/// `grid invariant persisted <pattern> [--note <text>]` and `grid invariant
+/// --list` — the repo's standing rules, written the way a covenant is.
+///
+/// `persisted` is the human fact no static check can establish: bytes on disk
+/// were written by an older version of this type, so a Deserialize
+/// compatibility finding on it gates instead of ranking. It was declarable
+/// only by hand-editing `.grid/invariants.json`, which is why nobody
+/// declared one.
+///
+/// `persisted` is the only rule kind this verb writes. `forbid-edge` and
+/// `require-edge` stay hand-authored: they carry a relation, a grade floor
+/// and two patterns, and a flag surface for them would be a plan file with
+/// worse ergonomics. The file is read whole and written whole, so a
+/// hand-authored rule survives a `grid invariant` call untouched — and
+/// removing a rule is editing the file, exactly as it is for a covenant.
+///
+/// The pattern is resolved against the live chart and one that matches
+/// nothing is refused: a rule about code that does not exist will never fire,
+/// and writing it down silently is worse than not writing it.
+fn invariant_verb(args: &[&str], json: bool) -> u8 {
+    let mut note = None;
+    let mut positional = Vec::new();
+    let mut rest = args;
+    while let Some((arg, tail)) = rest.split_first() {
+        rest = tail;
+        match *arg {
+            "--list" => positional.push("--list"),
+            "--note" => {
+                let Some((value, tail)) = rest.split_first() else {
+                    hint(INVARIANT_USAGE);
+                    return exit::BAD_INPUT;
+                };
+                note = Some((*value).to_owned());
+                rest = tail;
+            }
+            other if other.starts_with("--") => {
+                hint(&format!("grid: unknown flag `{other}`\n{INVARIANT_USAGE}"));
+                return exit::BAD_INPUT;
+            }
+            other => positional.push(other),
+        }
+    }
+    let mut invariants = match standing::load(root()) {
+        Ok(rows) => rows,
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            return exit::BAD_INPUT;
+        }
+    };
+    let pattern = match positional.as_slice() {
+        ["--list"] => {
+            if json {
+                return emit_json(&invariants);
+            }
+            print!("{}", porcelain::invariants(&invariants));
+            return exit::OK;
+        }
+        ["persisted", pattern] => *pattern,
+        _ => {
+            hint(INVARIANT_USAGE);
+            return exit::BAD_INPUT;
+        }
+    };
+    if let Err(code) = charted(pattern) {
+        return code;
+    }
+    let fresh = grid_wire::Invariant {
+        // Content, not a counter: the id a violation prints is
+        // `persisted:<pattern>` already, so declaring the same pattern twice
+        // is one rule and reads as one everywhere.
+        id: format!("persisted:{pattern}"),
+        description: note,
+        rule: grid_wire::InvariantRule::Persisted {
+            persisted: grid_wire::CallsignPattern(pattern.to_owned()),
+        },
+    };
+    if let Some(held) = invariants.iter_mut().find(|i| i.id == fresh.id) {
+        *held = fresh;
+    } else {
+        invariants.push(fresh);
+    }
+    if let Err(e) = standing::save(root(), &invariants) {
+        hint(&format!("grid: {e}"));
+        return exit::INTERNAL;
+    }
+    if json {
+        return emit_json(&invariants);
+    }
+    print!("{}", porcelain::invariants(&invariants));
     exit::OK
 }
 
@@ -992,6 +1079,34 @@ fn resolve(args: &[&str], json: bool) -> u8 {
     }
 }
 
+/// A declared pattern must match something in the live chart. `Err` is the
+/// exit code to leave with.
+///
+/// Three answers, and the two failing ones are different refusals. A pattern
+/// that matches nothing is bad input, restating the `resolve` contract with
+/// the closest charted callsigns: silence was read as "does not exist", which
+/// is the one conclusion grid never licenses. A store nobody has surveyed
+/// says nothing about any pattern, so it refuses with the survey to run
+/// instead of reporting the code absent — the same `Recovery` line every
+/// other missing-snapshot refusal carries (T-10).
+fn charted(pattern: &str) -> Result<(), u8> {
+    match rpc::matching(root(), pattern) {
+        Ok(0) => {
+            hint(&miss(pattern));
+            Err(exit::BAD_INPUT)
+        }
+        Ok(_) => Ok(()),
+        Err(e @ chart_provider::Error::NoSnapshot(_)) => {
+            hint(&format!("grid: {e}"));
+            Err(exit::BAD_INPUT)
+        }
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            Err(exit::INTERNAL)
+        }
+    }
+}
+
 /// The refusal for a name that resolved to nothing: what was asked, and the
 /// closest charted callsigns so a partial path or a typo self-corrects.
 fn miss(name: &str) -> String {
@@ -1014,11 +1129,19 @@ fn miss(name: &str) -> String {
 /// the text is deliberately absent and the agent pulls it itself; with them
 /// the pack carries bodies to one depth and signatures to a further one, under
 /// a token budget spent in whole layers, closed by a horizon.
+///
+/// Two named presets, because the two depth pairs worth knowing are the two
+/// journeys: `--orient` is [`ORIENT`] — read the shape of an unfamiliar tree
+/// without paying for bodies — and `--edit` is [`EDIT`], the hop-1 bodies and
+/// hop-3 signatures an edit needs. Each only *supplies* a depth: an explicit
+/// `--bodies` or `--sigs` alongside a preset is what the caller actually
+/// asked for and wins, whichever order they were typed in.
 fn scope(args: &[&str], json: bool) -> u8 {
     const USAGE: &str =
-        "usage: grid scope <pattern>... [--depth N] [--bodies N] [--sigs M] [--budget T] [--since <snapshot|rev>]";
+        "usage: grid scope <pattern>... [--orient|--edit] [--depth N] [--bodies N] [--sigs M] [--budget T] [--since <snapshot|rev>]";
     let mut patterns = Vec::new();
     let (mut depth, mut bodies, mut sigs, mut budget) = (None, None, None, None);
+    let mut preset: Option<(u64, u64)> = None;
     let mut since = None;
     let mut rest = args;
     while let Some((arg, tail)) = rest.split_first() {
@@ -1038,6 +1161,11 @@ fn scope(args: &[&str], json: bool) -> u8 {
                 since = tail.first().map(|s| snapshot_or_rev(s));
                 since.is_some()
             }
+            "--orient" | "--edit" => {
+                preset = Some(if *arg == "--edit" { EDIT } else { ORIENT });
+                rest = tail;
+                continue;
+            }
             _ => {
                 patterns.push(grid_wire::CallsignPattern((*arg).to_string()));
                 rest = tail;
@@ -1053,6 +1181,10 @@ fn scope(args: &[&str], json: bool) -> u8 {
     if patterns.is_empty() {
         hint(USAGE);
         return exit::BAD_INPUT;
+    }
+    if let Some((preset_bodies, preset_sigs)) = preset {
+        bodies = bodies.or(Some(preset_bodies));
+        sigs = sigs.or(Some(preset_sigs));
     }
     let tiers = bodies.is_some() || sigs.is_some();
     let params = grid_wire::methods::ScopeParams {
@@ -1104,6 +1236,16 @@ fn scope(args: &[&str], json: bool) -> u8 {
 /// The depth `grid scope` walks when none is named. Stated here rather than
 /// only in the daemon, because the horizon banner has to name the real one.
 const DEFAULT_SCOPE_DEPTH: u64 = 0;
+
+/// `grid scope --orient`: no bodies, signatures two hops out — H4, landing in
+/// an unfamiliar tree. Bodies are what a pack spends its budget on, and the
+/// question here is shape, not text.
+const ORIENT: (u64, u64) = (0, 2);
+
+/// `grid scope --edit`: bodies at one hop, signatures at three — A1.1, the
+/// first step of the edit loop. The definitions being changed and their
+/// immediate callers in full, and the interface of everything within reach.
+const EDIT: (u64, u64) = (1, 3);
 
 /// `grid todo <plan> [<head-rev|snap:id>]` — the gate verdict as a
 /// worklist. Always exit 0 when it answers: remaining work is a report, not
@@ -1569,7 +1711,7 @@ fn orphans(args: &[&str], json: bool) -> u8 {
     }
 }
 
-const CHECK_USAGE: &str = "usage: grid check [<base>] [<head>] [--plan <plan>] [--quick] [--why] [--trace <id>] [--compile [-- <cargo check args>]]\n       grid check --compile [-- <cargo check args>]";
+const CHECK_USAGE: &str = "usage: grid check [<base>] [<head>] [--plan <plan>] [--quick] [--why] [--format md] [--trace <id>] [--compile [-- <cargo check args>]]\n       grid check --compile [-- <cargo check args>]";
 
 /// `grid check [<base>] [<head>] [--plan <plan>] [--quick] [--why]` —
 /// everything the change did that nobody checked: drift suspects, the
@@ -1592,6 +1734,7 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
     let mut trace = None;
     let mut why = false;
     let mut quick = false;
+    let mut markdown = false;
     let mut compile = None;
     let mut rest = args;
     while let Some((arg, tail)) = rest.split_first() {
@@ -1599,6 +1742,17 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
         match *arg {
             "--why" => why = true,
             "--quick" => quick = true,
+            "--format" => {
+                let Some((value, tail)) = rest.split_first() else {
+                    hint(CHECK_USAGE);
+                    return exit::BAD_INPUT;
+                };
+                if !is_markdown(value) {
+                    return exit::BAD_INPUT;
+                }
+                markdown = true;
+                rest = tail;
+            }
             "--compile" => compile = Some(Vec::new()),
             "--" => {
                 let Some(cargo_args) = compile.as_mut() else {
@@ -1635,28 +1789,22 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
             }
         }
     }
-    if trace.is_some() && plan.is_none() {
-        hint(&format!(
-            "grid: --trace names the run a plan's coverage is read from and needs --plan\n{CHECK_USAGE}"
-        ));
-        return exit::BAD_INPUT;
+    if let Err(code) = check_conflicts(
+        markdown,
+        json,
+        trace.as_ref(),
+        compile.as_deref(),
+        plan.as_ref(),
+    ) {
+        return code;
     }
     // `--compile` wraps the compile and writes the record first; with a
     // plan the check then reads it, without one the record's own report is
     // the whole answer — the mode use case 3 runs, unchanged.
-    let mut compiled = None;
-    if let Some(cargo_args) = compile {
-        if !positional.is_empty() {
-            hint(&format!(
-                "grid: --compile checks the worktree against {COMPILE_BASE}; endpoints do not apply\n{CHECK_USAGE}"
-            ));
-            return exit::BAD_INPUT;
-        }
-        match compile_wrap(&cargo_args) {
-            Ok(record) => compiled = Some(record),
-            Err(code) => return code,
-        }
-    }
+    let compiled = match compile_first(compile, &positional) {
+        Ok(record) => record,
+        Err(code) => return code,
+    };
     if let (None, Some(record)) = (&plan, compiled.as_ref()) {
         return compile_only(record, quick, json);
     }
@@ -1670,7 +1818,55 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
         compile: compiled.is_some().then_some(true),
         quick: quick.then_some(true),
     };
-    match check::answer(&params, root()) {
+    let form = if json {
+        Form::Json
+    } else if markdown {
+        Form::Markdown
+    } else {
+        Form::Records
+    };
+    check_run(&params, &form, why, quick)
+}
+
+/// The flag combinations `grid check` will not answer at all, refused before
+/// any work is done. `Err` is the exit code to leave with.
+///
+/// Each is a *form* the caller asked for and grid cannot produce, which is
+/// `is_markdown`'s rule: bad input, never a silent fall back to records. A
+/// flag that only filters an output form — `--quick` beside `--compile` with
+/// no `--plan` — is hinted at its site instead, because ignoring it still
+/// leaves the caller holding what they asked for.
+fn check_conflicts(
+    markdown: bool,
+    json: bool,
+    trace: Option<&grid_wire::TraceId>,
+    compile: Option<&[String]>,
+    plan: Option<&grid_wire::PlanId>,
+) -> Result<(), u8> {
+    let refuse = |why: &str| {
+        hint(&format!("grid: {why}\n{CHECK_USAGE}"));
+        Err(exit::BAD_INPUT)
+    };
+    if markdown && json {
+        return refuse("--format md and --json are two output forms; pick one");
+    }
+    if trace.is_some() && plan.is_none() {
+        return refuse("--trace names the run a plan's coverage is read from and needs --plan");
+    }
+    if markdown && compile.is_some() && plan.is_none() {
+        return refuse(
+            "--compile with no --plan answers with the compile report alone, and it has no \
+             `md` form — name a plan, or drop --format md",
+        );
+    }
+    Ok(())
+}
+
+/// Ask the composite and print it, or refuse whole with the section's own
+/// reason. A refusal writes nothing on stdout in any of the three forms —
+/// half a review comment reads as a check that found half these things.
+fn check_run(params: &grid_wire::methods::CheckParams, form: &Form, why: bool, quick: bool) -> u8 {
+    match check::answer(params, root()) {
         // Grid could not stand behind a section: a walk over fuel, a store
         // that would not open. Internal, and never a report without it.
         Err(
@@ -1686,27 +1882,101 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
             hint(&format!("grid: {e}"));
             exit::BAD_INPUT
         }
-        Ok(pack) => check_emit(&pack, why, json),
+        Ok(pack) => check_emit(&pack, form, why, quick),
     }
+}
+
+/// `--format`'s one word today. An unknown one is bad input rather than a
+/// silent fallback to records: a caller who asked for a document and got
+/// porcelain would paste porcelain into a pull request.
+fn is_markdown(value: &str) -> bool {
+    if value == "md" {
+        return true;
+    }
+    hint(&format!(
+        "grid: unknown format `{value}` — `md` is the one text form; \
+         `--json` is the record form\n{CHECK_USAGE}"
+    ));
+    false
+}
+
+/// Run the wrapped compile, when one was asked for, and hand back its record.
+/// `Err` is the exit code to leave with.
+fn compile_first(
+    cargo_args: Option<Vec<String>>,
+    positional: &[&str],
+) -> Result<Option<grid_wire::CompileRecord>, u8> {
+    let Some(cargo_args) = cargo_args else {
+        return Ok(None);
+    };
+    if !positional.is_empty() {
+        hint(&format!(
+            "grid: --compile checks the worktree against {COMPILE_BASE}; endpoints do not apply\n{CHECK_USAGE}"
+        ));
+        return Err(exit::BAD_INPUT);
+    }
+    compile_wrap(&cargo_args).map(Some)
+}
+
+/// Which of the three forms one check's answer is printed in.
+enum Form {
+    /// Porcelain records, `docs/PORCELAIN.md`'s grammar.
+    Records,
+    /// The wire result verbatim.
+    Json,
+    /// One markdown document, for a pull-request comment.
+    Markdown,
 }
 
 /// Print a check's answer and compute its exit: 3 exactly when a gating
 /// section fired, the same predicate that withholds the refactor certificate.
-fn check_emit(pack: &grid_wire::CheckResult, why: bool, json: bool) -> u8 {
+///
+/// Three forms, one judgment. `--json` is the record form. `--format md` is
+/// one document for a pull-request comment. Otherwise porcelain — and under
+/// `--quick` the two lines a hook would repeat verbatim every turn are
+/// dropped when their content has not moved since the last `--quick` in this
+/// store ([`check::quiet`]). The filter is porcelain's alone: `--json`
+/// carries every count whatever a previous run printed, and a review comment
+/// that omitted a count because a hook had already seen it would be a comment
+/// about a different check.
+fn check_emit(pack: &grid_wire::CheckResult, form: &Form, why: bool, quick: bool) -> u8 {
     let code = if check::gated(pack) {
         exit::DIVERGENCE
     } else {
         exit::OK
     };
-    if json {
+    match form {
         // A serialization failure is internal (1) and outranks the
         // verdict, exactly as `grid gate` treats it.
-        return match emit_json(pack) {
-            exit::OK => code,
-            failure => failure,
-        };
+        Form::Json => {
+            return match emit_json(pack) {
+                exit::OK => code,
+                failure => failure,
+            }
+        }
+        Form::Markdown => {
+            // The document has no section for the gate's fulfilling paths, so
+            // `--why` adds nothing to it. Hinted rather than refused: it adds
+            // content to a form the caller still gets, which is `--quick`'s
+            // case, not the one `check_conflicts` turns away. What it must
+            // not be is silent.
+            if why {
+                hint("grid: --why adds the gate's fulfilling paths to the records; the document has no section for them, so --why is ignored");
+            }
+            print!("{}", check::markdown(pack, &namer()));
+            return code;
+        }
+        Form::Records => {}
     }
-    print!("{}", check::porcelain(pack, &namer(), why));
+    let text = check::porcelain(pack, &namer(), why);
+    print!(
+        "{}",
+        if quick {
+            check::quiet(&text, root())
+        } else {
+            text
+        }
+    );
     if code == exit::DIVERGENCE {
         hint("grid: something this change did was not checked — the records above say what; `grid explain <word>` says why it gates");
     }
@@ -1824,7 +2094,7 @@ fn compile_report(record: &grid_wire::CompileRecord, json: bool) -> u8 {
 }
 
 const SUSPECTS_USAGE: &str =
-    "usage: grid suspects <test> [<trace>] [<base>] [--closure <snapshot|rev>]";
+    "usage: grid suspects <test> [<trace>] [<base>] [--closure [<snapshot|rev>]]";
 
 const INTERFERE_USAGE: &str = "usage: grid interfere <other-root> [--base <rev>]";
 
@@ -1903,21 +2173,27 @@ fn interfere_verb(args: &[&str], json: bool) -> u8 {
 /// without history. With it, the definitions the test's closure at head can
 /// reach whose bodies moved since that snapshot, ranked by hop distance —
 /// heuristic, so exit `0` on any answer, and no history required.
+///
+/// `--closure` with no snapshot after it uses the last one the test recorded
+/// a pass at ([`suspects::last_pass`]) and says on stderr which one that was;
+/// with nothing on record it refuses, because an empty ranking would read as
+/// "nothing in the closure moved".
 fn suspects(args: &[&str], json: bool) -> u8 {
-    let mut closure = None;
+    // `None` is no `--closure` at all; `Some(None)` is the bare flag, whose
+    // snapshot the verdict log supplies.
+    let mut closure: Option<Option<grid_wire::SnapshotOrRev>> = None;
     let mut positional = Vec::new();
     let mut rest = args;
     while let Some((arg, tail)) = rest.split_first() {
         rest = tail;
         match *arg {
-            "--closure" => {
-                let (Some(spec), Some(tail)) = (rest.first(), rest.get(1..)) else {
-                    hint(SUSPECTS_USAGE);
-                    return exit::BAD_INPUT;
-                };
-                closure = Some(snapshot_or_rev(spec));
-                rest = tail;
-            }
+            "--closure" => match rest.split_first() {
+                Some((spec, tail)) if !spec.starts_with("--") => {
+                    closure = Some(Some(snapshot_or_rev(spec)));
+                    rest = tail;
+                }
+                _ => closure = Some(None),
+            },
             other if other.starts_with("--") => {
                 hint(&format!("grid: unknown flag `{other}`\n{SUSPECTS_USAGE}"));
                 return exit::BAD_INPUT;
@@ -1928,6 +2204,24 @@ fn suspects(args: &[&str], json: bool) -> u8 {
     let (Some(test), true) = (positional.first(), positional.len() <= 3) else {
         hint(SUSPECTS_USAGE);
         return exit::BAD_INPUT;
+    };
+    let closure = match closure {
+        None => None,
+        Some(Some(named)) => Some(named),
+        Some(None) => match suspects::last_pass(root(), test) {
+            Ok(found) => {
+                // Which snapshot answered is part of the answer: a default
+                // nobody can see is a default nobody can check.
+                if let grid_wire::SnapshotOrRev::Snapshot { snapshot } = &found {
+                    hint(&format!(
+                        "grid: --closure since {} — the last snapshot `{test}` recorded a pass at",
+                        snapshot.0
+                    ));
+                }
+                Some(found)
+            }
+            Err(error) => return suspects_refused(&error),
+        },
     };
     let params = grid_wire::methods::SuspectsParams {
         test: (*test).to_owned(),

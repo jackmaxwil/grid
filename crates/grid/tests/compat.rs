@@ -304,3 +304,260 @@ fn the_check_is_silent_unless_it_is_asked_for() {
     );
     assert!(warnings(&grid(dir.path(), &["drift"])).is_empty());
 }
+
+/// The `inv` records a listing prints: `(status, id)`.
+fn invs(out: &Output) -> Vec<(String, String)> {
+    stdout(out)
+        .lines()
+        .filter(|l| l.starts_with("inv"))
+        .filter_map(|l| {
+            let mut c = l.split_whitespace();
+            c.next()?;
+            Some((c.next()?.to_owned(), c.next()?.to_owned()))
+        })
+        .collect()
+}
+
+/// T-12, ground truth: `grid invariant persisted <pattern>` declares the
+/// human fact by hand no longer. The rule it writes is the rule the gate
+/// reads, and `--list` says what the repo has declared.
+#[test]
+fn the_invariant_verb_declares_a_persisted_rule_the_gate_then_fires_on() {
+    let dir = repo(
+        "#[derive(Deserialize)]\npub struct C {\n    pub a: u32,\n}\n",
+        "#[derive(Deserialize)]\npub struct C {\n    pub a: u32,\n    pub retries: u32,\n}\n",
+    );
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+
+    // Undeclared, the same change ranks and does not gate.
+    let before = grid(dir.path(), &["drift", "--compat"]);
+    assert_eq!(code(&before), 0, "{}", stdout(&before));
+
+    let declared = grid(
+        dir.path(),
+        &["invariant", "persisted", "app.C", "--note", "on disk"],
+    );
+    assert_eq!(code(&declared), 0, "{}", stderr(&declared));
+    assert_eq!(
+        invs(&declared),
+        [("standing".to_owned(), "persisted:app.C".to_owned())],
+        "the write echoes the rule set: {}",
+        stdout(&declared)
+    );
+    assert_eq!(
+        invs(&grid(dir.path(), &["invariant", "--list"])),
+        invs(&declared),
+        "--list is the same set"
+    );
+
+    // The gate reads it: the same finding is now modeled evidence, exit 3.
+    let after = grid(dir.path(), &["drift", "--compat"]);
+    assert_eq!(
+        code(&after),
+        3,
+        "a declared boundary gates:\n{}{}",
+        stdout(&after),
+        stderr(&after)
+    );
+    assert!(
+        stdout(&after).contains("persisted:app.C") && stdout(&after).contains("required field"),
+        "the record names the declaration this verb wrote:\n{}",
+        stdout(&after)
+    );
+
+    // Declaring the same pattern twice is one rule, not two.
+    assert_eq!(
+        code(&grid(dir.path(), &["invariant", "persisted", "app.C"])),
+        0
+    );
+    assert_eq!(invs(&grid(dir.path(), &["invariant", "--list"])).len(), 1);
+
+    // The note rides as the rule's description, and `--json` is the record
+    // form.
+    let listed: Vec<serde_json::Value> = serde_json::from_str(&stdout(&grid(
+        dir.path(),
+        &["invariant", "--list", "--json"],
+    )))
+    .expect("--json is an Invariant list");
+    assert_eq!(listed[0]["rule"]["persisted"], "app.C", "{listed:?}");
+}
+
+/// T-12, conservatism: a pattern that matches nothing is refused and nothing
+/// is written. A declared rule that can never fire reads as protection and
+/// is not — it is the one state worse than no rule, because a reader sees a
+/// declaration and stops looking. The hand-authored rule kinds this verb
+/// does not write survive it untouched.
+#[test]
+fn an_invariant_over_nothing_is_refused_and_hand_authored_rules_survive() {
+    let dir = repo(
+        "#[derive(Deserialize)]\npub struct C {\n    pub a: u32,\n}\n",
+        "#[derive(Deserialize)]\npub struct C {\n    pub a: u32,\n    pub retries: u32,\n}\n",
+    );
+    // A rule kind `grid invariant` never writes, authored by hand.
+    let hand = "[{\"id\": \"no-app-to-db\", \"rule\": {\"forbid_edge\": \
+                {\"src\": \"app.**\", \"dst\": \"db.**\"}}}]";
+    write(dir.path(), ".grid/invariants.json", hand);
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+
+    let out = grid(dir.path(), &["invariant", "persisted", "app.NoSuchType"]);
+    assert_eq!(
+        code(&out),
+        2,
+        "a rule about code that does not exist is bad input: {}",
+        stdout(&out)
+    );
+    assert!(
+        stdout(&out).is_empty(),
+        "a refusal writes no records: {}",
+        stdout(&out)
+    );
+    assert!(
+        stderr(&out).contains("nothing is called `app.NoSuchType`"),
+        "and says so: {}",
+        stderr(&out)
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(".grid/invariants.json")).expect("read"),
+        hand,
+        "nothing was written, and the hand-authored rule is byte-identical"
+    );
+
+    // A rule this verb *does* write leaves the hand-authored one alone.
+    assert_eq!(
+        code(&grid(dir.path(), &["invariant", "persisted", "app.C"])),
+        0
+    );
+    let ids: Vec<String> = invs(&grid(dir.path(), &["invariant", "--list"]))
+        .into_iter()
+        .map(|(_, id)| id)
+        .collect();
+    assert_eq!(ids, ["no-app-to-db", "persisted:app.C"], "both rules stand");
+}
+
+/// T-12, conservatism: a repository declaration file is *published*, never
+/// truncated in place.
+///
+/// `.grid/invariants.json` and `.grid/covenants.json` are not engine state —
+/// they hold hand-authored rules the next survey cannot rebuild. Written with
+/// a plain `fs::write`, the file is truncated before it is filled, so a
+/// crash, a signal or ENOSPC in that window leaves it empty or half-written;
+/// `load` then returns `Err` and `gate`, `todo`, `check --plan` and `drift
+/// --compat` all refuse. `chart-io`'s `write_atomic` closes the window, and
+/// the observable difference is the inode: a file published by rename is a
+/// new one, a file truncated in place is the same one. So a reader holding
+/// the old file always sees complete old content, and no reader ever sees a
+/// half-written declaration.
+#[cfg(unix)]
+#[test]
+fn a_declaration_file_is_published_by_rename_never_truncated_in_place() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let dir = repo(
+        "#[derive(Deserialize)]\npub struct C {\n    pub a: u32,\n}\n\
+         pub fn one() -> u32 { 1 }\npub fn two() -> u32 { 2 }\n",
+        "#[derive(Deserialize)]\npub struct C {\n    pub a: u32,\n}\n\
+         pub fn one() -> u32 { 1 }\npub fn two() -> u32 { 2 }\n",
+    );
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+
+    let inode = |name: &str| {
+        std::fs::metadata(dir.path().join(name))
+            .expect("the declaration exists")
+            .ino()
+    };
+    for (file, args) in [
+        (
+            ".grid/invariants.json",
+            vec!["invariant", "persisted", "app.C"],
+        ),
+        (
+            ".grid/covenants.json",
+            vec!["covenant", "app.one", "app.two", "--via", "schema"],
+        ),
+    ] {
+        let first = grid(dir.path(), &args);
+        assert_eq!(code(&first), 0, "{}", stderr(&first));
+        let before = inode(file);
+        // A second, different declaration into the same file: the rewrite
+        // path, which is the one that truncates.
+        let mut second = args.clone();
+        if second[0] == "invariant" {
+            second[2] = "app.one";
+        } else {
+            second[1] = "app.two";
+            second[2] = "app.one";
+        }
+        let out = grid(dir.path(), &second);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        assert_ne!(
+            inode(file),
+            before,
+            "{file} was rewritten in place — the truncate window is open"
+        );
+        // And no temp file is left beside it.
+        let strays: Vec<String> = std::fs::read_dir(dir.path().join(".grid"))
+            .expect("read .grid")
+            .filter_map(|e| {
+                let name = e.ok()?.file_name();
+                (Path::new(&name).extension()? == "tmp")
+                    .then(|| name.to_string_lossy().into_owned())
+            })
+            .collect();
+        assert_eq!(strays, Vec::<String>::new(), "the publish left {strays:?}");
+    }
+}
+
+/// T-10 + T-12, conservatism: on a store nobody has surveyed, a declaration
+/// verb names the survey rather than reporting the code absent.
+///
+/// `rpc::matching` counts matches over the live epoch, and an unsurveyed
+/// store holds none — so every pattern matched zero and was refused as
+/// "nothing is called `<x>`", which is silence read as "does not exist", the
+/// one conclusion grid never licenses. It is also the only missing-snapshot
+/// refusal on the branch that carried no `Recovery` line, and the recovery
+/// here is exactly `grid survey`. A *stale* store is the same defect: a rule
+/// declared for a type added since the last survey was refused as
+/// nonexistent.
+#[test]
+fn a_declaration_on_an_unsurveyed_store_names_the_survey() {
+    let dir = repo(
+        "#[derive(Deserialize)]\npub struct C {\n    pub a: u32,\n}\n\
+         pub fn one() -> u32 { 1 }\npub fn two() -> u32 { 2 }\n",
+        "#[derive(Deserialize)]\npub struct C {\n    pub a: u32,\n}\n\
+         pub fn one() -> u32 { 1 }\npub fn two() -> u32 { 2 }\n",
+    );
+    // Committed, never surveyed. Both verbs share `matching`, so both must
+    // answer the same way.
+    for args in [
+        vec!["invariant", "persisted", "app.C"],
+        vec!["covenant", "app.one", "app.two", "--via", "schema"],
+    ] {
+        let out = grid(dir.path(), &args);
+        assert_eq!(code(&out), 2, "{args:?}: {}", stdout(&out));
+        assert!(
+            !stderr(&out).contains("nothing is called"),
+            "{args:?}: an empty store is not an empty repository: {}",
+            stderr(&out)
+        );
+        assert!(
+            stderr(&out).contains("no snapshot published"),
+            "{args:?}: it says what is actually missing: {}",
+            stderr(&out)
+        );
+        assert!(
+            stderr(&out).contains("hint: run `grid survey` in"),
+            "{args:?}: and names the command and the tree, as T-10 requires: {}",
+            stderr(&out)
+        );
+        assert!(
+            !dir.path().join(".grid/invariants.json").exists()
+                && !dir.path().join(".grid/covenants.json").exists(),
+            "{args:?}: a refused declaration is not written"
+        );
+    }
+
+    // And once surveyed, the same call answers.
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let out = grid(dir.path(), &["invariant", "persisted", "app.C"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+}

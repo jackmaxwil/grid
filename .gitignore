@@ -1,4 +1,18 @@
 target/
 /.cargo/
-.grid/
 .DS_Store
+
+# `.grid/` is per-repo state — the segment store, the membership image,
+# retained traces, the verdict log, the compile record — and the next survey
+# rebuilds all of it. Three things in it are not state: the two declaration
+# files a human authors (and `grid invariant` / `grid covenant` write), and
+# the plans a pull request is gated against. Those travel with the repo.
+#
+# Written as `.grid/*` rather than `.grid/`: git does not descend into an
+# excluded directory, so a negation under `.grid/` would never be reached.
+.grid/*
+!.grid/invariants.json
+!.grid/covenants.json
+!.grid/plans/
+.grid/plans/*
+!.grid/plans/*.json
