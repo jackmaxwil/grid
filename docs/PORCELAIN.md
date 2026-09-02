@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.19.0
+version: 2.20.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -145,8 +145,10 @@ one of `closure-changed` (the walk from the changed set reached it, or the
 test itself changed), `no-trace` (no live trace watched it, so the static
 closure alone does not license a skip), `unresolved:<why>` (the chart cannot
 name it — `:ambiguous` when the name resolves to more than one definition,
-`:macro-defined` when its module is charted and the name is not, which on
-Rust means a macro invocation such as `proptest!` defines it, `:not-charted`
+`:module-charted` when its module is charted and the name is not — the
+observation, named the same in every language; on Rust a macro invocation
+such as `proptest!` defines it, on Python a decorator or a generated
+attribute or a definition the frontend declined — `:not-charted`
 when nothing under that module is charted at all; bare `unresolved` from a
 plan computed before the column existed), `aground` (the walk ran past its
 fuel, so every test is selected), or

@@ -180,8 +180,11 @@ impl Resolver {
     /// ambiguity, and an ambiguous test is one grid cannot say anything
     /// about. Absent splits again on whether the *module* is charted: a name
     /// missing from a module the survey did chart is a name the survey could
-    /// not see, which on Rust means a macro invocation defines it — the
-    /// frontend charts items, and macro output is not an item.
+    /// not see. The variant names that observation and not its cause,
+    /// because the cause is per language — on Rust a macro invocation
+    /// defines it (the frontend charts items, and macro output is not an
+    /// item); on Python a decorator, a generated attribute, or a definition
+    /// the frontend declined.
     fn resolve(&self, callsign: &str) -> Result<DatumId, TestSelectionUnresolved> {
         match self.by_suffix.get(callsign).map(Vec::as_slice) {
             Some([one]) => Ok(*one),
@@ -190,7 +193,7 @@ impl Resolver {
                 .rsplit_once('.')
                 .is_some_and(|(module, _)| self.modules.contains(module)) =>
             {
-                Err(TestSelectionUnresolved::MacroDefined)
+                Err(TestSelectionUnresolved::ModuleCharted)
             }
             _ => Err(TestSelectionUnresolved::NotCharted),
         }
@@ -1034,8 +1037,8 @@ mod tests {
         );
         assert_eq!(
             reason("fx tests::generated"),
-            (Why::Unresolved, Some(U::MacroDefined)),
-            "the module is charted and the name is not: a macro defines it"
+            (Why::Unresolved, Some(U::ModuleCharted)),
+            "the module is charted and the name is not — on Rust, a macro defines it"
         );
         assert_eq!(
             reason("fx nowhere::absent"),
@@ -1056,7 +1059,7 @@ mod tests {
         };
         let out = crate::porcelain::test_run(&run);
         assert!(
-            out.contains("miss    fx tests::generated  unresolved:macro-defined\n"),
+            out.contains("miss    fx tests::generated  unresolved:module-charted\n"),
             "{out}"
         );
         assert!(

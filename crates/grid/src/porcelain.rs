@@ -15,7 +15,7 @@ use grid_wire::{
 };
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "2.19.0";
+pub const VERSION: &str = "2.20.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -947,12 +947,13 @@ pub fn test_run(run: &grid_wire::TestRun) -> String {
             grid_wire::TestSelectionWhy::NoTrace => "no-trace",
             // An unresolved test always runs, which is right and says
             // nothing; the reader still deserves to know *why* the chart
-            // cannot name it, because "a macro defines it" is a fact about
-            // the test and "nothing here is charted" is one about the survey.
+            // cannot name it, because "the module is charted and this name
+            // is not" is a fact about the test and "nothing here is charted"
+            // is one about the survey.
             grid_wire::TestSelectionWhy::Unresolved => match sel.unresolved {
                 Some(grid_wire::TestSelectionUnresolved::Ambiguous) => "unresolved:ambiguous",
-                Some(grid_wire::TestSelectionUnresolved::MacroDefined) => {
-                    "unresolved:macro-defined"
+                Some(grid_wire::TestSelectionUnresolved::ModuleCharted) => {
+                    "unresolved:module-charted"
                 }
                 Some(grid_wire::TestSelectionUnresolved::NotCharted) => "unresolved:not-charted",
                 None => "unresolved",

@@ -1047,8 +1047,8 @@ pub enum TestSelectionWhy {
 pub enum TestSelectionUnresolved {
     #[serde(rename = "ambiguous")]
     Ambiguous,
-    #[serde(rename = "macro_defined")]
-    MacroDefined,
+    #[serde(rename = "module_charted")]
+    ModuleCharted,
     #[serde(rename = "not_charted")]
     NotCharted,
 }

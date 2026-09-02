@@ -204,7 +204,7 @@ selection saves the running, never the building. On a suite of slow,
 independent tests the ratio is the selection ratio; here it is not.
 
 The 28 selected when nothing changed are exactly the tests grid refuses to
-skip: 25 `unresolved:macro-defined` (every `proptest!`-generated test — the
+skip: 25 `unresolved:module-charted` (every `proptest!`-generated test — the
 survey charts items and a macro produces none), 2 whose coverage report
 `cargo llvm-cov` did not write, and 1 added since the last traced refresh.
 

@@ -286,9 +286,11 @@ plan).
   parse. Two threads because a child that fills one pipe while grid reads
   the other never finishes.
 - **T-28 — done** (7d072f8): the reason splits into `unresolved:ambiguous`,
-  `unresolved:macro-defined` (the module is charted and the name is not) and
+  `unresolved:module-charted` (the module is charted and the name is not —
+  named for the observation, since on Rust a macro defines the test and on
+  Python a decorator or a generated attribute does) and
   `unresolved:not-charted`, from the survey's own facts. On this repo all 25
-  land in the macro arm, which is what they are.
+  land in the module-charted arm, every one a `proptest!` test.
 - **T-29 (P2, S) `cargo test -- --list` fallback compiles the whole
   workspace.** Say so on stderr when nextest is absent and suggest it.
 - **T-30 (P2, M) Compat: tuple-struct members and enum variant payloads**
