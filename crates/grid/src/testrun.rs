@@ -111,10 +111,12 @@ fn env_hash(runner: &dyn Runner, opts: &Opts) -> String {
 /// The first-run banner. With no retained trace at all there is nothing for
 /// selection to skip on, so `grid test` is the runner plus bookkeeping — a
 /// state the numbers alone do not explain. One stderr line: the fact and the
-/// commands that end it. Silent once any trace exists, and silent under
-/// `--trace`, which *is* the run being recommended.
-fn first_run_banner(retained: usize, trace: bool) -> Option<String> {
-    (retained == 0 && !trace).then(|| {
+/// commands that end it. Silent once any trace exists, silent under
+/// `--trace`, which *is* the run being recommended, and silent when the
+/// count is unknown: a store that cannot be read is not an empty one, and
+/// "go trace" is the wrong advice for it.
+fn first_run_banner(retained: Option<usize>, trace: bool) -> Option<String> {
+    (retained == Some(0) && !trace).then(|| {
         "grid: no retained traces — every test is selected until one traced run records what \
          each test reaches: `cargo install cargo-llvm-cov && rustup component add \
          llvm-tools-preview` (Rust) or `pip install pytest-cov` (Python), then \
@@ -124,17 +126,22 @@ fn first_run_banner(retained: usize, trace: bool) -> Option<String> {
 }
 
 /// How many traces the store holds, without parsing any of them: retention is
-/// one file per trace, and the banner asks only whether there are none.
-fn retained_count(root: &std::path::Path) -> usize {
-    rpc::trace_dir(root)
-        .ok()
-        .and_then(|dir| std::fs::read_dir(dir).ok())
-        .map_or(0, |entries| {
+/// one file per trace, and the banner asks only whether there are none. A
+/// store that does not exist yet holds none; one that cannot be read — two
+/// candidate directories, a file where the directory should be — is `None`,
+/// and the plan's own store open is what reports why.
+fn retained_count(root: &std::path::Path) -> Option<usize> {
+    let dir = rpc::trace_dir(root).ok()?;
+    match std::fs::read_dir(dir) {
+        Ok(entries) => Some(
             entries
                 .flatten()
                 .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-                .count()
-        })
+                .count(),
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(0),
+        Err(_) => None,
+    }
 }
 
 /// The whole verb, over any runner. Returns the exit code: 3 when a run
@@ -701,7 +708,7 @@ mod tests {
     /// run is a line an agent stops reading.
     #[test]
     fn the_first_run_banner_names_both_commands_and_then_stops() {
-        let banner = super::first_run_banner(0, false).expect("no traces: the banner");
+        let banner = super::first_run_banner(Some(0), false).expect("no traces: the banner");
         for command in [
             "cargo install cargo-llvm-cov",
             "rustup component add llvm-tools-preview",
@@ -711,8 +718,21 @@ mod tests {
             assert!(banner.contains(command), "{command} is missing:\n{banner}");
         }
         assert_eq!(banner.lines().count(), 1, "one line:\n{banner}");
-        assert_eq!(super::first_run_banner(1, false), None, "a trace exists");
-        assert_eq!(super::first_run_banner(0, true), None, "--trace is the run");
+        assert_eq!(
+            super::first_run_banner(Some(1), false),
+            None,
+            "a trace exists"
+        );
+        assert_eq!(
+            super::first_run_banner(Some(0), true),
+            None,
+            "--trace is the run"
+        );
+        assert_eq!(
+            super::first_run_banner(None, false),
+            None,
+            "the store is unreadable"
+        );
     }
 
     /// And the count it reads is the retained store's, which starts empty and
@@ -720,13 +740,28 @@ mod tests {
     #[test]
     fn the_retained_count_follows_the_store() {
         let dir = repo(&owned(&python(1, 2, 9, [1, 2, 3])));
-        assert_eq!(super::retained_count(dir.path()), 0);
+        assert_eq!(super::retained_count(dir.path()), Some(0));
         let mut fake = Fake {
             root: dir.path().to_path_buf(),
             ran: Vec::new(),
         };
         assert_eq!(run(dir.path(), &mut fake, true), 0);
-        assert!(super::retained_count(dir.path()) > 0);
+        assert!(super::retained_count(dir.path()).is_some_and(|n| n > 0));
+    }
+
+    /// A store that cannot be read is not an empty one: the banner that
+    /// sends a user to trace stays silent when the count is unknown, because
+    /// "go trace" is the wrong advice for a broken store and the plan's own
+    /// store open is what reports the real error.
+    #[test]
+    fn the_banner_is_silent_on_a_store_that_cannot_be_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".grid")).expect("mkdir");
+        std::fs::write(dir.path().join(".grid/traces"), b"not a directory").expect("write");
+        assert!(
+            super::first_run_banner(super::retained_count(dir.path()), false).is_none(),
+            "an unreadable store is not zero retained traces"
+        );
     }
 
     /// The traced runner writes its per-test report under `.grid/test/`,

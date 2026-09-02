@@ -550,6 +550,12 @@ impl Store {
     /// same reason a walk over budget is rejected whole: a half-applied
     /// import is a store nobody can describe. Every refused id is named.
     ///
+    /// Whole against conflicts, which are decided before anything is
+    /// written; not against the disk. An IO error mid-write leaves the files
+    /// written before it in the store and returns the error — the recovery
+    /// is to run the same import again, which writes the rest and reports
+    /// the first ones `unchanged`.
+    ///
     /// # Errors
     /// [`StoreError::Io`] on a read or a write; [`StoreError::Corrupt`] if a
     /// file in `dir` is neither the current record shape nor the epoch-0 one.

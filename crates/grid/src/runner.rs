@@ -176,6 +176,7 @@ impl Real {
             )),
         }
         let lcov = self.root.join(".grid/test/coverage.lcov");
+        let runner_args = without_fail_fast(&self.args);
         for test in tests {
             // One report per test, so the previous test's must be gone
             // before this one runs: `cargo llvm-cov` writes nothing when the
@@ -192,7 +193,7 @@ impl Real {
                     }
                 })
                 .collect();
-            args.extend(self.args.iter().cloned());
+            args.extend(runner_args.iter().cloned());
             args.extend(self.rollup(std::slice::from_ref(test)));
             args.push("-E".into());
             args.push(filter(std::slice::from_ref(test)));
@@ -469,6 +470,26 @@ const TRACED: [&str; 6] = [
     "--ignore-run-fail",
 ];
 
+/// The user's runner args for the traced invocation: `--no-fail-fast`
+/// dropped, and said once. `cargo llvm-cov` refuses it beside
+/// `--ignore-run-fail`, and it says nothing in a one-test run anyway —
+/// carried over from an untraced CI line, where grid itself adds it, it
+/// turned every traced test back into "not reported by the runner".
+fn without_fail_fast(args: &[String]) -> Vec<String> {
+    let kept: Vec<String> = args
+        .iter()
+        .filter(|a| *a != "--no-fail-fast")
+        .cloned()
+        .collect();
+    if kept.len() != args.len() {
+        hint(
+            "grid: --no-fail-fast dropped from the traced invocation — cargo llvm-cov refuses it \
+             with --ignore-run-fail, and one test cannot fail fast past itself",
+        );
+    }
+    kept
+}
+
 /// Where the nextest wrapper template writes one profile per test:
 /// `GRID_LLVM_PROFILE_DIR` when the environment names one, else
 /// `target/grid-profiles` — the same default the template's wrapper uses.
@@ -665,10 +686,25 @@ fn passthrough(program: &str, root: &Path, args: &[String]) -> Result<String, St
     // Both pipes drained at once, and to stderr as the bytes arrive: a
     // twelve-second suite with nothing on screen looks hung, and a child
     // that fills one pipe while grid reads the other *is* hung.
-    let draining = [child.stdout.take().map(tee), child.stderr.take().map(tee)];
+    let draining = (
+        child.stdout.take().map(tee).transpose(),
+        child.stderr.take().map(tee).transpose(),
+    );
+    let (stdout, stderr) = match draining {
+        (Ok(stdout), Ok(stderr)) => (stdout, stderr),
+        // No drain thread is a child nobody reads, which is the hang above:
+        // ended here, and the refusal is the OS's, not the runner's.
+        (Err(e), _) | (_, Err(e)) => {
+            let _ended = child.kill();
+            let _reaped = child.wait();
+            return Err(format!("{program}: could not start a drain thread: {e}"));
+        }
+    };
     let status = child.wait().map_err(|e| format!("{program}: {e}"))?;
-    let [stdout, stderr] =
-        draining.map(|d| d.map_or_else(String::new, |t| t.join().unwrap_or_default()));
+    let join = |drained: Option<std::thread::JoinHandle<String>>| {
+        drained.map_or_else(String::new, |t| t.join().unwrap_or_default())
+    };
+    let (stdout, stderr) = (join(stdout), join(stderr));
     if stdout.is_empty() && stderr.is_empty() && !status.success() {
         return Err(format!("{program} {} exited {}", args.join(" "), status));
     }
@@ -679,8 +715,9 @@ fn passthrough(program: &str, root: &Path, args: &[String]) -> Result<String, St
 /// it arrives, and the same bytes kept for the verdict parse. A read error
 /// ends the drain with what was read — a pipe that stops answering is the end
 /// of that stream, and the exit status is what says whether the run was one.
-fn tee(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<String> {
-    std::thread::spawn(move || {
+/// A thread the OS refuses is an error, not a panic.
+fn tee(mut pipe: impl Read + Send + 'static) -> std::io::Result<std::thread::JoinHandle<String>> {
+    std::thread::Builder::new().spawn(move || {
         let mut kept: Vec<u8> = Vec::new();
         let mut buf = [0u8; 8192];
         while let Ok(read @ 1..) = pipe.read(&mut buf) {
@@ -732,6 +769,18 @@ mod tests {
         assert!(
             super::TRACED.contains(&super::OUTPUT_PATH),
             "the report path has somewhere to go"
+        );
+        // And the user's own `-- --no-fail-fast`, carried over from an
+        // untraced CI line where grid itself adds it, does not bring the
+        // refused pair back: it is dropped from the traced invocation.
+        let args: Vec<String> = ["--no-fail-fast", "--profile", "ci"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        assert_eq!(
+            super::without_fail_fast(&args),
+            ["--profile", "ci"],
+            "the traced run is one test, and one test cannot fail fast past itself"
         );
     }
 
@@ -803,6 +852,11 @@ mod tests {
     ///
     /// `ponytail:` `66_000` bytes because `65_536` is the largest pipe buffer
     /// this runs on; the number is a platform bound, not a chosen size.
+    ///
+    /// The mirror is the feature, so the child's 66 KB of `o` lands on the
+    /// real stderr of every run of this suite: the drain writes to
+    /// `io::stderr()` directly, which the harness does not capture. Accepted
+    /// and said here rather than hidden behind a test-only sink.
     #[test]
     fn both_streams_are_drained_while_the_child_runs() {
         let script = "head -c 66000 /dev/zero | tr '\\0' o; echo drained >&2";

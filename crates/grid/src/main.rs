@@ -2447,9 +2447,11 @@ fn trace_transport(exporting: bool, args: &[&str], json: bool, root: &std::path:
     } else {
         // Bad input, not divergence: the directory and the store disagree
         // about what a run did, and no code has diverged from anything.
-        hint(&format!(
-            "grid: nothing was {verb}ed — reconcile the ids above, or {verb} into an empty store"
-        ));
+        // Only import is refused whole; export wrote every other trace, and
+        // the `done` line already counts what it did.
+        if !exporting {
+            hint("grid: nothing was imported — reconcile the ids above, or import into an empty store");
+        }
         exit::BAD_INPUT
     }
 }

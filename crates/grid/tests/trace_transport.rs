@@ -43,16 +43,62 @@ fn retain(root: &Path, traces: &[(&str, &str)]) {
 
 /// The verb, run in `root`. Returns `(code, stdout)`.
 fn grid(root: &Path, args: &[&str]) -> (i32, String) {
+    let (code, stdout, _) = grid_with_hints(root, args, false);
+    (code, stdout)
+}
+
+/// The verb with its hints on when `hints`. Returns `(code, stdout, stderr)`.
+fn grid_with_hints(root: &Path, args: &[&str], hints: bool) -> (i32, String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_grid"))
         .args(args)
         .current_dir(root)
-        .env("GRID_HINTS", "0")
+        .env("GRID_HINTS", if hints { "1" } else { "0" })
         .output()
         .expect("spawn grid");
     (
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
     )
+}
+
+/// Export is not whole-refused: a file in the directory holding other bytes
+/// under a content hash is left alone and named, and every other trace is
+/// still written. The hint must not say otherwise — "nothing was exported"
+/// was said when the `done` line beside it counted what was.
+#[test]
+fn an_export_conflict_refuses_one_file_and_says_so_truthfully() {
+    let ci = tempfile::tempdir().expect("tempdir");
+    let artifact = tempfile::tempdir().expect("tempdir");
+    let out = artifact.path().join("traces");
+    let a = format!("b3:{}", "2".repeat(64));
+    retain(ci.path(), &[("trace:one", &a)]);
+    let (code, _) = grid(ci.path(), &["trace", "export", &out.display().to_string()]);
+    assert_eq!(code, 0);
+    // The one exported file, overwritten under its own name with other bytes.
+    let exported = std::fs::read_dir(&out)
+        .expect("read")
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x == "json"))
+        .expect("one file");
+    std::fs::write(&exported, b"{}").expect("write");
+    let b = format!("b3:{}", "3".repeat(64));
+    retain(ci.path(), &[("trace:two", &b)]);
+    let (code, stdout, stderr) = grid_with_hints(
+        ci.path(),
+        &["trace", "export", &out.display().to_string()],
+        true,
+    );
+    assert_eq!(code, 2, "a refusal is bad input:\n{stdout}");
+    assert!(
+        stdout.contains("traces 1 exported · 0 unchanged · 1 refused"),
+        "{stdout}"
+    );
+    assert!(
+        !stderr.contains("nothing was exported"),
+        "one trace was exported, and the hint must not deny it:\n{stderr}"
+    );
 }
 
 #[test]

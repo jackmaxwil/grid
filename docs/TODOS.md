@@ -221,6 +221,13 @@ plan).
   tool and an object-discovery path of its own, which is why the template
   landed without it; the saving it buys is the report export, the run itself
   already being one invocation once the wrapper is installed.
+- **T-46 (P3, S) `per_test_profiles` counts forever.** `target/grid-profiles`
+  is never cleared, so the hint's number grows across sessions and keeps
+  firing after the wrapper is uninstalled. Left as it is: the count is a
+  hint and never a gate (the wrapper stands down under grid, so nothing
+  grid runs adds to it), and clearing the directory would delete the
+  profiles T-45 is going to ingest. Say "cumulative" in the hint, or clear
+  it at the start of the one-pass ingest, when T-45 lands.
 - **T-07 — done** (9700cb6): a verdict recorded by `grid test` for a test
   that ran untraced carries `test:<callsign>` in the cache line's trace-id
   column, which `stale.rs` and `weak.rs` read. On this repo the verdict log
