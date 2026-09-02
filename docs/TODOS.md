@@ -197,13 +197,13 @@ plan).
   changed since the last check in this store (a one-line state file).
   Stated in PORCELAIN as a `--quick` property; the full form always
   prints them. (done eb946ff)
-- **T-03 — done** (a1af76a): with zero retained traces `grid test` prints one
+- **T-03 — done** (dc152d7): with zero retained traces `grid test` prints one
   stderr line naming the fact and both install commands, and stops once a
   trace exists. Also silent under `--trace`, which is the run it recommends.
-- **T-04 — done** (7125f1b): `just traces` checks `cargo-llvm-cov`, the
+- **T-04 — done** (a8b2fae): `just traces` checks `cargo-llvm-cov`, the
   `llvm-tools` component and `pytest_cov`, prints the exact install command
   for each missing one and exits 2; `just traces-ci` is the CI form.
-- **T-05 — done** (af100d2), in part: `scripts/templates/` ships the nextest
+- **T-05 — done** (aa5e036), in part: `scripts/templates/` ships the nextest
   wrapper and its `.config/nextest.toml`, keyed by `NEXTEST_BINARY_ID` and
   `NEXTEST_TEST_NAME` — verified writing one `.profraw` per test from one
   nextest run — and `grid test --trace` counts those profiles and says what
@@ -230,7 +230,7 @@ plan).
   grid runs adds to it), and clearing the directory would delete the
   profiles T-45 is going to ingest. Say "cumulative" in the hint, or clear
   it at the start of the one-pass ingest, when T-45 lands.
-- **T-07 — done** (a1af76a): a verdict recorded by `grid test` for a test
+- **T-07 — done** (dc152d7): a verdict recorded by `grid test` for a test
   that ran untraced carries `test:<callsign>` in the cache line's trace-id
   column, which `stale.rs` and `weak.rs` read. What was measured: on a
   verdict log created fresh on this branch (`.grid/cache`, 2026-09-02
@@ -239,7 +239,7 @@ plan).
   store that never held an unattributed line. `attributed()` reads only
   the `test:` prefix, and a line already in the log never gains one, so an
   existing store keeps its old count and merely stops growing.
-- **T-08 — done** (b020571), in part: `grid plan new [<id>] --from-diff
+- **T-08 — done** (f264a24), in part: `grid plan new [<id>] --from-diff
   <base> [--out <file>]` drafts def and edge promises from the working diff
   with the base pinned to the snapshot, and `grid plan lint` accepts it
   unchanged. `--defs a.b c.d` for the tiny case is not built: the drafted
@@ -265,7 +265,7 @@ plan).
 
 ### Traces across machines
 
-- **T-13 — done** (76a5a2f): `grid trace export <dir>` / `grid trace import
+- **T-13 — done** (719e7f3): `grid trace export <dir>` / `grid trace import
   <dir>`, content-addressed out and keyed by trace id in, bytes copied so a
   round trip is byte-identical and an epoch-0 record travels as itself. An
   import that would put different content under a held id refuses the whole
@@ -294,11 +294,11 @@ plan).
 
 ### Correctness warts
 
-- **T-27 — done** (975ce58): each of the runner's two pipes is drained by
+- **T-27 — done** (0a28f74): each of the runner's two pipes is drained by
   its own thread, written to stderr as it arrives, and kept for the verdict
   parse. Two threads because a child that fills one pipe while grid reads
   the other never finishes.
-- **T-28 — done** (d874825): the reason splits into `unresolved:ambiguous`,
+- **T-28 — done** (e1b9a5a): the reason splits into `unresolved:ambiguous`,
   `unresolved:module-charted` (the module is charted and the name is not —
   named for the observation, since on Rust a macro defines the test and on
   Python a decorator or a generated attribute does) and
@@ -313,7 +313,7 @@ plan).
 
 ### Untested-live paths and platform
 
-- **T-15 — done** (1d778e8): and it found that the traced path had never
+- **T-15 — done** (323db0f): and it found that the traced path had never
   worked — `cargo llvm-cov` refuses `--ignore-run-fail` with
   `--no-fail-fast`, so every traced run reported no verdicts at all. With
   the flag gone, re-measured after the review fixes on a store created

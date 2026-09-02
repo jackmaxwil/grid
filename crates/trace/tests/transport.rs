@@ -6,6 +6,10 @@
 //! bytes are copied rather than re-serialized, which is what makes a round
 //! trip byte-identical and an epoch-0 record still an epoch-0 record on the
 //! far side.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use grid_chart::{build, DatumId, Def, DefFacts, Segment};
 use grid_trace::{grade, ingest, Store};
 use grid_wire::{Grade, Trace, TraceEndpoint, TraceObservation};

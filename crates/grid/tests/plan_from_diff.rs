@@ -4,6 +4,10 @@
 //!
 //! Authoring a plan by hand meant writing callsign patterns and promise kinds
 //! for a change already made. The diff knows all of it.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::path::Path;
 use std::process::Command;
 

@@ -1,7 +1,7 @@
 {
   "files": {
-    "crates/grid/src/main.rs": 2391,
-    "crates/grid/src/porcelain.rs": 1274,
+    "crates/grid/src/main.rs": 2457,
+    "crates/grid/src/porcelain.rs": 1323,
     "crates/grid/src/rpc.rs": 2140
   },
   "fns": {

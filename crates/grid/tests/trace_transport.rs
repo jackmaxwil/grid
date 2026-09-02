@@ -5,6 +5,10 @@
 //! proves is the wiring: which store the verb opens, what it prints, and that
 //! a refused import is exit 2 — bad input, because a directory and a store
 //! disagreeing about what a run did is not code diverging from a promise.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::path::Path;
 use std::process::Command;
 
