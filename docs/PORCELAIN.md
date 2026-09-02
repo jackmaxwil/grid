@@ -162,7 +162,7 @@ a replayed verdict is `fail` — the closure is unchanged, so the failure
 stands, and `F` in the `done` line counts both (a selected test the runner
 never reported on counts as failed and is named in a `warn`), `1` when the runner could not be spawned, `0` otherwise —
 `uncovered` and `nondeterministic` are heuristic and never move it. Runner
-output goes to stderr; the horizon line on stderr says how many tests were
+output goes to stderr as the runner produces it, not replayed at the end; the horizon line on stderr says how many tests were
 selected out of how many, and what the plan and the survey cost.
 
 `grid check --compile [-- <cargo check args>]` runs `cargo check` with the

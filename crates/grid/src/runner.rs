@@ -2,13 +2,15 @@
 //! way a survey spawns git. Grid reads their inventories and their verdict
 //! lines; it instruments nothing and ships no plugin.
 //!
-//! `ponytail:` runner output is captured and replayed to stderr after each
-//! invocation rather than streamed, because the same bytes are parsed for
-//! verdicts; a tee over the child's pipe lands when a long suite makes the
-//! silence unbearable.
+//! Runner output is streamed: each of the child's two pipes is drained by its
+//! own thread, written to stderr as it arrives, and kept — the same bytes the
+//! verdict parse reads. Two threads rather than one because a child that
+//! fills one pipe while grid reads the other never finishes, and a nextest
+//! run fills both.
 use std::collections::HashMap;
+use std::io::{Read, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::testrun::{Outcome, Runner};
 use crate::{hint, rpc};
@@ -589,7 +591,7 @@ fn python_passthrough(root: &Path, args: &[String]) -> Result<String, String> {
 }
 
 fn passthrough(program: &str, root: &Path, args: &[String]) -> Result<String, String> {
-    let out = Command::new(program)
+    let mut child = Command::new(program)
         .args(args)
         .current_dir(root)
         // The same bytes are parsed for verdicts, and a coloured `PASS` is
@@ -597,22 +599,43 @@ fn passthrough(program: &str, root: &Path, args: &[String]) -> Result<String, St
         .env("CARGO_TERM_COLOR", "never")
         .env("NO_COLOR", "1")
         .env("PY_COLORS", "0")
-        .output()
+        // A runner grid drives is not an interactive one; a child that asks
+        // the terminal a question would hang a hook forever.
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("{program}: {e}"))?;
-    let (stdout, stderr) = (
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr),
-    );
-    // The runner's output is the user's; grid's records stay on stdout.
-    eprint!("{stdout}{stderr}");
-    if out.stdout.is_empty() && out.stderr.is_empty() && !out.status.success() {
-        return Err(format!(
-            "{program} {} exited {}",
-            args.join(" "),
-            out.status
-        ));
+    // Both pipes drained at once, and to stderr as the bytes arrive: a
+    // twelve-second suite with nothing on screen looks hung, and a child
+    // that fills one pipe while grid reads the other *is* hung.
+    let draining = [child.stdout.take().map(tee), child.stderr.take().map(tee)];
+    let status = child.wait().map_err(|e| format!("{program}: {e}"))?;
+    let [stdout, stderr] =
+        draining.map(|d| d.map_or_else(String::new, |t| t.join().unwrap_or_default()));
+    if stdout.is_empty() && stderr.is_empty() && !status.success() {
+        return Err(format!("{program} {} exited {}", args.join(" "), status));
     }
     Ok(format!("{stdout}\n{stderr}"))
+}
+
+/// Drain one of the child's pipes on its own thread: every chunk to stderr as
+/// it arrives, and the same bytes kept for the verdict parse. A read error
+/// ends the drain with what was read — a pipe that stops answering is the end
+/// of that stream, and the exit status is what says whether the run was one.
+fn tee(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut kept: Vec<u8> = Vec::new();
+        let mut buf = [0u8; 8192];
+        while let Ok(read @ 1..) = pipe.read(&mut buf) {
+            let chunk = buf.get(..read).unwrap_or_default();
+            // The runner's output is the user's; grid's records stay on
+            // stdout, and a write nobody is listening to is not an error.
+            let _unwritable = std::io::stderr().write_all(chunk);
+            kept.extend_from_slice(chunk);
+        }
+        String::from_utf8_lossy(&kept).into_owned()
+    })
 }
 
 #[cfg(test)]
@@ -635,6 +658,28 @@ mod tests {
         );
         assert_eq!(failed.len(), 1);
         assert!(!failed[0].pass);
+    }
+
+    /// Both of the child's streams are drained while it runs, and the parse
+    /// still gets all of both. The child writes past a pipe buffer on stdout
+    /// before saying anything on stderr, so a reader that waits for the exit
+    /// — or reads one pipe to its end before starting the other — wedges here
+    /// rather than returning short. That is the failure this proves absent,
+    /// and it is why there are two threads.
+    ///
+    /// `ponytail:` `66_000` bytes because `65_536` is the largest pipe buffer
+    /// this runs on; the number is a platform bound, not a chosen size.
+    #[test]
+    fn both_streams_are_drained_while_the_child_runs() {
+        let script = "head -c 66000 /dev/zero | tr '\\0' o; echo drained >&2";
+        let out = super::passthrough(
+            "/bin/sh",
+            std::path::Path::new("."),
+            &["-c".to_owned(), script.to_owned()],
+        )
+        .expect("the child ran");
+        assert_eq!(out.matches('o').count(), 66_000, "stdout is complete");
+        assert!(out.contains("drained"), "stderr is complete");
     }
 
     /// The coverage.py context is a regex: the id is escaped and anchored,
