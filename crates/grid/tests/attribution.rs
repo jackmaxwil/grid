@@ -545,3 +545,42 @@ fn a_bare_closure_with_no_recorded_pass_refuses_rather_than_ranking_nothing() {
         stderr(&bare)
     );
 }
+
+/// T-09, conservatism: the bare flag resolves its test name the same way the
+/// named form does.
+///
+/// `rank_closure` resolves through `ChartDelta::resolve` — any unique name
+/// suffix, the Display policy every other input follows — while the join
+/// that finds the last pass used to compare `trace.command` for exact string
+/// equality. So `grid suspects the_test --closure <snap>` answered and
+/// `grid suspects the_test --closure` refused, saying nothing was on record
+/// when a pass for that very definition was. A refusal that states something
+/// untrue is worse than one that states too little.
+#[test]
+fn a_bare_closure_resolves_its_test_name_the_way_the_named_form_does() {
+    let (dir, green) = passed_then_edited();
+
+    // `the_test` is a unique suffix of `app.the_test`, the name the trace
+    // recorded. The named form takes it, so the bare form must too.
+    let named = grid(dir.path(), &["suspects", "the_test", "--closure", &green]);
+    assert_eq!(code(&named), 0, "{}", stderr(&named));
+    assert!(!hits(&named).is_empty(), "{}", stdout(&named));
+
+    let bare = grid(dir.path(), &["suspects", "the_test", "--closure"]);
+    assert_eq!(
+        code(&bare),
+        0,
+        "a name the named form resolves is a name the default resolves:\n{}",
+        stderr(&bare)
+    );
+    assert_eq!(
+        stdout(&bare),
+        stdout(&named),
+        "and it is the same question, not a nearby one"
+    );
+    assert!(
+        stderr(&bare).contains(&green),
+        "still naming the snapshot it chose: {}",
+        stderr(&bare)
+    );
+}

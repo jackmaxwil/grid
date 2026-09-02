@@ -225,6 +225,12 @@ pub struct Closure {
 /// and an empty ranking reads as "nothing in the closure moved", which is
 /// the opposite claim.
 ///
+/// The name is resolved the way [`rank_closure`] resolves it — through the
+/// chart, by unique suffix, the Display policy every other input follows —
+/// and not by string equality against `trace.command`. The two must agree:
+/// a name the named form answers to and the bare form refuses is a refusal
+/// that states something untrue, since the pass it says is not on record is.
+///
 /// # Errors
 /// [`Error::UnknownSince`] when no passing verdict for this test names a
 /// retained trace that records a snapshot; [`Error::Chart`] when the trace
@@ -236,12 +242,30 @@ pub fn last_pass(root: &Path, test: &str) -> Result<SnapshotOrRev, Error> {
         .and_then(grid_trace::Store::open)
         .and_then(|store| store.retained())
         .map_err(|e| unreadable(&e))?;
+    // The live callsigns the argument names. A trace's command is another
+    // spelling of the same definition exactly when it is a suffix of one of
+    // them — the same rule `ChartDelta::resolve` applies to the argument
+    // itself, run once over the chart rather than per trace.
+    let chart = ChartDelta::open(root)?;
+    let named: Vec<String> = chart
+        .resolve(&grid_wire::Locator::Callsign {
+            callsign: grid_wire::Callsign(test.to_owned()),
+        })
+        .into_iter()
+        .filter_map(|d| d.callsign.map(|c| c.0))
+        .collect();
+    let is_this_test = |command: &str| {
+        command == test
+            || named
+                .iter()
+                .any(|c| chart_provider::suffix_matches(c, command))
+    };
     // Only this test's traces, and only those that recorded the coordinate a
     // closure diff can be taken against. A trace with no snapshot names a
     // tree nobody can name back.
     let at: BTreeMap<&str, &grid_wire::SnapshotId> = traces
         .iter()
-        .filter(|stored| stored.trace.command.as_deref() == Some(test))
+        .filter(|stored| stored.trace.command.as_deref().is_some_and(&is_this_test))
         .filter_map(|stored| {
             Some((
                 stored.trace.trace_id.as_str(),
