@@ -17,9 +17,12 @@ came from and why each piece is shaped the way it is.
 (`docs/CURRENT_WAVE`); do not scaffold ahead of it.
 
 Mandatory skills, at session start and in any case before writing Rust:
-`har`, `har-verify` and `har-supply` under `skills/`. `har-unsafe` governs
+`har`, `har-verify` and `har-supply`. The HAR doctrine lives at
+`~/Development/har-skills/skills/` and is read from there, never vendored into
+this repository — a copy is a fork that nothing diffs. `har-unsafe` governs
 `crates/chart-io`, `har-threat` the segment parser, and the rest load by their
-stated triggers.
+stated triggers. `skills/` here holds only grid's own: `review`, `grid`,
+`grid-wire`, `grid-assurance`.
 
 # Declaring work ready
 
@@ -72,8 +75,8 @@ Standing rules:
 
 # Style: HAR compliance
 
-The `har*` skills under `skills/` are normative for every Rust line.
-Enforced highlights:
+The `har*` skills at `~/Development/har-skills/skills/` are normative for
+every Rust line. Enforced highlights:
 
 - `#![forbid(unsafe_code)]` workspace-wide, relaxed in exactly one crate.
   Panic budget zero: clippy denies `unwrap`/`expect`/`panic`/`todo`/
@@ -88,11 +91,12 @@ Enforced highlights:
   that created a constant or a guard, an invariant the type system cannot
   express, the assurance claim the code is evidence for, or what the code does
   when it cannot decide. Restating a signature or the next three statements is
-  none of these. `check_comments.py` backs it — pointer-only comments and
-  off-vocabulary `Word:` prefixes are at zero, and comment volume is a
-  shrink-only ratchet. The grant vocabulary is closed: `Incident:`,
-  `Invariant:`, `Claim:`, `Conservatism:`, `Property:`, `Differential:`,
-  `Deterministic:`.
+  none of these. A pointer-only comment (`// see drift.rs`) says nothing a
+  reader cannot get from the code. The grant vocabulary is closed:
+  `Incident:`, `Invariant:`, `Claim:`, `Conservatism:`, `Property:`,
+  `Differential:`, `Deterministic:`. This is a review rule, deliberately: a
+  budget on comment lines taxes every commit that adds a line of prose, and
+  grid's norm is the long explanatory comment.
 - A Rust item named in a doc comment is an intra-doc link —
   ``[`Segment::parse`]``, not bare backticks. `rustdoc::broken_intra_doc_links`
   is denied and `cargo doc --document-private-items` runs in the guardrails,
@@ -112,10 +116,7 @@ Run `just check` before claiming any task done; quote failures verbatim.
   untracked blob in the tree. Report it; do not allowlist or delete another
   session's artifact.
 - Budgets that start at zero stay at zero: glob re-exports, bisected
-  filenames, pointer-only comments, off-vocabulary comment tags.
-- A new `GRID_*` env var is a row in
-  `scripts/guardrails/baselines/env_vars.json` first (hard cap 16), and a row
-  nothing reads is an error too.
+  filenames.
 - `just guardrails-fast` is the build-free subset the pre-commit hook runs;
   `just guardrails` is the whole thing. `just hooks` installs the hooks, and
   nothing else ever does.
@@ -140,9 +141,10 @@ Run `just check` before claiming any task done; quote failures verbatim.
 
 **No new runtime crate dependency.** Every package in `Cargo.lock` has a line
 in `docs/ASSURANCE.md` saying why it is in the TCB, `deny.toml` names the
-crates that may never enter, and `check_deps_budget.py` counts the rest.
-Adding one edits, in the same commit: the ASSURANCE justification, `deny.toml`
-where relevant, and the budget baseline in its own follow-up commit. Dev
+crates that may never enter — including `wildcards` and a second version of
+any crate — and a package entering `Cargo.lock` is visible in the diff of
+every pull request. Adding one edits, in the same commit: the ASSURANCE
+justification and `deny.toml` where relevant. Dev
 tooling that is a binary on `PATH` — `codespell`, `cargo-nextest`,
 `cargo-machete`, `cargo-deny`, `cargo-fuzz`, `kani` — is not a dependency and
 does not move the lockfile; that is the only kind of tool this repository
@@ -212,6 +214,4 @@ not add the test.
   a gate pass — fix the code the gate is talking about.
 - Never name a Rust item in bare backticks inside a doc comment: it is an
   intra-doc link, or it is not an item.
-- Never introduce a `GRID_*` env var without its row in
-  `scripts/guardrails/baselines/env_vars.json`.
 - Never scaffold ahead of the current wave.

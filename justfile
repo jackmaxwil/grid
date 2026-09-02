@@ -139,10 +139,3 @@ serve *ARGS:
 [group('meta')]
 deny:
     cargo deny check
-
-# Copy grid's skills into the global agent root. Run by a person, never by the gate.
-[group('meta')]
-skills:
-    mkdir -p ~/.claude/skills
-    cp -R skills/. ~/.claude/skills/
-    @echo "skills installed: ~/.claude/skills"

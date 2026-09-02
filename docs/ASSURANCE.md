@@ -195,5 +195,7 @@ that moves normalization is a declared epoch bump, never a silent re-hash.
   standard library and nothing else. A dev-dependency would still be a package
   in `Cargo.lock`, and the lockfile is the thing this rule protects: `git diff`
   on it is empty across the whole port. `deny.toml`'s named ban list is this
-  paragraph made mechanical, and `check_deps_budget.py` counts what the list
-  did not think to name.
+  paragraph made mechanical, with `wildcards = "deny"` and
+  `multiple-versions = "deny"` covering what the list did not think to name; a
+  package that gets past both still arrives as a `Cargo.lock` line in the diff
+  of the pull request that adds it.

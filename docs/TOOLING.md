@@ -55,15 +55,15 @@ grid too, with `_common.py` ported as-is.
 | `_common.py` | `ROOT`, `src_files()`, `prod_lines()` (everything before `#[cfg(test)]`), `fail()` | **adopt** unchanged except the root. |
 | `check_manifests.py` | folder `x/` ⇒ crate `yi-x`; `version`/`edition`/`license`/`rust-version` are `workspace = true`; `[lints] workspace = true` (workspace lints are decorative without it); deps are `{ workspace = true }` | **adapt.** Grid keeps the naming law (`x/` ⇒ `grid-x`, with `crates/grid` the binary as the declared exception) and the workspace-field law, and adds the rule yi does not need: `crates/chart-io` cannot say `[lints] workspace = true` (it must relax `unsafe_code` for the mmap), so the check requires its hand-written lint table to be a **superset** of the workspace's at the same or a stricter level. That hole is real today — chart-io silently would not inherit any lint added below. Grid does **not** adopt the centralized-`[workspace.dependencies]` rule: grid declares versions per crate, and moving them is a different change. |
 | `check_boundaries.py` + `boundaries.toml` | crate dependency direction as an allowlist; unknown crate = error, stale entry = error, undeclared internal dep = error | **adopt.** Grid's graph is layered (`wire` and `datum` at the bottom, `grid` at the top) and the layering is load-bearing for the assurance case — `chart` must stay a two-dependency TCB. |
-| `check_comments.py` | 3-line cap per comment run; pointer-only comments rejected; `Word:` prefixes restricted to `Incident:` / `Invariant:`; shrink-only volume ratchet outside `yi-types` | **adapt.** The pointer-only rule and the closed tag vocabulary are adopted at zero — grid's ids are `C1`…`C43` claim rows, `D`-rows and `Wave N`, and the tree already had zero pointer-only comments. The vocabulary is grid's own, read off the tree: yi's `Incident:` and `Invariant:` plus `Claim:`, `Conservatism:`, `Property:`, `Differential:` and `Deterministic:`, all of which were already in use as grants. Three comments opened with a `Word:` that was prose rather than a grant and were reworded. The 3-line cap is a **shrink-only ratchet rather than a hard cap**: 399 runs in grid exceed it, and grid's prose norm is a longer explanatory comment that yi's is not — rewriting them is a code change with its own review, not a tooling one. Volume outside `crates/wire` (generated) is ratcheted as yi does it. |
+| `check_comments.py` | 3-line cap per comment run; pointer-only comments rejected; `Word:` prefixes restricted to `Incident:` / `Invariant:`; shrink-only volume ratchet outside `yi-types` | **skip.** Ported, then removed before merge. Every budget it carried sat at exactly the current measurement, so any added line of prose turned the gate red in a repository whose stated norm is the long explanatory comment; its 3-line "cap" was a grandfathered *count*, so deleting one 4-line run bought a 40-line one; its `--update` raised every budget including the two documented as permanently zero, which is the one ratchet in the set that could be relaxed; and a single added comment printed all 416 over-cap sites with no marker for the new one. What it uniquely caught — a private `Word:` dialect and pointer-only comments — had **never occurred**: both budgets read 0 on a 4,914-line comment corpus. Comment discipline stays a review matter and a paragraph in `AGENTS.md`. |
 | `check_panic.py` | a grep for `.unwrap()`/`.expect(`/`panic!`/`todo!` with a zero budget | **skip.** Redundant once the clippy denies above are in the workspace lint table: the compiler sees through macros and `cfg`, a grep does not. yi runs both; grid runs the accurate one. |
 | `check_filenames.py` | no `part_01.rs` / `foo_02.rs` — bisection is not decomposition | **adapt**, folded into `check_hygiene.py`. |
 | `check_glob_reexport.py` | zero `pub use ...::*` and `use super::*` in `src/` | **adapt**, folded into `check_hygiene.py`. |
 | `check_file_size.py` | 1,200-line ceiling, `src/` only | **adapt**, folded into `check_hygiene.py`. Three files predate the ceiling (`crates/grid/src/main.rs` 2088, `rpc.rs` 1964, `porcelain.rs` 1241); they sit in `baselines/hygiene_debt.json` at their measured size and may only shrink, and `--update` refuses to raise a number. Everything else meets the ceiling outright. |
 | `check_fn_size.py` | 150-line function ceiling, brace-counted | **adapt**, folded into `check_hygiene.py`. One function predates it (`serve.rs::dispatch`, 178) and sits in the same debt list. Four ~15-line scripts asking one question — is the source shaped sanely — become one file. |
-| `check_env_surface.py` | every `YI_*` env var is a declared row; hard cap 40 | **adapt** as a `GRID_*` declaration list. Grid has four (`GRID_CORPUS`, `GRID_FAULT_ITERS`, `GRID_HINTS`, `GRID_SOCKET`); the cap is 16. |
+| `check_env_surface.py` | every `YI_*` env var is a declared row; hard cap 40 | **skip.** Ported, then removed before merge. It scans `crates/*/src` only, and two of grid's four vars (`GRID_CORPUS`, `GRID_FAULT_ITERS`) are read from tests, the justfile and CI — invisible to it. Its third rule makes a declared-but-unfound row an error, so *declaring the half it cannot see fails the gate*: whichever way a developer went, the check gave a wrong answer. A hard cap of 16 guarding a surface of four is configuration for a value that never changes; the incident it inherits (jcode's 517 undocumented vars) is a different repository's. |
 | `check_blob_size.py` | no committed file over 512 KB outside an allowlist | **adapt.** Grid's allowlist is `docs/research/*.pdf` — four papers the design argues from, deliberately vendored. |
-| `check_deps_budget.py` | direct and transitive dependency counts, ratcheted | **adopt.** ASSURANCE.md's standing rule is "no new runtime dependency"; a counted budget is that rule in a form CI can check. |
+| `check_deps_budget.py` | direct and transitive dependency counts, ratcheted | **skip.** Ported, then removed before merge: subsumed three times over. `deny.toml` names the crates that may never enter, sets `wildcards = "deny"` and `multiple-versions = "deny"`, and a package entering `Cargo.lock` is a line in the diff of every pull request. The budget produced a number — `10/10` direct, `64/64` transitive — that never says *which* crate arrived, and it cost a `cargo tree --workspace`, which is why it sat in the slow tier where the pre-commit hook could not reach it. |
 | `check_schemas_lock.py` | every serialized shape in `yi-types` is normalized into a committed lock, so a schema edit is a reviewed diff | **adapt into `check_wire_drift.py`.** Grid's schema source of truth is not a crate but `docs/wire-v1.openrpc.json`, from which `scripts/gen-wire.py` generates `crates/wire/src`. The lock is therefore the generator itself: regenerate into a scratch copy, run `rustfmt` on it, and require the committed tree to be byte-identical. Same guarantee (a schema change is a reviewed diff, never a silent drift), one fewer artifact. |
 | `check_commit_style.py` | one plain imperative sentence ≤ 72 chars, **no** `word:` prefix, no trailers, assistant co-author trailers banned outright; baseline edits may not ride beside code edits | **adapt, inverted.** Grid's convention is the opposite of yi's on two axes and grid's convention wins: grid uses conventional-commit subjects (`feat(watch): …`, `docs(plan): …`) and grid requires the `Co-Authored-By: Claude …` trailer yi bans. The machinery ports: no terminal period, no `WIP`/`fixup!`, git's own `Merge`/`Revert` exempt, `HEAD --not origin/main` as the range, and the baseline-rides-beside-code rule. yi's 72-character cap measures the *sentence* here rather than the whole line, because grid's `type(scope): ` prefix spends 10–16 characters before the sentence starts; the line itself gets a 100-character hard stop. Measured over grid's last 87 subjects the sentence median is 58 and p90 is 74. yi's `STANDARD_STARTS` device ports too, for yi's reason: the rule arrived on a lineage already ahead of `main`, so history before the commit that introduced it is not judged and the exclusion self-expires when the lineage lands. |
 | `check_duplication.py` | zero duplicated 15-line normalized windows in `src/` | **skip.** Grid's per-language frontends (`lang-py`, `lang-rs`) implement the same visitor contract over two different ASTs; the parallel structure is the point, and a window hash cannot tell it from copy-paste. Revisit if a real duplicate is ever found by hand. |
@@ -89,45 +89,62 @@ grid too, with `_common.py` ported as-is.
 | `just prerelease` / `package` / `package-musl` / `publish` / `scripts/package.sh` / `sign.sh` / `smoke.sh` / `install.sh` / `check_elf.py` / `zigcc.sh` / `zigar.sh` | build, sign, smoke-test and upload a release tarball | **skip.** Grid has no release process, no signing key and no artifact host. `cargo install --path crates/grid` is the whole distribution story. |
 | `just journeys`, `just tui-proof`, `scripts/tui_pty.py`, `scripts/proof/` | TUI verification under a real PTY, GIF proof artifacts for PRs | **skip.** Grid has no TUI. |
 | `just postmerge-evals`, `evals/` | a task-eval harness for an LLM agent over fixtures | **skip.** yi's domain. |
-| `just install-skills` | copy `skills/` into the global agent root | **adapt** as `just skills`. |
+| `just install-skills` | copy `skills/` into the global agent root | **skip.** Ported as `just skills`, then removed: `cp -R skills/. ~/.claude/skills/` writes over a user's global skill root, and with the `har-*` copies gone (row below) there is nothing in `skills/` a person wants installed globally — the four that remain are grid's own and are read from the repository. |
 | `completions/` (bash, fish, zsh) | shell completion for the binary | **skip here.** Grid has a verb-completions plan of its own (`docs/plans/2026-08-27-verb-completions.md`); shipping a hand-written completion file now would be a second source of truth for the verb list. |
 | `vendor/seatbelt`, `vendor/rtk` | a vendored macOS sandbox policy and a vendored toolkit, licence files beside them | **skip.** Grid sandboxes nothing and vendors nothing. |
 
 ## CI
 
-yi's CI lives in `.forgejo/workflows/`; its GitHub equivalents were dropped
-when the estate moved. Grid gains `.github/workflows/` in yi's lane shape, and
-`.forgejo/workflows/grid-gate.yml` is rewritten to call the same recipes —
-yi's rule is that a workflow is a thin caller of the justfile the git hooks
-already run and never a second copy of the rules, and grid's Forgejo file had
-become exactly that second copy (it ran `cargo clippy --workspace` without
-`--all-targets` and no guardrails at all, so the checks added above would
-never have run in the CI grid actually uses).
+**One estate.** Grid's CI is `.forgejo/workflows/grid-gate.yml` and nothing
+else. The port initially added `.github/workflows/` as a twin in yi's lane
+shape; that directory is deleted. The `github` remote is a mirror whose push
+URL is literally `no_push`, so those lanes could never run, and by the time
+they were written the twins already disagreed with each other about which jobs
+were PR-tier and how tools were installed — a second copy of the gate that
+drifts is worse than no second copy. `.github/PULL_REQUEST_TEMPLATE.md` stays,
+because Forgejo reads pull-request templates out of `.github/` too, so that one
+file is live on the estate that runs.
 
-The thin caller replaces exactly three jobs of the old Forgejo file —
-`build-test`, `deny` and half of `assurance` — because `just lane` runs every
-check they ran and more: `lint` is `fmt-check` plus `clippy --all-targets`,
-`guardrails` is the aggregator, which itself runs `cargo deny check`,
-`check-unsafe-confined.sh` and `check-assurance-links.sh`, and `test` is the
-suite. The jobs the justfile does *not* cover — `fuzz-build`,
-`chart-io-sanitizers`, `fault-injection`, `self-gate`, and the new `title` —
-stay beside it as their own jobs, with the fixes main proved on the estate
-runners kept verbatim: `cargo +nightly fuzz build`, because
-`rust-toolchain.toml` pins stable and a bare `cargo` after a nightly install
-is still stable; and self-gate's `set --` over `.grid/plans/*.json` in place
-of an `ls` that exits 2 on an empty glob under `bash -e`, gated to pull
-requests and excusing a diff with no charted source. Both bugs were live in
-the GitHub twin this port wrote from the pre-fix Forgejo file, so both are
-fixed there too — `pr.yml`'s `fuzz-build` and `self-gate`, and
-`postmerge.yml`'s `cargo +nightly fuzz run`.
+yi's rule ports intact: a workflow is a thin caller of the justfile the git
+hooks already run, never a second copy of the rules. Grid's Forgejo file had
+become exactly that second copy (it ran `cargo clippy --workspace` without
+`--all-targets` and no guardrails at all, so nothing added here would have run
+in the CI grid actually uses), and it is now four thin lane jobs plus the ones
+the justfile does not cover.
+
+**The job names are a contract.** Branch protection on `main` requires six
+exact status contexts — `assurance`, `build-test`, `chart-io-sanitizers`,
+`deny`, `fault-injection`, `fuzz-build`, each `(pull_request)`. A job that is
+renamed, or moved off the `pull_request` event, never reports its context and
+no pull request can merge again. So `build-test` is the name of the job that
+runs `just lane test` and `deny` keeps its own job even though the guardrails
+lane runs `cargo deny check` as well; and the two heavy jobs
+(`fault-injection`, `chart-io-sanitizers`) stay on `pull_request` rather than
+moving to a postmerge tier. `fault-injection` is made cheaper *inside* the job
+instead: `just soak` now defaults its iteration count rather than hard-coding
+it, so a pull request runs 500 kill-9 rounds and the push to `main` runs the
+full 10 000.
+
+Tools are installed explicitly, with `taiki-e/install-action` (prebuilt) on
+every lane that needs one — `just` everywhere, `cargo-deny`, `cargo-machete`
+and `codespell` on the guardrails lane, `cargo-nextest` on the test lane,
+`cargo-fuzz` on `fuzz-build`. That last one replaces `cargo install cargo-fuzz
+--locked`, which compiled the tool from source on every pull request. The
+installs are not optional politeness: the guardrail aggregator *announces* a
+missing optional tool rather than failing on it (so a fresh clone can make
+`just check` green), which means CI has to guarantee the tools are there or the
+checks quietly stop running.
+
+`self-gate` shares the test lane's cache (`shared-key: test`) rather than
+warming a fourth cold debug build of its own.
 
 | yi job | grid |
 |---|---|
-| `pr.yml` `gate` — a `[lint, guardrails, test]` matrix over `just lane`, `fetch-depth: 0`, `rustup show`, `Swatinem/rust-cache@v2` keyed per lane | **adopt.** Action versions pinned exactly as yi pins them (`actions/checkout@v4`, `Swatinem/rust-cache@v2`, and grid's existing `dtolnay/rust-toolchain` pinned to the toolchain file's version). The rules stay in the justfile; the workflow only says which lane on which runner. |
-| `pr.yml` `title` — CI reads `PR_TITLE` and judges it by the same script the local hook judges subjects with | **adopt.** The title exists nowhere in the tree, so only CI can check it. |
+| `pr.yml` `gate` — a `[lint, guardrails, test]` matrix over `just lane`, `fetch-depth: 0`, `rustup show`, `Swatinem/rust-cache@v2` keyed per lane | **adapt.** The three lanes are three named jobs rather than a matrix, because a matrix leg's status context is `gate (test)` and branch protection asks for `build-test`. `rustup show` installs whatever `rust-toolchain.toml` pins, so the version lives in one file rather than in every workflow; `Swatinem/rust-cache@v2` is keyed per lane. The rules stay in the justfile. |
+| `pr.yml` `title` — CI reads `PR_TITLE` and judges it by the same script the local hook judges subjects with | **adopt**, guarded to `pull_request`. On a push `PR_TITLE` is empty, the script falls through to range mode, `HEAD --not origin/main` is empty, and it prints `ok commit_style (0 commits)` — a vacuous pass and a wasted runner. |
 | `pr.yml` `size-report` — posts the measured LOC map to the PR over the Forgejo API | **skip.** No size ledger, no Forgejo token, and the growth ratchets it reports were skipped above. |
-| `postmerge.yml` — the suite under the shipping profile with panic forced to unwind, plus the eval runner | **adapt.** Grid's postmerge lane runs the deep rungs its justfile already has and PR time cannot afford: `just miri`, `just verify` (kani), `just soak`, and a `cargo fuzz build` of every target. These exist in `.forgejo/grid-gate.yml` today as PR-time jobs; the GitHub file moves the slow ones behind the merge and keeps `fuzz-build` at PR time, because a fuzz target that stops compiling is a claim with no evidence behind it. |
-| `.github/PULL_REQUEST_TEMPLATE.md` — cold-reader narrative, zero checkboxes, gate proof lives in the checks tab where it cannot be ticked by hand | **adapt.** Grid's sections are grid's: summary, user outcomes, claims touched, evidence, wire changes, files edited, assurance notes. |
+| `postmerge.yml` — the suite under the shipping profile with panic forced to unwind, plus the eval runner | **skip.** Grid's deep rungs (`just miri`, `just soak`, `cargo fuzz build`) are already PR-tier jobs that branch protection requires there, so a postmerge tier would be a second place for the same evidence. `just verify` (kani) runs nowhere in CI — see the C3 note below. |
+| `.github/PULL_REQUEST_TEMPLATE.md` — cold-reader narrative, zero checkboxes, gate proof lives in the checks tab where it cannot be ticked by hand | **adapt**, and kept: Forgejo reads it from `.github/`. Grid's sections are grid's: summary, user outcomes, claims touched, evidence, wire changes, files edited, assurance notes. |
 
 ## Agent instructions and skills
 
@@ -135,7 +152,7 @@ fixed there too — `pr.yml`'s `fuzz-build` and `self-gate`, and
 |---|---|
 | `.ruler/*.md` fragments compiled by `npx @intellectronica/ruler apply` into a gitignored `AGENTS.md` / `CLAUDE.md` / per-agent skill directories | **adapt, without ruler.** Grid tracks `AGENTS.md` as the single source and `CLAUDE.md` as a symlink to it. Ruler buys multi-agent fan-out grid does not need, and costs an untracked-generated-file rule that has its own failure mode. |
 | `.ruler/000-identity` … `100-never` — identity, done-bar, architecture, style, guardrails, schema, deps, refs, testing, workflow, never | **adopt the shape**, section by section, with grid's content: the assurance case as the law, the gate list, the commit convention *with its deviations recorded*, the conservatism rule (a green test proves nothing until it has been seen red for the right reason), no new runtime dependencies, additive wire evolution only. `070-refs` (reading spans out of `ref/`) and `085-tui` are skipped — grid has neither. |
-| `.ruler/skills/har*` — the ten `har-skills` `SKILL.md` files, vendored | **adopt.** Copied byte-identically from `~/Development/har-skills` (the upstream both repos install from), frontmatter unchanged, so they stay diffable against it — which is why two of their Rust Reference spellings are allowlisted in `.codespellrc` rather than corrected. `har`, `har-verify` and `har-supply` are the base three grid's `AGENTS.md` declares normative; `har-unsafe` governs the one unsafe block and `har-threat` the segment parser. |
+| `.ruler/skills/har*` — the ten `har-skills` `SKILL.md` files, vendored | **skip.** Ported as byte-identical copies, then removed before merge: 1,775 lines that nothing gated against their upstream, so the copies would drift silently while `.codespellrc` and this file both asserted byte-identity as a fact. `AGENTS.md` names `~/Development/har-skills/skills/` as where the doctrine lives and reads it from there. `skills/` keeps only grid's own four: `review`, `grid`, `grid-wire`, `grid-assurance`. |
 | `skills/yi/review` — verify finished work against its acceptance criteria with a cold-context reviewer | **adopt** as `skills/review`, paths and check commands changed to grid's. |
 | `skills/yi/grid` — how to query a repo's code chart with the `grid` binary | **adopt** as `skills/grid`. It documents grid's own CLI and belongs in grid's repo, not yi's. |
 | `skills/yi/session-mining` — mine yi session JSONL, with planted-secret redaction fixtures | **skip.** yi's domain, and Python. |

@@ -17,8 +17,6 @@ run "$PY" scripts/guardrails/check_boundaries.py
 run "$PY" scripts/guardrails/check_commit_style.py
 run "$PY" scripts/guardrails/check_commit_style.py --selfcheck
 run "$PY" scripts/guardrails/check_hygiene.py
-run "$PY" scripts/guardrails/check_comments.py
-run "$PY" scripts/guardrails/check_env_surface.py
 run "$PY" scripts/guardrails/check_blob_size.py
 run scripts/check-unsafe-confined.sh
 run scripts/check-assurance-links.sh
@@ -32,10 +30,9 @@ if command -v codespell >/dev/null; then run codespell; else echo "FAIL codespel
 # should be doing under a partially staged tree.
 if [ "$FAST" -eq 1 ]; then
   echo "skip wire_drift (--fast: it regenerates crates/wire/src in place)"
-  echo "skip deps/machete/deny (--fast: each wants a resolved dependency graph)"
+  echo "skip machete/deny (--fast: each wants a resolved dependency graph)"
 else
   run "$PY" scripts/guardrails/check_wire_drift.py --selfcheck
-  run "$PY" scripts/guardrails/check_deps_budget.py
   run cargo doc --workspace --no-deps --document-private-items -q
   if command -v cargo-machete >/dev/null; then run cargo machete crates; else echo "FAIL machete (cargo install cargo-machete)"; FAILED=$((FAILED+1)); fi
   if command -v cargo-deny >/dev/null; then run cargo deny check; else echo "FAIL deny (cargo install cargo-deny)"; FAILED=$((FAILED+1)); fi
