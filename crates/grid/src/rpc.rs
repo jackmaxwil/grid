@@ -66,8 +66,8 @@ pub fn gate_check(
     let plan = standing::fold(&params.plan, standing);
     let mut chart = Chart::new(root);
     chart.ensure(&plan.base)?;
-    chart.ensure(&params.head)?;
-    grid_gate::check(&plan, &params.head, &ChartDelta::open(root)?)
+    let head = chart.head_of(&params.head)?;
+    grid_gate::check(&plan, &head, &ChartDelta::open(root)?)
 }
 
 /// What one survey *run* did, as opposed to what the snapshot *is*. Neither
@@ -110,28 +110,73 @@ impl Chart {
         }
     }
 
-    /// Publish a snapshot for `target` if the store has none.
+    /// The snapshot of the tree at `target`, surveyed at the rev if the store
+    /// holds none — retained, never made live.
     ///
     /// A snapshot id must already exist — it names content, so it cannot be
     /// conjured — but a rev can always be surveyed, and doing it here is what
-    /// lets `grid gate` be the only command CI runs.
+    /// lets `grid gate` be the only command CI runs. The answer is always a
+    /// snapshot id: a dirty worktree survey is labelled with the rev it was
+    /// checked out from, so a rev looked up *after* this call must not be
+    /// able to find the worktree instead. And the survey is retained rather
+    /// than published live, so a verb that ensured its base on the way in
+    /// leaves every later read verb answering about the worktree, not about
+    /// the base.
     ///
     /// # Errors
     /// [`chart_provider::Error`] if the rev cannot be surveyed or published.
-    pub fn ensure(&mut self, target: &SnapshotOrRev) -> Result<(), chart_provider::Error> {
+    pub fn ensure(
+        &mut self,
+        target: &SnapshotOrRev,
+    ) -> Result<SnapshotOrRev, chart_provider::Error> {
         let SnapshotOrRev::GitRev { git_rev } = target else {
-            return Ok(());
+            return Ok(target.clone());
         };
         // Already surveyed at this rev: surveying again would produce the same
         // bytes and the same id (D5), so it is pure cost.
-        if ChartDelta::open(&self.root)?.has_rev(&git_rev.0)? {
-            return Ok(());
+        match ChartDelta::open(&self.root)?.snapshot_of(target) {
+            Ok(snapshot) => return Ok(SnapshotOrRev::Snapshot { snapshot }),
+            Err(chart_provider::Error::NoSnapshotForRev(_)) => {}
+            Err(e) => return Err(e),
         }
-        self.survey_run(&SurveyRunParams {
-            git_rev: Some(git_rev.clone()),
-            worktree: None,
+        let (snapshot, _) = self.survey(
+            &SurveyRunParams {
+                git_rev: Some(git_rev.clone()),
+                worktree: None,
+            },
+            false,
+        )?;
+        Ok(SnapshotOrRev::Snapshot {
+            snapshot: snapshot.snapshot_id,
         })
-        .map(|_| ())
+    }
+
+    /// The snapshot a verb's *head* names, by id.
+    ///
+    /// A literal `HEAD` is the working tree — the everyday question is "what
+    /// did my uncommitted edits do" — surveyed now and published live. Any
+    /// other rev is the committed tree at that rev, surveyed at the rev if
+    /// the store lacks it and retained. Named by id either way, so no later
+    /// rev lookup can confuse the two.
+    ///
+    /// # Errors
+    /// [`chart_provider::Error`] if the tree cannot be surveyed or published.
+    pub fn head_of(
+        &mut self,
+        target: &SnapshotOrRev,
+    ) -> Result<SnapshotOrRev, chart_provider::Error> {
+        match target {
+            SnapshotOrRev::GitRev { git_rev } if git_rev.0 == "HEAD" => {
+                let (snapshot, _) = self.survey_run(&SurveyRunParams {
+                    git_rev: None,
+                    worktree: None,
+                })?;
+                Ok(SnapshotOrRev::Snapshot {
+                    snapshot: snapshot.snapshot_id,
+                })
+            }
+            other => self.ensure(other),
+        }
     }
 
     /// `grid.survey.run` — survey the tree and publish a snapshot.
@@ -147,23 +192,51 @@ impl Chart {
         &mut self,
         params: &SurveyRunParams,
     ) -> Result<(SurveyRunResult, Ran), chart_provider::Error> {
+        self.survey(params, true)
+    }
+
+    /// The survey itself. `live` publishes the snapshot as the store's live
+    /// epoch and logs the edits since the previous one; otherwise it is
+    /// retained only, which is what an on-demand base survey wants.
+    fn survey(
+        &mut self,
+        params: &SurveyRunParams,
+        live: bool,
+    ) -> Result<(SurveyRunResult, Ran), chart_provider::Error> {
         // Surveying "at a rev" means the tree at that rev, read out of the
         // object store; with no rev it is the working tree, labelled with the
-        // rev it was checked out from. Resolving the label is a git
-        // subprocess that reads nothing the survey writes, so it runs
-        // alongside the survey instead of after it.
+        // rev it was checked out from plus the hash of its diff against that
+        // rev when it has one — the label says where the tree came from, the
+        // hash says it is not that tree. Resolving both is git subprocesses
+        // that read nothing the survey writes, so they run alongside the
+        // survey instead of after it.
         let named = params.git_rev.as_ref().map_or("HEAD", |rev| rev.0.as_str());
         let root = &self.root;
-        let (survey, rev) = std::thread::scope(|scope| {
-            let resolver = scope.spawn(move || chart_provider::resolve_rev(root, named));
+        let (survey, rev, dirty) = std::thread::scope(|scope| {
+            let resolver = scope.spawn(move || {
+                let rev = chart_provider::resolve_rev(root, named);
+                let dirty = params
+                    .git_rev
+                    .is_none()
+                    .then(|| worktree_diff_hash(root))
+                    .flatten();
+                (rev, dirty)
+            });
             let survey = match params.git_rev.as_ref() {
                 Some(rev) => grid_survey::run_at(root, &rev.0, &mut self.cache),
                 None => grid_survey::run(root, &mut self.cache),
             };
-            let rev = resolver
-                .join()
-                .unwrap_or_else(|_| chart_provider::resolve_rev(root, named));
-            (survey, rev)
+            let (rev, dirty) = resolver.join().unwrap_or_else(|_| {
+                (
+                    chart_provider::resolve_rev(root, named),
+                    params
+                        .git_rev
+                        .is_none()
+                        .then(|| worktree_diff_hash(root))
+                        .flatten(),
+                )
+            });
+            (survey, rev, dirty)
         });
         let survey = survey?;
         // The daemon is the single writer (D6); `publish` takes `&mut self`,
@@ -172,14 +245,18 @@ impl Chart {
             .map_err(chart_provider::Error::Store)?;
         let superseded = store.superseded();
         let prev = store.load();
-        let id = store
-            .publish(&rev, None, &[survey.image])
-            .map_err(chart_provider::Error::Store)?;
+        let hash = dirty.map(|h| *h.as_bytes());
+        let id = if live {
+            store.publish(&rev, hash, &[survey.image])
+        } else {
+            store.publish_retained(&rev, hash, &[survey.image])
+        }
+        .map_err(chart_provider::Error::Store)?;
         // Every modification between the previous live set and this one is a
         // edit: edits made outside `grid edit` are still captured, one edit
         // per survey interval. Best effort — an unwritable log costs
         // history, never the snapshot that already published.
-        if !prev.segments().is_empty() && prev.snapshot_id() != &id {
+        if live && !prev.segments().is_empty() && prev.snapshot_id() != &id {
             let next = store.load();
             let delta = grid_chart::diff(
                 grid_wire::SnapshotId(prev.snapshot_id().as_str().to_owned()),
@@ -220,7 +297,7 @@ impl Chart {
                 snapshot_id: SnapshotId(id.as_str().to_owned()),
                 git_rev: GitRev(rev),
                 created_at: String::new(),
-                worktree_diff_hash: None,
+                worktree_diff_hash: dirty.map(|h| format!("b3:{}", h.to_hex())),
                 stats: SnapshotStats {
                     defs: survey.defs,
                     edges: survey.edges,
@@ -241,6 +318,34 @@ impl Chart {
     }
 }
 
+/// The hash of the working tree's diff against `HEAD`, or `None` for a tree
+/// that is the committed one (or has no `HEAD` to differ from).
+///
+/// `git diff HEAD` sees exactly what the survey sees: tracked files, index
+/// and worktree alike, since the survey enumerates by `git ls-files` —
+/// minus `.grid/`, grid's own state, which a repo that tracks it would
+/// otherwise dirty with every publish. The value only ever labels a
+/// snapshot; the snapshot id is still the content.
+fn worktree_diff_hash(root: &std::path::Path) -> Option<blake3::Hash> {
+    let out = std::process::Command::new("git")
+        .args([
+            "diff",
+            "HEAD",
+            "--no-color",
+            "--no-ext-diff",
+            "--binary",
+            "--",
+            ".",
+            ":(exclude).grid",
+        ])
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    (!out.stdout.is_empty()).then(|| blake3::hash(&out.stdout))
+}
+
 /// `grid.drift` — dependents of changed interfaces.
 ///
 /// Both endpoints are surveyed on demand, exactly as `grid gate` surveys
@@ -249,7 +354,9 @@ impl Chart {
 /// question is "what did my uncommitted edits leave stale", and because the
 /// survey it runs is also where the declined-reference count comes from. Any
 /// other rev is surveyed at that rev; a snapshot id is taken as published,
-/// and its declined count is then unknown rather than zero.
+/// and its declined count is then unknown rather than zero. Both endpoints
+/// are then named by id: a worktree survey is labelled with its rev, and a
+/// rev lookup after it must never find the worktree instead.
 ///
 /// # Errors
 /// [`crate::drift::Error::Chart`] when an endpoint does not resolve;
@@ -260,19 +367,24 @@ pub fn drift(
     root: &std::path::Path,
 ) -> Result<grid_wire::methods::DriftResult, crate::drift::Error> {
     let mut chart = Chart::new(root);
-    chart.ensure(&params.base)?;
-    let declined = match &params.head {
+    let base = chart.ensure(&params.base)?;
+    let (head, declined) = match &params.head {
         SnapshotOrRev::GitRev { git_rev } => {
             let at = (git_rev.0 != "HEAD").then(|| git_rev.clone());
-            let (_, ran) = chart.survey_run(&SurveyRunParams {
+            let (snapshot, ran) = chart.survey_run(&SurveyRunParams {
                 git_rev: at,
                 worktree: None,
             })?;
-            Some(ran.declined)
+            (
+                SnapshotOrRev::Snapshot {
+                    snapshot: snapshot.snapshot_id,
+                },
+                Some(ran.declined),
+            )
         }
         // Nobody re-surveyed head in this run, so nobody can say what its
         // survey declined. Unknown, not zero.
-        SnapshotOrRev::Snapshot { .. } => None,
+        snapshot @ SnapshotOrRev::Snapshot { .. } => (snapshot.clone(), None),
     };
     // A declaration file that exists but does not parse is a loud error,
     // never an absence of declarations: a covenant nobody can read is not a
@@ -290,12 +402,12 @@ pub fn drift(
         &crate::drift::Query {
             floor: params
                 .floor
-                .unwrap_or(crate::drift::Query::new(&params.base, &params.head).floor),
+                .unwrap_or(crate::drift::Query::new(&base, &head).floor),
             plan: params.plan.as_ref(),
             covenants: &covenants,
             declined,
             compat: invariants.as_deref(),
-            ..crate::drift::Query::new(&params.base, &params.head)
+            ..crate::drift::Query::new(&base, &head)
         },
     )?;
     if params.tests == Some(true) {
@@ -303,12 +415,8 @@ pub fn drift(
         // Head, because the question is whether a recorded verdict still
         // applies *now* — the closure key is identity math over the current
         // chart, not over the one the verdict was taken against.
-        let epoch = chart
-            .epoch_of(&params.head)
-            .map_err(crate::drift::Error::Chart)?;
-        let base_epoch = chart
-            .epoch_of(&params.base)
-            .map_err(crate::drift::Error::Chart)?;
+        let epoch = chart.epoch_of(&head).map_err(crate::drift::Error::Chart)?;
+        let base_epoch = chart.epoch_of(&base).map_err(crate::drift::Error::Chart)?;
         let found = crate::stale::tests(root, epoch.segments(), |test| {
             // The `grid.resolve` rule, so the name a user can resolve is the
             // name a verdict can be attributed by. Ambiguity resolves to
@@ -764,7 +872,11 @@ pub fn snapshot_current(
         snapshot_id: id,
         git_rev: GitRev(chart.git_rev().to_owned()),
         created_at: String::new(),
-        worktree_diff_hash: None,
+        worktree_diff_hash: chart
+            .head()
+            .manifest()
+            .worktree_diff_hash
+            .map(|h| format!("b3:{}", blake3::Hash::from_bytes(h).to_hex())),
         stats: chart.stats(),
         // Published, not re-surveyed here: nobody in this call can say what
         // its survey declined, and unknown is not zero.
@@ -781,9 +893,9 @@ pub fn delta(
     root: &std::path::Path,
 ) -> Result<DeltaResult, chart_provider::Error> {
     let mut chart = Chart::new(root);
-    chart.ensure(&params.base)?;
-    chart.ensure(&params.head)?;
-    ChartDelta::open(root)?.diff(&params.base, &params.head)
+    let base = chart.ensure(&params.base)?;
+    let head = chart.head_of(&params.head)?;
+    ChartDelta::open(root)?.diff(&base, &head)
 }
 
 /// `grid.resolve` — a locator to the definitions it names.
@@ -1155,25 +1267,12 @@ pub fn test_plan_timed(
             Err(_) => head_rev.clone(),
         },
     };
-    // A rev base is surveyed *at the rev*, out of the object store, and
-    // named by the snapshot that produced. A worktree survey is labelled
-    // with the same rev, so looking a rev up after the worktree survey would
-    // find the worktree — and a plan of a snapshot against itself selects
-    // nothing. Idempotent (D5): an already-surveyed rev costs a cached parse.
-    let base = match base {
-        SnapshotOrRev::GitRev { git_rev } => {
-            let (snapshot, _) = chart
-                .survey_run(&SurveyRunParams {
-                    git_rev: Some(git_rev),
-                    worktree: None,
-                })
-                .map_err(TestPlanError::Chart)?;
-            SnapshotOrRev::Snapshot {
-                snapshot: snapshot.snapshot_id,
-            }
-        }
-        snapshot @ SnapshotOrRev::Snapshot { .. } => snapshot,
-    };
+    // A rev base is surveyed *at the rev*, out of the object store, retained
+    // rather than made live, and named by the snapshot that produced — a
+    // plan of a snapshot against itself selects nothing, and the worktree
+    // survey below must not be mistaken for the base. Idempotent (D5): an
+    // already-surveyed rev costs a manifest scan.
+    let base = chart.ensure(&base).map_err(TestPlanError::Chart)?;
     let (_, ran) = chart
         .survey_run(&SurveyRunParams {
             git_rev: None,
@@ -1774,16 +1873,13 @@ pub fn todo(
     let mut chart = Chart::new(root);
     chart.ensure(&plan.base)?;
     let head = match &params.head {
-        Some(head) => head.clone(),
+        Some(head) => chart.head_of(head)?,
         None => SnapshotOrRev::Snapshot {
             snapshot: ChartDelta::open(root)?
                 .current()
                 .ok_or(chart_provider::Error::NoSnapshot)?,
         },
     };
-    if let SnapshotOrRev::GitRev { .. } = head {
-        chart.ensure(&head)?;
-    }
     let provider = ChartDelta::open(root)?;
     let diff = provider.diff(&plan.base, &head)?;
     let verdict = grid_gate::verdict(&plan, &diff, &provider);

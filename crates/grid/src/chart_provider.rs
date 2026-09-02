@@ -23,8 +23,10 @@ pub enum Error {
     Store(grid_chart_io::StoreError),
     /// The survey that would have produced a snapshot failed.
     Survey(grid_survey::SurveyError),
-    /// A git rev was named, but no snapshot has been published for it. Unlike
-    /// an unknown snapshot id this is recoverable by surveying, so it says so.
+    /// A git rev was named, but the store holds no snapshot of the tree at
+    /// it — a dirty worktree survey labelled with the rev does not count.
+    /// Unlike an unknown snapshot id this is recoverable by surveying, so it
+    /// says so.
     NoSnapshotForRev(String),
     /// Repo configuration under `.grid` is present but unreadable. A broken
     /// rule file must not be mistaken for an absence of rules.
@@ -44,7 +46,10 @@ impl std::fmt::Display for Error {
             Self::Store(e) => write!(f, "chart: {e}"),
             Self::Survey(e) => write!(f, "survey: {e}"),
             Self::NoSnapshotForRev(rev) => {
-                write!(f, "no snapshot for rev {rev}: run `grid survey` first")
+                write!(
+                    f,
+                    "no snapshot for rev {rev}: run `grid survey {rev}` first"
+                )
             }
             Self::Config(msg) | Self::Plan(msg) => f.write_str(msg),
             Self::NoSnapshot => f.write_str("no snapshot published: run `grid survey` first"),
@@ -259,16 +264,18 @@ impl ChartDelta {
         out
     }
 
-    /// Has any snapshot been published for `rev`?
+    /// Is the live epoch the tree at `rev` — surveyed at it, or a clean
+    /// worktree checked out at it?
     ///
-    /// # Errors
-    /// [`Error::Store`] if the store cannot be read.
-    pub fn has_rev(&self, rev: &str) -> Result<bool, Error> {
-        let rev = resolve_rev(&self.root, rev);
-        if self.head.manifest().git_rev == rev && !self.head.segments().is_empty() {
-            return Ok(true);
-        }
-        Ok(self.store.epoch_for_rev(&rev)?.is_some())
+    /// A dirty worktree survey is labelled with the rev it was checked out
+    /// from, and that label is provenance, not identity: the tree it charted
+    /// is not the tree at the rev. Every rev-addressed lookup goes through
+    /// here, so none of them can hand back the worktree as "the base".
+    fn live_is(&self, rev: &str) -> bool {
+        let manifest = self.head.manifest();
+        manifest.git_rev == rev
+            && manifest.worktree_diff_hash.is_none()
+            && !self.head.segments().is_empty()
     }
 
     /// Where a datum currently materializes, if the live epoch knows.
@@ -307,7 +314,7 @@ impl ChartDelta {
                 let rev = resolve_rev(&self.root, &git_rev.0);
                 // The live epoch first: gating head against base is the common
                 // case and head is usually what was just surveyed.
-                if self.head.manifest().git_rev == rev {
+                if self.live_is(&rev) {
                     return Ok(Arc::clone(&self.head));
                 }
                 self.store
@@ -333,7 +340,7 @@ impl ChartDelta {
             SnapshotOrRev::Snapshot { snapshot } => Ok(snapshot.clone()),
             SnapshotOrRev::GitRev { git_rev } => {
                 let rev = resolve_rev(&self.root, &git_rev.0);
-                if self.head.manifest().git_rev == rev && !self.head.segments().is_empty() {
+                if self.live_is(&rev) {
                     return Ok(wire_id(self.head.snapshot_id()));
                 }
                 self.store

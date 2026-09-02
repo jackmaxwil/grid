@@ -21,7 +21,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use grid_chart::{Change, DatumId, Membership};
+use grid_chart::{Change, DatumId};
 use grid_wire::{
     Datum, DefRef, DriftSuspect, DriftUnchecked, GitRev, InterfereReport, SnapshotId, SnapshotOrRev,
 };
@@ -73,20 +73,31 @@ pub fn compute(root: &Path, other: &Path, base: Option<&str>) -> Result<Interfer
         None => merge_base(root, &other)?,
     };
 
-    // Mine first, and its head captured before anything is surveyed: an
-    // on-demand base survey publishes a new live epoch, and reading `current`
-    // afterwards would hand back base as if it were head.
+    // Mine first, and its head captured before anything is surveyed: the
+    // on-demand base survey is retained rather than made live, but the
+    // ordering costs nothing and cannot be wrong.
     let mine_id = ChartDelta::open(root)
         .map_err(|error| unreadable(root, &error))?
         .current()
         .ok_or_else(|| unreadable_msg(root, "no snapshot published: run `grid survey` first"))?;
     // Base is surveyed on demand here and only here — this is grid's own
-    // store, and a survey of a rev is idempotent.
-    crate::rpc::Chart::new(root)
+    // store, and a survey of a rev is idempotent — and named by the id that
+    // survey produced: a dirty worktree sitting on the base commit is
+    // labelled with the base rev, and looking the rev up would find it.
+    let my_base = match crate::rpc::Chart::new(root)
         .ensure(&SnapshotOrRev::GitRev {
             git_rev: GitRev(base.clone()),
         })
-        .map_err(|error| unreadable(root, &error))?;
+        .map_err(|error| unreadable(root, &error))?
+    {
+        SnapshotOrRev::Snapshot { snapshot } => snapshot,
+        SnapshotOrRev::GitRev { git_rev } => {
+            return Err(unreadable_msg(
+                root,
+                &format!("base {} was not surveyed", git_rev.0),
+            ))
+        }
+    };
 
     let mine = ChartDelta::open(root).map_err(|error| unreadable(root, &error))?;
     let theirs = open_read_only(&other)?;
@@ -94,14 +105,13 @@ pub fn compute(root: &Path, other: &Path, base: Option<&str>) -> Result<Interfer
         .current()
         .ok_or_else(|| unreadable_msg(&other, "no snapshot published"))?;
 
-    let my_base = snapshot_at(&mine, root, &base)?;
     let their_base = snapshot_at(&theirs, &other, &base)?;
 
     let my_touched = touched(&mine, root, &my_base, &mine_id)?;
     let their_touched = touched(&theirs, &other, &their_base, &theirs_id)?;
 
-    let (my_drift, my_unchecked) = drift_of(root, &base, &mine_id)?;
-    let (their_drift, their_unchecked) = drift_of(&other, &base, &theirs_id)?;
+    let (my_drift, my_unchecked) = drift_of(root, &my_base, &mine_id)?;
+    let (their_drift, their_unchecked) = drift_of(&other, &their_base, &theirs_id)?;
 
     let reason = format!("interfere:{}", other.display());
     let mut suspects: Vec<DriftSuspect> = my_drift
@@ -179,8 +189,10 @@ fn named(
             snapshot: base.clone(),
         })
         .map_err(|error| Error::Unreadable(error.to_string()))?;
-    let mut names: std::collections::HashMap<DatumId, (String, Option<Location>)> =
-        std::collections::HashMap::new();
+    let mut names: std::collections::HashMap<
+        DatumId,
+        (String, Option<grid_wire::DefRefMaterialization>),
+    > = std::collections::HashMap::new();
     for segment in epoch.segments() {
         for ord in 0..segment.def_count() {
             let ord = grid_chart::Ordinal(ord);
@@ -188,10 +200,12 @@ fn named(
                 continue;
             };
             if both.binary_search(&datum).is_ok() {
-                let at = segment.location(ord).map(|loc| Location {
-                    file: loc.path.to_owned(),
-                    line: u64::from(loc.line),
-                });
+                let at = segment
+                    .location(ord)
+                    .map(|loc| grid_wire::DefRefMaterialization {
+                        file: loc.path.to_owned(),
+                        line: u64::from(loc.line),
+                    });
                 names.insert(datum, (callsign.to_owned(), at));
             }
         }
@@ -203,12 +217,7 @@ fn named(
             DefRef {
                 datum: Datum(datum.to_string()),
                 callsign: held.map(|(name, _)| grid_wire::Callsign(name.clone())),
-                materialization: held.and_then(|(_, at)| at.clone()).map(|at| {
-                    grid_wire::DefRefMaterialization {
-                        file: at.file,
-                        line: at.line,
-                    }
-                }),
+                materialization: held.and_then(|(_, at)| at.clone()),
                 lang: None,
                 signature: None,
                 cfg: None,
@@ -221,14 +230,6 @@ fn named(
             .map_or_else(|| d.datum.0.clone(), |c| c.0.clone())
     });
     Ok(out)
-}
-
-/// Where a base-side definition materialized, kept beside its name so the
-/// base epoch is walked once.
-#[derive(Clone)]
-struct Location {
-    file: String,
-    line: u64,
 }
 
 /// Every definition whose datum moved between `base` and `head` in one store,
@@ -248,8 +249,9 @@ fn touched(
                 "no membership image beside the chart: re-run `grid survey`",
             )
         })?;
-    changed(&membership, &base.0, &head.0)
-        .map_err(|why| unreadable_msg(root, &why))
+    membership
+        .changed_between(&base.0, &head.0)
+        .map_err(|error| unreadable(root, &error))
         .map(|changes| {
             changes
                 .into_iter()
@@ -261,20 +263,14 @@ fn touched(
         })
 }
 
-fn changed<B: AsRef<[u8]>>(
-    membership: &Membership<B>,
-    base: &str,
-    head: &str,
-) -> Result<Vec<Change>, String> {
-    membership
-        .changed_between(base, head)
-        .map_err(|error| error.to_string())
-}
-
-/// One side's drift suspects and its budget refusals.
-fn drift_of(root: &Path, base: &str, head: &SnapshotId) -> Result<(Vec<DriftSuspect>, u64), Error> {
-    let base = SnapshotOrRev::GitRev {
-        git_rev: GitRev(base.to_owned()),
+/// One side's drift suspects and its budget refusals, both endpoints by id.
+fn drift_of(
+    root: &Path,
+    base: &SnapshotId,
+    head: &SnapshotId,
+) -> Result<(Vec<DriftSuspect>, u64), Error> {
+    let base = SnapshotOrRev::Snapshot {
+        snapshot: base.clone(),
     };
     let head = SnapshotOrRev::Snapshot {
         snapshot: head.clone(),
@@ -284,10 +280,13 @@ fn drift_of(root: &Path, base: &str, head: &SnapshotId) -> Result<(Vec<DriftSusp
     Ok((report.suspects, report.unchecked.budget_rejected))
 }
 
-/// The snapshot a store holds for `rev`, or a refusal naming the command that
-/// would produce one. Never surveys: the other root is read-only, and being
-/// silent about a store that lacks the base would report "no interference"
-/// for a comparison that never happened.
+/// The snapshot the other store holds of the tree *at* `rev`, or a refusal
+/// naming the commands that would produce one. Never surveys: the other root
+/// is read-only, and being silent about a store that lacks the base would
+/// report "no interference" for a comparison that never happened. A dirty
+/// worktree survey labelled with the base rev is not the base and does not
+/// count — that is the store's own rule, and it is exactly the state a
+/// `PostToolUse` hook leaves a worktree in.
 fn snapshot_at(chart: &ChartDelta, root: &Path, rev: &str) -> Result<SnapshotId, Error> {
     chart
         .snapshot_of(&SnapshotOrRev::GitRev {
@@ -296,7 +295,10 @@ fn snapshot_at(chart: &ChartDelta, root: &Path, rev: &str) -> Result<SnapshotId,
         .map_err(|_| {
             unreadable_msg(
                 root,
-                &format!("no snapshot for base {rev} — run `grid survey {rev}` there first"),
+                &format!(
+                    "no snapshot of the tree at base {rev} — run `grid survey {rev}` there \
+                     first, then `grid survey` to chart its worktree again"
+                ),
             )
         })
 }

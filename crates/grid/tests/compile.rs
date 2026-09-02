@@ -136,6 +136,17 @@ fn a_test_module_caller_is_uncompiled_until_tests_are_compiled() {
         "the record was written"
     );
 
+    // The base was surveyed on demand and retained: the worktree is still
+    // what every read verb answers about.
+    let live: serde_json::Value =
+        serde_json::from_str(&stdout(&grid(dir.path(), &["version", "--json"]))).expect("json");
+    let worktree: serde_json::Value =
+        serde_json::from_str(&stdout(&grid(dir.path(), &["survey", "--json"]))).expect("json");
+    assert_eq!(
+        live["snapshot"], worktree["snapshot_id"],
+        "a bare check --compile leaves the worktree live, not HEAD~1"
+    );
+
     let out = grid(dir.path(), &["check", "--compile", "--", "--tests"]);
     assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(stdout(&out), "", "compiled under --tests: nothing to say");

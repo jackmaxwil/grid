@@ -1736,6 +1736,8 @@ fn compile_wrap(cargo_args: &[String]) -> Result<grid_wire::CompileRecord, u8> {
             worktree: None,
         })
         .and_then(|(snapshot, _)| {
+            // Retained, not made live: the worktree just surveyed stays what
+            // every later verb answers about.
             chart.ensure(&snapshot_or_rev(COMPILE_BASE))?;
             Ok(snapshot.snapshot_id)
         });

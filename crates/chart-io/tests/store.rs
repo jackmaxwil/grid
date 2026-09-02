@@ -284,3 +284,62 @@ fn a_corrupt_manifest_is_still_an_error() {
     std::fs::write(dir.path().join("manifest"), b"not a manifest at all").unwrap();
     assert!(Store::open(dir.path()).is_err());
 }
+
+/// A dirty worktree survey is labelled with the rev it was checked out from,
+/// and that label is provenance, not identity: a rev lookup answers with the
+/// tree at the rev, never with the worktree — and a store holding only the
+/// dirty survey holds nothing for the rev at all.
+#[test]
+fn a_dirty_worktree_snapshot_never_answers_for_its_rev() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let clean = store.publish("rev1", None, &[image(1)]).unwrap();
+    // Newer by mtime, which is the tie-break the lookup uses.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let dirty = store.publish("rev1", Some([7; 32]), &[image(2)]).unwrap();
+    assert_ne!(clean, dirty);
+    assert_eq!(
+        store.snapshot_for_rev("rev1").unwrap(),
+        Some(clean.clone()),
+        "the rev names the tree at the rev, never the dirty worktree labelled with it"
+    );
+    assert_eq!(
+        store
+            .epoch_for_rev("rev1")
+            .unwrap()
+            .map(|e| e.snapshot_id().clone()),
+        Some(clean)
+    );
+
+    let only_dirty = tempfile::tempdir().unwrap();
+    let mut store = Store::open(only_dirty.path()).unwrap();
+    store.publish("rev1", Some([7; 32]), &[image(2)]).unwrap();
+    assert_eq!(
+        store.snapshot_for_rev("rev1").unwrap(),
+        None,
+        "a store holding only a dirty survey at rev1 does not hold rev1"
+    );
+}
+
+/// A retained publish holds the snapshot — reopenable by id, findable by
+/// rev, folded into membership — and changes nothing about what is live.
+#[test]
+fn publish_retained_holds_a_snapshot_without_making_it_live() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let live = store.publish("rev1", None, &[image(1)]).unwrap();
+    let held = store.publish_retained("rev0", None, &[image(2)]).unwrap();
+    assert_ne!(live, held);
+    assert_eq!(store.load().snapshot_id(), &live, "live is untouched");
+    assert_eq!(store.epoch_of(&held).unwrap().snapshot_id(), &held);
+    assert_eq!(store.snapshot_for_rev("rev0").unwrap(), Some(held.clone()));
+    assert!(store
+        .membership()
+        .unwrap()
+        .expect("membership image")
+        .chain()
+        .iter()
+        .any(|(id, _)| id == held.as_str()));
+    let reopened = Store::open(dir.path()).unwrap();
+    assert_eq!(reopened.load().snapshot_id(), &live, "and on disk too");
+}

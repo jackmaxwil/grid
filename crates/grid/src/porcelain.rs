@@ -15,7 +15,7 @@ use grid_wire::{
 };
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "2.9.0";
+pub const VERSION: &str = "2.10.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -256,8 +256,22 @@ fn short(datum: &grid_wire::Datum) -> String {
 #[must_use]
 pub fn snapshot(s: &grid_wire::Snapshot, run: Option<(u64, std::time::Duration)>) -> String {
     let mut out = String::new();
-    // Displayed identity is the rev, never the raw content id (CLI plan §2).
-    let id = format!("@{}", s.git_rev.0);
+    // Displayed identity is the rev, never the raw content id (CLI plan §2) —
+    // plus the diff hash's prefix when the tree was dirty, so `@abc1234` and
+    // `@abc1234+9f0e1d2c` read as what they are: the tree at the rev, and a
+    // worktree checked out from it that differs.
+    let id = match s.worktree_diff_hash.as_deref() {
+        Some(hash) => format!(
+            "@{}+{}",
+            s.git_rev.0,
+            hash.strip_prefix("b3:")
+                .unwrap_or(hash)
+                .chars()
+                .take(8)
+                .collect::<String>()
+        ),
+        None => format!("@{}", s.git_rev.0),
+    };
     // The full stats block is `defs N  edges N  reread N  <duration>`. The
     // last two describe the run rather than the snapshot, so they appear only
     // when a run just happened — reporting a snapshot read back from the

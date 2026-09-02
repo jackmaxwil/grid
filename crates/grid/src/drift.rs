@@ -361,12 +361,12 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
             base_epoch.segments(),
             head_epoch.segments(),
             &base_epoch.manifest().git_rev,
-            // A literal `HEAD` is drift's word for the working tree, which is
-            // where the head survey read its bytes; anything else is a rev the
-            // object store can serve.
-            match head {
-                SnapshotOrRev::GitRev { git_rev } if git_rev.0 == "HEAD" => None,
-                _ => Some(head_epoch.manifest().git_rev.as_str()),
+            // A dirty worktree snapshot read its bytes from the working tree,
+            // which is where they still are; anything else is the tree at a
+            // rev the object store can serve.
+            match head_epoch.manifest().worktree_diff_hash {
+                Some(_) => None,
+                None => Some(head_epoch.manifest().git_rev.as_str()),
             },
             invariants,
         )

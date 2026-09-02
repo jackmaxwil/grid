@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.9.0
+version: 2.10.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -12,7 +12,7 @@ document.
 
 | tag | columns |
 |---|---|
-| `snapshot` | id, stats (`defs N  edges N  reread N  <duration>`) |
+| `snapshot` | id (`@rev`; `@rev+<prefix>` when the tree was a dirty worktree — labelled with the rev it was checked out from, and never taken for the tree at that rev), stats (`defs N  edges N  reread N  <duration>`) |
 | `miss` (survey) | count, `references declined (external N, method N, internal N)` — the one record `grid survey` closes with when the resolver declined anything |
 | `def` | glyph, callsign, hash transition (`old→new` or new hash), `sig` when the interface identity also moved (absent when it held, and absent when a pre-epoch-3 snapshot means nobody can say); inside `grid gate` output, an unaccounted definition's trailing column reads `unaccounted: interface` when a def promise's `interface` claim is what holds it |
 | `ref` | callsign, datum prefix, `file:line` when the snapshot carries locations (`grid resolve` — a definition that exists, not one that changed) |
@@ -200,7 +200,8 @@ suspects that land in the other side's edits — carrying the grade of the edge
 that found them, and they exit `3`. The other root's store is opened
 read-only and never written, and grid never surveys it: a store that cannot
 be opened, is superseded, or does not hold the base is exit `2` with the
-command that fixes it on stderr, **never** an empty answer, because "I could
+command that fixes it on stderr (a dirty worktree survey labelled with the
+base rev is not the base, and does not count), **never** an empty answer, because "I could
 not read that chart" and "those two worktrees do not interfere" are opposite
 claims. `theirs` is therefore as fresh as that worktree's last `grid survey`
 and no fresher.
@@ -277,7 +278,9 @@ inside an existing verb carried 2.5.0 to 2.6.0 (`grid suspects --closure`'s
 `interfere:<other-root>`) and 2.8.0 to 2.9.0 (`grid check`'s composite: the
 `done  refactor` certificate, `warn <new>  clone-of <existing>`, `warn <def>
 uncovered` outside `grid test`, its `warn -  no compile record since
-@<prefix>`, and `grid orphans --traced`'s trailing `trace N` column)
+@<prefix>`, and `grid orphans --traced`'s trailing `trace N` column) and
+2.9.0 to 2.10.0 (`snapshot`'s `@rev+<prefix>` id for a dirty worktree, and
+`grid test`'s `done` counting replayed `fail` verdicts as failed)
 — changing column
 order or meaning is major — and so is renaming a tag, which is what carried
 1.6.0 to 2.0.0 (`docs/plans/2026-09-01-naming.md`). The daemon reports this

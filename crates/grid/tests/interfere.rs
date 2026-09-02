@@ -338,3 +338,67 @@ fn an_unsurveyed_other_root_refuses_without_writing_to_it() {
         "and the other worktree is left exactly as it was"
     );
 }
+
+/// Conservatism, the plan's own use case 6: two dirty worktrees on the base
+/// commit, each surveyed by the hook and nothing committed. A dirty survey is
+/// labelled with the base rev but is not the base, so the other side refuses
+/// with the commands that would chart it — never "no interference" — and
+/// once they have run, the finding is the same one record. This side's base
+/// is surveyed on demand, retained, and its worktree stays live.
+#[test]
+fn a_dirty_worktree_on_the_base_commit_is_never_taken_for_the_base() {
+    let Pair { repo, a, b, base } = pair();
+    let _repo = repo;
+    write(
+        &a,
+        TARGET,
+        "pub fn target(x: u32, y: u32) -> u32 { x + y }\n",
+    );
+    write(
+        &b,
+        CALLER,
+        "use crate::target::target;\npub fn caller() -> u32 { target(1) + target(2) }\n",
+    );
+    for dir in [&a, &b] {
+        let out = grid(dir, &["survey"]);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+    }
+
+    let out = grid(&a, &["interfere", b.to_str().expect("path")]);
+    assert_eq!(
+        code(&out),
+        2,
+        "a store holding only a dirty survey at the base does not hold the base:\n{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert_eq!(stdout(&out), "", "and no records: {:?}", stdout(&out));
+    assert!(
+        stderr(&out).contains(&format!("grid survey {base}")),
+        "the refusal names the command:\n{}",
+        stderr(&out)
+    );
+
+    // The other side charts the base, then its worktree again.
+    for args in [vec!["survey", base.as_str()], vec!["survey"]] {
+        let out = grid(&b, &args);
+        assert_eq!(code(&out), 0, "{args:?}: {}", stderr(&out));
+    }
+    let live_before = stdout(&grid(&a, &["resolve", "app.target.target", "--json"]));
+    let out = grid(&a, &["interfere", b.to_str().expect("path")]);
+    assert_eq!(code(&out), 3, "{}{}", stdout(&out), stderr(&out));
+    assert_eq!(
+        suspects(&out),
+        vec![(
+            "app.caller.caller".to_owned(),
+            "app.target.target".to_owned()
+        )],
+        "{}",
+        stdout(&out)
+    );
+    let live_after = stdout(&grid(&a, &["resolve", "app.target.target", "--json"]));
+    assert_eq!(
+        live_before, live_after,
+        "surveying the base on demand left this worktree live"
+    );
+}

@@ -181,7 +181,7 @@ pub fn answer(params: &CheckParams, root: &Path) -> Result<CheckResult, Error> {
 
     let provider = ChartDelta::open(root)?;
     let (verdict, why) = match plan.as_ref() {
-        Some(plan) => adherence(params, plan, root, &provider)?,
+        Some(plan) => adherence(&at(&head_id), params.trace.as_ref(), plan, root, &provider)?,
         None => (None, None),
     };
 
@@ -250,16 +250,20 @@ pub fn gated(answer: &CheckResult) -> bool {
 /// so a review and a gate can never disagree about whether a promise was
 /// kept.
 fn adherence(
-    params: &CheckParams,
+    head: &SnapshotOrRev,
+    trace: Option<&grid_wire::TraceId>,
     plan: &grid_wire::Plan,
     root: &Path,
     provider: &ChartDelta,
 ) -> Result<(Option<grid_wire::GateVerdict>, Option<CheckWhy>), Error> {
-    let diff = provider.diff(&plan.base, &params.head)?;
+    // Head by the id drift surveyed, never by the rev the caller typed: a
+    // worktree survey is labelled with its rev, and looking the rev up here
+    // would be the committed tree, not the one drift just judged.
+    let diff = provider.diff(&plan.base, head)?;
     let verdict = rpc::gate_check(
         &grid_wire::methods::GateCheckParams {
             plan: plan.clone(),
-            head: params.head.clone(),
+            head: head.clone(),
         },
         root,
     )?;
@@ -280,7 +284,7 @@ fn adherence(
         .collect();
     let why = CheckWhy {
         surplus: verdict.surplus.clone(),
-        coverage: coverage(&diff, params.trace.as_ref(), root)?,
+        coverage: coverage(&diff, trace, root)?,
         // Grid stores no anchors: nothing writes them, so the honest
         // answer is none, not an invented one. The field is the
         // consumer's (an Artifacts review, say) once a store exists.
