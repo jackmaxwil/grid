@@ -343,6 +343,19 @@ plan).
 - **T-50 (P3, M) A `std` signature table.** Would turn part of the
   seventy percent into `external` by name (`v.iter().map(..)` is
   `Iterator::map`), not into edges, against a moving standard library.
+- **T-51 (P2, S) `SelfCall` under the typed-receiver rule.** Pre-existing
+  (review of PR #22, finding 8): `self.m()` resolves proven to the
+  inherent `m` with no receiver-form or trait-candidate check, while `let
+  s = self; s.m()` now refuses where a trait candidate or a form mismatch
+  stands in the way; `self.clone()` beside an inherent `fn clone(&mut
+  self)` and `#[derive(Clone)]` is the case. One rule for both.
+- **T-52 (P2, S) A field's declared type resolved in the struct's module.**
+  `x.f.m()` with the struct in another file reads the field's written
+  type off the index and resolves it as a path from the *caller's*
+  module: a caller importing a different type of the same name binds
+  wrongly, one importing nothing declines. Needs the struct's module
+  beside its callsign on `Symbol`; the extractor side is done (`x.f` on
+  a base written as `other::Foo` already goes to the index).
 
 ### Research questions (no code until answered)
 
