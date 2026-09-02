@@ -270,7 +270,7 @@ fn gate(args: &[&str], json: bool) -> u8 {
     }
 }
 
-/// `grid cache check <kind> <env-hash> <datum>...` and
+/// `grid cache lookup <kind> <env-hash> <datum>...` and
 /// `grid cache record <kind> <env-hash> <datum>=<pass|fail>...`.
 ///
 /// The CI shape: `lookup` prints `miss` records for what must run, `record`
@@ -373,7 +373,7 @@ fn cache(args: &[&str], json: bool) -> u8 {
             }
         }
         _ => {
-            hint("usage: grid cache check|record <kind> <env-hash> <datum>...");
+            hint("usage: grid cache lookup|record <kind> <env-hash> <datum>...");
             exit::BAD_INPUT
         }
     }

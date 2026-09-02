@@ -1105,7 +1105,16 @@ mod conservatism {
         "bind",
         "binds",
     ];
-    const RETIRED_COMPOUNDS: &[&str] = &["made-good", "made_good", "madegood"];
+    /// Retired spellings that are only retired *in context*: `check` is a
+    /// live verb, but `cache check` is the verb `cache lookup` replaced, and
+    /// a usage line is exactly where such a phrase survives a rename sweep.
+    const RETIRED_COMPOUNDS: &[&str] = &[
+        "made-good",
+        "made_good",
+        "madegood",
+        "cache check",
+        "cache check|record",
+    ];
 
     /// Every retired word in `text`, as it was spelled there.
     fn retired_words(text: &str) -> Vec<String> {
@@ -1166,6 +1175,9 @@ mod conservatism {
             &["todo"],
             &["cache"],
             &["cache", "lookup"],
+            // Malformed: the arm that prints the subcommand list, which is
+            // the one the naming sweep missed.
+            &["cache", "nosuchsubcommand"],
             &["edit"],
             &["explain"],
             &["covenant"],
