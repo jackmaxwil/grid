@@ -106,3 +106,21 @@ fn an_epoch3_image_parses_and_answers_its_own_columns() -> Result<(), Box<dyn Er
     assert_eq!(seg.cfg(ord), None);
     Ok(())
 }
+
+#[test]
+fn an_epoch4_image_parses_and_answers_its_own_columns() -> Result<(), Box<dyn Error>> {
+    let bytes = fixture("epoch4.seg")?;
+    let seg = Segment::parse(bytes.as_slice())?;
+    assert!(seg.def_count() > 0);
+    let ord = Ordinal(0);
+    assert!(seg.datum(ord).is_some());
+    assert!(seg.callsign(ord).is_some());
+    assert!(seg.location(ord).is_some());
+    assert!(seg.shape(ord).is_some());
+    assert!(seg.complexity(ord).is_some());
+    assert!(seg.sig(ord).is_some());
+    // Epoch 4's own column is present, unlike epoch 3's: `Some("")` for a
+    // definition nothing conditions, never `None`.
+    assert!(seg.cfg(ord).is_some());
+    Ok(())
+}
