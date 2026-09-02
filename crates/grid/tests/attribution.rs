@@ -388,3 +388,154 @@ fn a_closure_over_fuel_refuses_the_whole_answer() {
         stderr(&out)
     );
 }
+
+/// The live snapshot id, as `grid survey --json` reports it.
+fn snapshot_id(dir: &Path) -> String {
+    let out = grid(dir, &["survey", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let value: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("survey --json");
+    value["snapshot_id"]
+        .as_str()
+        .expect("a snapshot id")
+        .to_owned()
+}
+
+/// A definition's datum, as `grid resolve --json` reports it.
+fn datum_of(dir: &Path, callsign: &str) -> String {
+    let out = grid(dir, &["resolve", callsign, "--json"]);
+    let refs: Vec<serde_json::Value> = serde_json::from_str(&stdout(&out)).expect("resolve --json");
+    refs.first().expect("one definition")["datum"]
+        .as_str()
+        .expect("a datum")
+        .to_owned()
+}
+
+/// Retain a trace of `test` taken against `snapshot`, and record a passing
+/// verdict that names it — the join the default `--closure` walks back.
+fn seed_pass(dir: &Path, test: &str, reached: &str, snapshot: &str, trace_id: &str) {
+    let trace = serde_json::json!({
+        "trace_id": trace_id,
+        "git_rev": "HEAD",
+        "command": test,
+        "snapshot": snapshot,
+        "observations": [{ "caller": { "symbol": test }, "callee": { "symbol": reached } }]
+    });
+    std::fs::write(dir.join("trace.json"), trace.to_string()).expect("write trace");
+    let out = grid(dir, &["trace", "ingest", "trace.json"]);
+    assert_eq!(code(&out), 0, "ingest: {}", stderr(&out));
+    std::fs::remove_file(dir.join("trace.json")).expect("rm trace");
+    let out = grid(
+        dir,
+        &[
+            "cache",
+            "record",
+            "test",
+            "env-1",
+            &format!("{}=pass", datum_of(dir, test)),
+            "--trace",
+            trace_id,
+        ],
+    );
+    assert_eq!(code(&out), 0, "record: {}", stderr(&out));
+}
+
+const CLOSURE_BEFORE: &str = "pub fn culprit() -> u32 { 1 }\n\
+     pub fn middle() -> u32 { culprit() }\n\
+     pub fn the_test() -> u32 { middle() }\n";
+const CLOSURE_AFTER: &str = "pub fn culprit() -> u32 { 2 }\n\
+     pub fn middle() -> u32 { culprit() }\n\
+     pub fn the_test() -> u32 { middle() }\n";
+
+/// A repo surveyed at `before` with a passing verdict recorded against that
+/// snapshot, then edited and surveyed again. Returns the directory and the
+/// snapshot the pass was recorded at.
+fn passed_then_edited() -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(dir.path(), &[("crates/app/src/lib.rs", CLOSURE_BEFORE)]);
+    git(dir.path(), &["add", "-A"]);
+    git(dir.path(), &["commit", "-qm", "before"]);
+    let green = snapshot_id(dir.path());
+    seed_pass(
+        dir.path(),
+        "app.the_test",
+        "app.middle",
+        &green,
+        "trace:green",
+    );
+    write(dir.path(), &[("crates/app/src/lib.rs", CLOSURE_AFTER)]);
+    git(dir.path(), &["add", "-A"]);
+    git(dir.path(), &["commit", "-qm", "after"]);
+    let out = grid(dir.path(), &["survey"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    (dir, green)
+}
+
+/// T-09, ground truth: a bare `--closure` answers the same question the
+/// snapshot the test last passed at answers, and says which one it used.
+#[test]
+fn a_bare_closure_uses_the_last_snapshot_the_test_passed_at() {
+    let (dir, green) = passed_then_edited();
+
+    let named = grid(
+        dir.path(),
+        &["suspects", "app.the_test", "--closure", &green],
+    );
+    let bare = grid(dir.path(), &["suspects", "app.the_test", "--closure"]);
+    assert_eq!(code(&bare), 0, "attribution never gates: {}", stderr(&bare));
+    assert_eq!(
+        stdout(&bare),
+        stdout(&named),
+        "the default is the snapshot, not a different question"
+    );
+    assert!(
+        !hits(&bare).is_empty(),
+        "an empty ranking would prove nothing: {}",
+        stdout(&bare)
+    );
+    assert!(
+        stderr(&bare).contains(&green) && stderr(&bare).contains("recorded a pass at"),
+        "the snapshot it used is part of the answer: {}",
+        stderr(&bare)
+    );
+    // And the flag still takes an explicit snapshot when one follows it.
+    assert!(
+        !stderr(&named).contains("recorded a pass at"),
+        "a named snapshot needs no default: {}",
+        stderr(&named)
+    );
+}
+
+/// T-09, conservatism: with no passing verdict on record the bare flag
+/// refuses. Falling back to head — the tempting default, since head is
+/// always there — would rank nothing, and an empty ranking reads as
+/// "nothing in the closure moved", which is the opposite claim.
+#[test]
+fn a_bare_closure_with_no_recorded_pass_refuses_rather_than_ranking_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(dir.path(), &[("crates/app/src/lib.rs", CLOSURE_BEFORE)]);
+    git(dir.path(), &["add", "-A"]);
+    git(dir.path(), &["commit", "-qm", "before"]);
+    let out = grid(dir.path(), &["survey"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let bare = grid(dir.path(), &["suspects", "app.the_test", "--closure"]);
+    assert_eq!(
+        code(&bare),
+        2,
+        "no snapshot on record is bad input, not an empty answer: {}\n{}",
+        stdout(&bare),
+        stderr(&bare)
+    );
+    assert!(
+        stdout(&bare).is_empty(),
+        "a refusal prints no records: {}",
+        stdout(&bare)
+    );
+    assert!(
+        stderr(&bare).contains("--closure <snapshot|rev>"),
+        "the refusal names the way out: {}",
+        stderr(&bare)
+    );
+}

@@ -50,9 +50,14 @@ success: insufficient history is bad input (exit `2`) with the explanation on
 stderr and no stdout records. Seeded test fixtures exercise this grammar but
 are not production-history claims.
 
-`grid suspects <test> --closure <snapshot|rev>` is the same verb's second
+`grid suspects <test> --closure [<snapshot|rev>]` is the same verb's second
 evidence mode, for the failure that has no history at all — the test passed
-at the last snapshot and fails now. Its rows are the same `hit` records with
+at the last snapshot and fails now. With no snapshot after it, the flag uses
+the last one at which that test recorded a `pass` — the verdict log's entry,
+through the trace it names, to the snapshot that trace was mapped against —
+and one stderr line says which snapshot answered. No such record is bad input
+(exit `2`) with the two ways out on stderr, never a ranking against head,
+which would be empty and read as "nothing in the closure moved". Its rows are the same `hit` records with
 the word `closure` where the Ochiai score sits, and `via <k> hops, datum
 moved` as the evidence: the definitions the test's closure at head can reach
 whose datum that snapshot did not hold — a body that moved, or one that

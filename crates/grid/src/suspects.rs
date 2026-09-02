@@ -210,6 +210,69 @@ pub struct Closure {
     pub fork: Option<grid_wire::TraceDiff>,
 }
 
+/// The last snapshot at which `test` recorded a `pass`.
+///
+/// `--closure` is pointed at the snapshot the test was green at, and an
+/// agent should not have to remember which one that was: the store already
+/// knows. The verdict log holds one verdict per closure key with the trace
+/// that produced it, and a retained trace names the test it ran and the
+/// snapshot it was mapped against — so the default is that join, the same
+/// attribution `grid drift --tests` uses, and not a new record anywhere.
+/// Newest wins, by the time the verdict was recorded.
+///
+/// It refuses rather than guessing. "No pass on record" is not "green at
+/// head": answering the closure question against head would rank nothing,
+/// and an empty ranking reads as "nothing in the closure moved", which is
+/// the opposite claim.
+///
+/// # Errors
+/// [`Error::UnknownSince`] when no passing verdict for this test names a
+/// retained trace that records a snapshot; [`Error::Chart`] when the trace
+/// store or the verdict log cannot be read.
+pub fn last_pass(root: &Path, test: &str) -> Result<SnapshotOrRev, Error> {
+    let unreadable =
+        |e: &dyn std::fmt::Display| Error::Chart(chart_provider::Error::Config(e.to_string()));
+    let traces = crate::rpc::trace_dir(root)
+        .and_then(grid_trace::Store::open)
+        .and_then(|store| store.retained())
+        .map_err(|e| unreadable(&e))?;
+    // Only this test's traces, and only those that recorded the coordinate a
+    // closure diff can be taken against. A trace with no snapshot names a
+    // tree nobody can name back.
+    let at: BTreeMap<&str, &grid_wire::SnapshotId> = traces
+        .iter()
+        .filter(|stored| stored.trace.command.as_deref() == Some(test))
+        .filter_map(|stored| {
+            Some((
+                stored.trace.trace_id.as_str(),
+                stored.trace.snapshot.as_ref()?,
+            ))
+        })
+        .collect();
+    let cache =
+        grid_cache::Cache::open(crate::rpc::cache_path(root)).map_err(|e| unreadable(&e))?;
+    let newest = cache
+        .entries()
+        .filter(|(_, entry)| entry.verdict == grid_cache::Verdict::Pass)
+        .filter_map(|(_, entry)| {
+            let id = entry.trace_id.as_deref()?;
+            // Trace id as the tie-break, so two verdicts recorded in the same
+            // second still order deterministically.
+            Some((entry.recorded_at.as_str(), id, *at.get(id)?))
+        })
+        .max_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    match newest {
+        Some((_, _, snapshot)) => Ok(SnapshotOrRev::Snapshot {
+            snapshot: snapshot.clone(),
+        }),
+        None => Err(Error::UnknownSince(format!(
+            "`--closure` with no snapshot uses the last one `{test}` recorded a pass at, and \
+             nothing on record says: name one (`grid suspects {test} --closure <snapshot|rev>`), \
+             or record one with `grid test --trace`"
+        ))),
+    }
+}
+
 /// Attribution with no run history: the definitions the test can reach at
 /// head whose bodies moved since a named snapshot, ranked by hop distance.
 ///

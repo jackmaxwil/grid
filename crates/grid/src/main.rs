@@ -100,7 +100,7 @@ fn help() {
          hotspots [--under p]         complexity x churn, descending\n  \
          roots                        import name -> directory map\n  \
          log <name>                   a definition's history in identity space\n  \
-         suspects <test> [--closure <since>]  likely culprits, ranked\n  \
+         suspects <test> [--closure [<since>]]  likely culprits, ranked; bare --closure uses the last snapshot it passed at\n  \
          test [base] [--trace|--all]  run what the change can reach; replay the rest; exit 3 on red\n  \
          gate <plan> [head]           promise vs delta; exit 3 on hold\n  \
          plan lint <file>             validate a promise file\n  \
@@ -1838,7 +1838,7 @@ fn compile_report(record: &grid_wire::CompileRecord, json: bool) -> u8 {
 }
 
 const SUSPECTS_USAGE: &str =
-    "usage: grid suspects <test> [<trace>] [<base>] [--closure <snapshot|rev>]";
+    "usage: grid suspects <test> [<trace>] [<base>] [--closure [<snapshot|rev>]]";
 
 const INTERFERE_USAGE: &str = "usage: grid interfere <other-root> [--base <rev>]";
 
@@ -1917,21 +1917,27 @@ fn interfere_verb(args: &[&str], json: bool) -> u8 {
 /// without history. With it, the definitions the test's closure at head can
 /// reach whose bodies moved since that snapshot, ranked by hop distance —
 /// heuristic, so exit `0` on any answer, and no history required.
+///
+/// `--closure` with no snapshot after it uses the last one the test recorded
+/// a pass at ([`suspects::last_pass`]) and says on stderr which one that was;
+/// with nothing on record it refuses, because an empty ranking would read as
+/// "nothing in the closure moved".
 fn suspects(args: &[&str], json: bool) -> u8 {
-    let mut closure = None;
+    // `None` is no `--closure` at all; `Some(None)` is the bare flag, whose
+    // snapshot the verdict log supplies.
+    let mut closure: Option<Option<grid_wire::SnapshotOrRev>> = None;
     let mut positional = Vec::new();
     let mut rest = args;
     while let Some((arg, tail)) = rest.split_first() {
         rest = tail;
         match *arg {
-            "--closure" => {
-                let (Some(spec), Some(tail)) = (rest.first(), rest.get(1..)) else {
-                    hint(SUSPECTS_USAGE);
-                    return exit::BAD_INPUT;
-                };
-                closure = Some(snapshot_or_rev(spec));
-                rest = tail;
-            }
+            "--closure" => match rest.split_first() {
+                Some((spec, tail)) if !spec.starts_with("--") => {
+                    closure = Some(Some(snapshot_or_rev(spec)));
+                    rest = tail;
+                }
+                _ => closure = Some(None),
+            },
             other if other.starts_with("--") => {
                 hint(&format!("grid: unknown flag `{other}`\n{SUSPECTS_USAGE}"));
                 return exit::BAD_INPUT;
@@ -1942,6 +1948,24 @@ fn suspects(args: &[&str], json: bool) -> u8 {
     let (Some(test), true) = (positional.first(), positional.len() <= 3) else {
         hint(SUSPECTS_USAGE);
         return exit::BAD_INPUT;
+    };
+    let closure = match closure {
+        None => None,
+        Some(Some(named)) => Some(named),
+        Some(None) => match suspects::last_pass(root(), test) {
+            Ok(found) => {
+                // Which snapshot answered is part of the answer: a default
+                // nobody can see is a default nobody can check.
+                if let grid_wire::SnapshotOrRev::Snapshot { snapshot } = &found {
+                    hint(&format!(
+                        "grid: --closure since {} — the last snapshot `{test}` recorded a pass at",
+                        snapshot.0
+                    ));
+                }
+                Some(found)
+            }
+            Err(error) => return suspects_refused(&error),
+        },
     };
     let params = grid_wire::methods::SuspectsParams {
         test: (*test).to_owned(),
