@@ -636,3 +636,16 @@ O(chain) rewrite; the watch session's O(tree) phases; `examples/` not
 cfg-joined; compat's tuple-struct and payload skips. Each names its
 upgrade path where it sits. Runner output is no longer one of these: it
 streams (T-27).
+
+## From the 2026-09-02 verb sweep of merged `main` (`82800b2`)
+
+- **T-55 (medium)** `crates/grid/src/main.rs` and `crates/grid/src/rpc.rs`
+  are the two files every branch grows, and the shrink-only ledger has been
+  raised deliberately four times in two days — 2088 to 2507 for `main.rs`,
+  1964 to 2193 for `rpc.rs`. Each raise was honest and stated, and the
+  pattern is still a ratchet that never ratchets. `main.rs` is verb dispatch,
+  usage text and argument parsing for thirty verbs; `rpc.rs` is the method
+  handlers behind them. Splitting either by verb family (chart reads, plan
+  and gate, test and trace, declarations) is a mechanical move that would let
+  the ceiling fall again. Not attempted here because a refusal-class fix is
+  the wrong change to bury a file split inside.
