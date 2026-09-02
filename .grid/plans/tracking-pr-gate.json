@@ -1,0 +1,144 @@
+{
+  "plan_id": "plan:from-diff-3ad3cff949be",
+  "base": {
+    "snapshot": "snap:b3:d204ff902b8263e2185c73d281dc7dcec93954bd523322b0017a3ad3cff949be"
+  },
+  "delta": {
+    "defs": [
+      {
+        "action": "add",
+        "callsign": "scripts.check_pr_metadata.base_commit"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.check_pr_metadata.body_problems"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.check_pr_metadata.cited"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.check_pr_metadata.git"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.check_pr_metadata.issue_problems"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.check_pr_metadata.main"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.check_pr_metadata.selfcheck"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.check_pr_metadata.selfcheck.forge"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.check_pr_metadata.selfcheck.forge.transport"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.check_pr_metadata.selfcheck.only"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.check_pr_metadata.send"
+      },
+      {
+        "action": "add",
+        "callsign": "scripts.check_pr_metadata.touches_charted_source"
+      }
+    ],
+    "edges": [
+      {
+        "action": "add",
+        "src": "scripts.check_pr_metadata.selfcheck.only",
+        "relation": "calls",
+        "dst": "scripts.check_pr_metadata.selfcheck.forge"
+      },
+      {
+        "action": "add",
+        "src": "scripts.check_pr_metadata.selfcheck.only",
+        "relation": "calls",
+        "dst": "scripts.check_pr_metadata.body_problems"
+      },
+      {
+        "action": "add",
+        "src": "scripts.check_pr_metadata.selfcheck",
+        "relation": "calls",
+        "dst": "scripts.check_pr_metadata.selfcheck.only"
+      },
+      {
+        "action": "add",
+        "src": "scripts.check_pr_metadata.selfcheck",
+        "relation": "calls",
+        "dst": "scripts.check_pr_metadata.selfcheck.forge"
+      },
+      {
+        "action": "add",
+        "src": "scripts.check_pr_metadata.selfcheck",
+        "relation": "calls",
+        "dst": "scripts.check_pr_metadata.cited"
+      },
+      {
+        "action": "add",
+        "src": "scripts.check_pr_metadata.selfcheck",
+        "relation": "calls",
+        "dst": "scripts.check_pr_metadata.body_problems"
+      },
+      {
+        "action": "add",
+        "src": "scripts.check_pr_metadata.touches_charted_source",
+        "relation": "calls",
+        "dst": "scripts.check_pr_metadata.git"
+      },
+      {
+        "action": "add",
+        "src": "scripts.check_pr_metadata.body_problems",
+        "relation": "calls",
+        "dst": "scripts.check_pr_metadata.issue_problems"
+      },
+      {
+        "action": "add",
+        "src": "scripts.check_pr_metadata.body_problems",
+        "relation": "calls",
+        "dst": "scripts.check_pr_metadata.cited"
+      },
+      {
+        "action": "add",
+        "src": "scripts.check_pr_metadata.base_commit",
+        "relation": "calls",
+        "dst": "scripts.check_pr_metadata.git"
+      },
+      {
+        "action": "add",
+        "src": "scripts.check_pr_metadata.main",
+        "relation": "calls",
+        "dst": "scripts.check_pr_metadata.selfcheck"
+      },
+      {
+        "action": "add",
+        "src": "scripts.check_pr_metadata.main",
+        "relation": "calls",
+        "dst": "scripts.check_pr_metadata.touches_charted_source"
+      },
+      {
+        "action": "add",
+        "src": "scripts.check_pr_metadata.main",
+        "relation": "calls",
+        "dst": "scripts.check_pr_metadata.body_problems"
+      },
+      {
+        "action": "add",
+        "src": "scripts.check_pr_metadata.main",
+        "relation": "calls",
+        "dst": "scripts.check_pr_metadata.base_commit"
+      }
+    ]
+  }
+}
