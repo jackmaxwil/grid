@@ -127,6 +127,36 @@ fn python_declines_split_into_external_method_and_internal() {
     );
 }
 
+/// Verb sweep B1: a call whose only spelling sits inside a macro argument
+/// yields no edge — right, a macro's tokens are its own grammar — and was
+/// counted nowhere, so `declined` read all zeros and the omission was
+/// indistinguishable from a file with no references. Red before the fix
+/// with `declined_macro == 0`. The tokens stay unread: what is counted is
+/// the invocation, never the names inside it.
+#[test]
+fn a_macro_invocation_is_declined_into_its_own_population() {
+    let dir = repo(&[
+        ("Cargo.toml", "[package]\nname = \"probe\"\n"),
+        (
+            "src/main.rs",
+            "fn helper() -> i32 {\n    7\n}\nfn main() {\n    println!(\"{}\", helper());\n}\n",
+        ),
+    ]);
+    let s = survey(dir.path());
+    assert_eq!(s.edges, 0, "nothing inside a macro is bound: {s:?}");
+    assert_eq!(s.declined_macro, 1, "the invocation is counted: {s:?}");
+    assert_eq!(
+        split(&s),
+        (0, 0, 0),
+        "and it is none of the name populations"
+    );
+    assert_eq!(
+        s.declined_refs,
+        s.declined_external + s.declined_method + s.declined_internal + s.declined_macro,
+        "the four populations are the total"
+    );
+}
+
 /// A qualified call through an imported module is *not* a method call: the
 /// import binds it, so it is a proven edge and is never declined. The split
 /// must not be bought by losing edges.

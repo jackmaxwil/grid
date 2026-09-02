@@ -4,7 +4,8 @@
 //! what a definition reaches for *by name* and refuses to guess bindings.
 //! Method calls on non-`self` receivers need types and are dropped; macro
 //! bodies are opaque token streams syn's visitor never descends into, so
-//! everything inside one is dropped — omissions, never invented edges.
+//! everything inside one is dropped — omissions, never invented edges. The
+//! invocation itself is recorded, so the omission is counted.
 use std::collections::HashMap;
 
 use grid_datum::{
@@ -727,6 +728,23 @@ impl<'ast> Visit<'ast> for Scan {
             });
         }
         syn::visit::visit_expr_method_call(self, node);
+    }
+
+    fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        // A macro's tokens follow the macro's own grammar, so no name inside
+        // them is bound here. The invocation is recorded under the macro's
+        // path: the survey then counts one unread argument list rather than
+        // reporting a definition that reaches for nothing (verb sweep B1 —
+        // `check --quick` passed a signature change whose only caller sat
+        // inside a `println!`).
+        self.push(
+            RefKind::Macro,
+            node.path
+                .segments
+                .iter()
+                .map(|s| s.ident.to_string())
+                .collect(),
+        );
     }
 
     fn visit_expr_struct(&mut self, node: &'ast syn::ExprStruct) {

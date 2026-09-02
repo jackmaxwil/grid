@@ -15,7 +15,7 @@ use grid_wire::{
 };
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "2.20.0";
+pub const VERSION: &str = "2.22.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -272,10 +272,8 @@ pub fn snapshot(s: &grid_wire::Snapshot, run: Option<(u64, std::time::Duration)>
         ),
         None => format!("@{}", s.git_rev.0),
     };
-    // The full stats block is `defs N  edges N  reread N  <duration>`. The
-    // last two describe the run rather than the snapshot, so they appear only
-    // when a run just happened — reporting a snapshot read back from the
-    // store would have nothing truthful to put there.
+    // `reread N  <duration>` describe the run, not the snapshot, so they
+    // appear only when a run just happened.
     let stats = match run {
         Some((reread, elapsed)) => format!(
             "defs {}  edges {}  reread {reread}  {}ms",
@@ -286,34 +284,39 @@ pub fn snapshot(s: &grid_wire::Snapshot, run: Option<(u64, std::time::Duration)>
         None => format!("defs {}  edges {}", s.stats.defs, s.stats.edges),
     };
     record(&mut out, "snapshot", &[&id, &stats]);
-    // A survey that says how much it charted without saying how much it
-    // declined is the same dishonest silence `grid drift` closes with a
-    // `miss`: same tag, same meaning, one record.
+    // What it charted without what it declined is `grid drift`'s silence.
     if let Some(d) = &s.declined {
         let total = d
             .external
             .saturating_add(d.method)
-            .saturating_add(d.internal);
+            .saturating_add(d.internal)
+            .saturating_add(d.macros.unwrap_or(0));
         if total > 0 {
-            // The refused share is the typed receivers the rule declined
-            // with a reason; a snapshot from before it was counted says
-            // nothing rather than `0 refused`.
+            // A snapshot predating a count says nothing rather than `0`.
             let method = match d.refused {
                 Some(refused) => format!("method {} of which {refused} refused", d.method),
                 None => format!("method {}", d.method),
             };
+            let macros = d.macros.map_or(String::new(), |n| format!(", macro {n}"));
             record(
                 &mut out,
                 "miss",
                 &[
                     &total.to_string(),
                     &format!(
-                        "references declined (external {}, {method}, internal {})",
+                        "references declined (external {}, {method}, internal {}{macros})",
                         d.external, d.internal
                     ),
                 ],
             );
         }
+    }
+    // A file the survey could not read: the same record `grid watch` emits.
+    for (paths, why) in [
+        (&s.unparseable, "unparseable"),
+        (&s.unreadable, "unreadable"),
+    ] {
+        out.push_str(&refused(paths.as_deref().unwrap_or_default(), why));
     }
     out
 }
@@ -393,10 +396,8 @@ pub fn drift(report: &grid_wire::DriftReport) -> String {
     out
 }
 
-/// Stale verdicts: a `miss` in the cache's own sense — the datum must be
-/// run, not looked up. The first column is the test name rather than a
-/// datum handle because a test is addressed by name everywhere else in the
-/// engine.
+/// Stale verdicts: a `miss` in the cache's own sense — run, not looked up.
+/// The first column is the test name, as a test is addressed everywhere.
 #[must_use]
 pub fn stale(tests: &[grid_wire::StaleTest]) -> String {
     let mut out = String::new();
@@ -410,9 +411,7 @@ pub fn stale(tests: &[grid_wire::StaleTest]) -> String {
     out
 }
 
-/// Weak tests: `warn`, not `drift` — reported rather than refused, and it
-/// never moves the exit code. A test that proved nothing is a ranking, and
-/// grid ranks; it does not gate on a heuristic.
+/// Weak tests: `warn`, not `drift` — a heuristic ranks and never gates.
 #[must_use]
 pub fn weak(tests: &[grid_wire::WeakTest]) -> String {
     let mut out = String::new();
@@ -426,7 +425,6 @@ pub fn weak(tests: &[grid_wire::WeakTest]) -> String {
     out
 }
 
-/// One `warn` per reported-not-refused finding.
 #[must_use]
 pub fn warnings(rows: &[grid_wire::DriftWarning]) -> String {
     let mut out = String::new();
@@ -609,15 +607,16 @@ pub fn deltas(rows: &[grid_wire::DriftDelta]) -> String {
     out
 }
 
-/// The `miss` records a watch event closes with: one per path the frontend
-/// refused. The refusal is part of the stream, not a note beside it — a
-/// consumer summing deltas has to know that this event carried none because
-/// grid could not read a file, and not because nothing changed.
+/// The `miss` records a watch event closes with, one per refused path.
 #[must_use]
 pub fn declined(paths: &[String]) -> String {
+    refused(paths, "unparseable")
+}
+
+fn refused(paths: &[String], why: &str) -> String {
     let mut out = String::new();
     for path in paths {
-        record(&mut out, "miss", &[path, "unparseable"]);
+        record(&mut out, "miss", &[path, why]);
     }
     out
 }
@@ -696,13 +695,14 @@ fn drift_unchecked(unchecked: &grid_wire::DriftUnchecked) -> String {
                     unchecked.unresolved_method,
                     unchecked.unresolved_internal,
                 ) {
-                    // The three populations mean opposite things for the
-                    // claim drift makes, so a bare total under-reports what
-                    // the reader needs to weigh.
+                    // The populations mean opposite things; a bare total hides that.
                     (Some(external), Some(method), Some(internal)) => {
+                        let macros = unchecked
+                            .unresolved_macros
+                            .map_or(String::new(), |n| format!(", macro {n}"));
                         let split =
                             format!("external {external}, method {method}, internal {internal}");
-                        format!("unresolved references unchecked ({split})")
+                        format!("unresolved references unchecked ({split}{macros})")
                     }
                     _ => "unresolved references unchecked".to_owned(),
                 },

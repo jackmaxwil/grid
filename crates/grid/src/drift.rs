@@ -227,6 +227,10 @@ pub struct Query<'a> {
     /// why, or `None` when nobody surveyed head in this run — unknown, never
     /// zero.
     pub declined: Option<Declined>,
+    /// Files the head survey could not read, with why, or `None` when
+    /// nobody surveyed head in this run. A definition absent at head only
+    /// because its file is here is unread, not removed.
+    pub unread: Option<&'a [(String, grid_survey::Unread)]>,
     /// Per-changed-definition inbound-walk budget. A real parameter, not a
     /// constant, because the honest thing to do when it runs out is only
     /// testable if a test can make it run out.
@@ -253,15 +257,29 @@ pub struct Declined {
     pub method: u64,
     /// Names this tree could have held and the resolver could not bind.
     pub internal: u64,
+    /// Macro invocations inside definitions, whose argument lists were
+    /// never read — a caller inside one is a dependent drift cannot see.
+    pub macros: u64,
 }
 
 impl Declined {
+    /// The survey's four populations, as it counted them.
+    pub(crate) const fn of(survey: &grid_survey::Survey) -> Self {
+        Self {
+            external: survey.declined_external,
+            method: survey.declined_method,
+            internal: survey.declined_internal,
+            macros: survey.declined_macro,
+        }
+    }
+
     /// Every declined reference, however it was declined.
     #[must_use]
     pub fn total(self) -> u64 {
         self.external
             .saturating_add(self.method)
             .saturating_add(self.internal)
+            .saturating_add(self.macros)
     }
 }
 
@@ -278,6 +296,7 @@ impl<'a> Query<'a> {
             plan: None,
             covenants: &[],
             declined: None,
+            unread: None,
             fuel: FUEL,
             compat: None,
         }
@@ -363,6 +382,7 @@ pub(crate) fn compute_on(
         plan,
         covenants,
         declined,
+        unread,
         fuel: budget,
         compat,
         ..
@@ -387,7 +407,27 @@ pub(crate) fn compute_on(
     let mut suspects: BTreeMap<(String, String, u8), DriftSuspect> = BTreeMap::new();
     let mut budget_rejected = 0u32;
 
+    // A definition absent at head only because head could not read its file
+    // is unread, not removed: walking inbound from it would implicate every
+    // caller it had, and none of them changed (verb sweep B2 — twelve
+    // phantom suspects from one syntax error). Held out of the walk and
+    // named once per file, as a `warn`: nothing moved, something was not
+    // read, and that is never a gate.
+    let unread: HashMap<&str, grid_survey::Unread> = unread
+        .unwrap_or_default()
+        .iter()
+        .map(|(path, why)| (path.as_str(), *why))
+        .collect();
+    let mut unread_defs: BTreeMap<&str, u64> = BTreeMap::new();
     for change in changed {
+        if change.sig_after.is_none() {
+            let file = path_of(base_epoch.segments(), &change.datum);
+            if let Some(path) = file.filter(|p| unread.contains_key(p)) {
+                let n = unread_defs.entry(path).or_default();
+                *n = n.saturating_add(1);
+                continue;
+            }
+        }
         let Some(found) = inbound_of(base_epoch.segments(), change, floor, &observed, budget)
         else {
             budget_rejected = budget_rejected.saturating_add(1);
@@ -402,7 +442,7 @@ pub(crate) fn compute_on(
 
     // Declared coupling, joined last: a covenant fires on datum change, so
     // it needs the same `touched` set the walk used and nothing else.
-    let warnings = fire_covenants(
+    let mut warnings = fire_covenants(
         covenants,
         chart,
         base_epoch.segments(),
@@ -410,6 +450,13 @@ pub(crate) fn compute_on(
         &touched,
         &mut suspects,
     );
+    warnings.extend(unread_defs.iter().map(|(path, n)| grid_wire::DriftWarning {
+        subject: (*path).to_owned(),
+        message: format!(
+            "{} — {n} definitions unread, not removed",
+            unread.get(path).map_or("unread", |why| why.word())
+        ),
+    }));
 
     // Deserialize compatibility over the same changed set. Last, because it
     // reads source rather than the chart and must not be able to cost the
@@ -441,6 +488,7 @@ pub(crate) fn compute_on(
             unresolved_external: declined.map(|d| d.external),
             unresolved_method: declined.map(|d| d.method),
             unresolved_internal: declined.map(|d| d.internal),
+            unresolved_macros: declined.map(|d| d.macros),
             budget_rejected: u64::from(budget_rejected),
             unattributed_entries: None,
             weak_skipped: None,
@@ -525,6 +573,13 @@ fn base_callsigns<B: AsRef<[u8]>>(segments: &[Segment<B>]) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+/// The file a datum was surveyed in, as a live set records it.
+fn path_of<'s, B: AsRef<[u8]>>(segments: &'s [Segment<B>], datum: &DatumId) -> Option<&'s str> {
+    segments
+        .iter()
+        .find_map(|s| s.location(s.ordinal(datum)?).map(|loc| loc.path))
 }
 
 /// The datum a callsign answers to in a live set.

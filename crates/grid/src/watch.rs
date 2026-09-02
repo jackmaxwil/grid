@@ -75,6 +75,11 @@ pub struct Session {
     live: BTreeMap<Key, DriftSuspect>,
     /// File events declined because a frontend could not parse them.
     declined: u64,
+    /// Files the last event found unparseable. Re-checked on every event and
+    /// refused until they parse again: the refusal is a fact about the tree,
+    /// not about the event that first noticed it (verb sweep B3 — the next
+    /// event re-read the same file and emitted the deltas this one declined).
+    poisoned: BTreeSet<String>,
 }
 
 /// What one event produced.
@@ -115,6 +120,7 @@ impl Session {
             touched: BTreeSet::new(),
             live: BTreeMap::new(),
             declined: 0,
+            poisoned: BTreeSet::new(),
         })
     }
 
@@ -150,8 +156,15 @@ impl Session {
         // Conservatism first: a file the frontend cannot parse is a file grid
         // cannot see. The survey would treat it as defining nothing, which
         // would retract every suspect it holds — an all-clear invented out of
-        // a syntax error. Refuse the event instead, and count it.
+        // a syntax error. Refuse the event instead, and count it — and keep
+        // refusing until the file parses again, whatever later events name.
+        let mut paths: Vec<String> = paths.to_vec();
+        paths.extend(self.poisoned.iter().cloned());
+        paths.sort();
+        paths.dedup();
+        let paths = paths.as_slice();
         let declined = self.unparseable(paths);
+        self.poisoned = declined.iter().cloned().collect();
         if !declined.is_empty() {
             self.declined = self.declined.saturating_add(declined.len() as u64);
             return Ok(Emitted {
@@ -372,10 +385,14 @@ impl Session {
                 let Some(lang) = grid_survey::files::lang_of(path) else {
                     return false;
                 };
-                let Ok(source) = std::fs::read_to_string(self.root.join(path)) else {
+                let Ok(bytes) = std::fs::read(self.root.join(path)) else {
                     // A deleted file is an event grid can act on; only a file
                     // that is there and does not parse is a refusal.
                     return false;
+                };
+                // Not UTF-8 is there and unreadable: the same refusal.
+                let Ok(source) = String::from_utf8(bytes) else {
+                    return true;
                 };
                 grid_survey::definitions(lang, &source).is_err()
             })
@@ -682,5 +699,40 @@ mod tests {
             before,
             "and nothing was retracted behind the caller's back"
         );
+    }
+
+    /// Verb sweep B3: the refusal is a fact about the tree, not about the
+    /// event that first noticed it. Red before the fix with event B — an
+    /// unrelated path while `api.py` still did not parse — emitting the
+    /// phantom `go<-window` delta event A had declined, which broke the
+    /// summation property PORCELAIN states.
+    #[test]
+    fn an_unparseable_file_keeps_refusing_until_it_parses_again() {
+        let (dir, base) = repo();
+        let mut session = session(dir.path(), &base);
+        write(
+            dir.path(),
+            "pkg/api.py",
+            "def window(:\n    this does not parse\n",
+        );
+        let a = event(&mut session, &["pkg/api.py"]);
+        assert!(a.deltas.is_empty());
+        let b = event(&mut session, &["pkg/use.py"]);
+        assert!(
+            b.deltas.is_empty(),
+            "the tree still holds a file grid cannot read: {} deltas",
+            b.deltas.len()
+        );
+        assert_eq!(b.declined, vec!["pkg/api.py".to_owned()]);
+        // Repaired, and the event names it: the suspect set is rebuilt from
+        // a tree grid can read again, and the running sum is drift's answer.
+        write(dir.path(), "pkg/api.py", AFTER);
+        let c = event(&mut session, &["pkg/api.py"]);
+        assert!(c.declined.is_empty());
+        let mut sum = Vec::new();
+        for emitted in [&a, &b, &c] {
+            integrate(&mut sum, emitted);
+        }
+        assert_eq!(sum, full(dir.path(), &base));
     }
 }

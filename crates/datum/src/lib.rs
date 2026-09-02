@@ -234,6 +234,12 @@ pub enum RefKind {
     /// edge carries no field name, so the target is the type itself; field
     /// *reads* need receiver types and are never emitted.
     FieldWrite,
+    /// `m!(...)` — a macro invocation, under the macro's own path. Its
+    /// tokens are not a place a frontend can bind names, so nothing inside
+    /// one is ever a reference; the invocation itself is recorded so the
+    /// resolver can decline it *and count it* — an argument list grid did
+    /// not read and an absent one must not look the same.
+    Macro,
 }
 
 /// One name reached for, with the definition that reached for it.

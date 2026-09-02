@@ -80,12 +80,19 @@ fn batch_blobs_match_git_show() {
     );
     for file in &sources {
         let shown = git(root, &["show", &format!("HEAD~1:{}", file.path)]);
+        // The hash is of the bytes whether or not they were UTF-8; the text
+        // is the bytes exactly when they were.
         assert_eq!(
-            shown,
-            file.source.as_bytes(),
+            file.content_hash,
+            *blake3::hash(&shown).as_bytes(),
             "batch and `git show` disagree on {}",
             file.path
         );
+        if file.unreadable {
+            assert!(file.source.is_empty() && String::from_utf8(shown).is_err());
+        } else {
+            assert_eq!(shown, file.source.as_bytes(), "{}", file.path);
+        }
     }
     // And nothing readable was dropped: every tracked path `git show` serves
     // as UTF-8 source is present.
@@ -119,14 +126,19 @@ fn manifest_read_at_the_rev_still_names_the_crate() {
     );
 }
 
-/// A non-UTF-8 blob is skipped, and the file *behind it in the stream* still
-/// gets its own bytes — the desync a per-file spawn could not have.
+/// A non-UTF-8 blob is kept as unreadable — named, never a file with nothing
+/// in it — and the file *behind it in the stream* still gets its own bytes:
+/// the desync a per-file spawn could not have.
 #[test]
 fn an_unreadable_blob_does_not_shift_the_files_behind_it() {
     let dir = fixture();
     let (sources, _) = sources_at(dir.path(), "HEAD~1").expect("survey the rev");
     let by_path = |p: &str| sources.iter().find(|f: &&SourceFile| f.path == p);
-    assert!(by_path("src/latin1.rs").is_none(), "latin1 is not source");
+    assert_eq!(
+        by_path("src/latin1.rs").map(|f| (f.unreadable, f.source.as_str())),
+        Some((true, "")),
+        "latin1 is not source grid can read, and it says so"
+    );
     assert_eq!(
         by_path("src/zed.rs").map(|f| f.source.as_str()),
         Some("pub fn z() {}\n"),

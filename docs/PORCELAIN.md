@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.20.0
+version: 2.22.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -13,7 +13,7 @@ document.
 | tag | columns |
 |---|---|
 | `snapshot` | id (`@rev`; `@rev+<prefix>` when the tree was a dirty worktree — labelled with the rev it was checked out from, and never taken for the tree at that rev), stats (`defs N  edges N  reread N  <duration>`) |
-| `miss` (survey) | count, `references declined (external N, method N of which N refused, internal N)` — the one record `grid survey` closes with when the resolver declined anything; the `of which N refused` clause is the typed receivers the method-call rule declined with a reason, and is absent when the snapshot predates the count |
+| `miss` (survey) | count, `references declined (external N, method N of which N refused, internal N, macro N)` — the one record `grid survey` closes with when the resolver declined anything; the `of which N refused` clause is the typed receivers the method-call rule declined with a reason, and it and the `macro N` clause are absent when the snapshot predates their count. Then one `miss <path>  unparseable` or `miss <path>  unreadable` per tracked file the survey could not read — the record `grid watch` already emitted for the same refusal |
 | `def` | glyph, callsign, hash transition (`old→new` or new hash), `sig` when the interface identity also moved (absent when it held, and absent when a pre-epoch-3 snapshot means nobody can say); inside `grid gate` output, an unaccounted definition's trailing column reads `unaccounted: interface` when a def promise's `interface` claim is what holds it |
 | `ref` | callsign, datum prefix, `file:line` when the snapshot carries locations (`grid resolve` — a definition that exists, not one that changed) |
 | `orphan` | callsign, datum prefix, `file:line`, and under `--traced` a trailing `trace N` — a definition with no *proven* caller (`grid orphans`); not the same as dead, and `trace 0` is still a maybe |
@@ -78,28 +78,33 @@ Verdict roles on `edge` records: `match`, `miss`, `surplus`, `tolerated`.
 
 `grid survey` closes with one `miss` record when the resolver declined any
 reference — `miss 8413  references declined (external 1272, method 6091 of
-which 261 refused, internal 1050)` — the existing tag and its existing
-"what could not be checked" meaning. The three populations add up to the
-total by construction; `refused` is a sub-count of `method`, the calls
-whose receiver *was* typed to a charted type and the method-call rule
+which 261 refused, internal 1050, macro 512)` — the existing tag and its
+existing "what could not be checked" meaning. The four populations add up
+to the total by construction; `refused` is a sub-count of `method`, the
+calls whose receiver *was* typed to a charted type and the method-call rule
 declined with a reason (a trait candidate, a generic impl, no inherent
-method, a wrapper), and the clause is omitted when the snapshot predates
-the count. They mean opposite things: `external` costs a claim about this
-repo nothing, `method` is a hole no static rule closes — the receiver could
-not be typed, or was typed and refused — and `internal` is a hole in exactly
-what `grid drift` claims. A survey that declined nothing prints no such
-record.
+method, a wrapper), and that clause and the `macro` one are omitted when
+the snapshot predates their count. They mean opposite things: `external`
+costs a claim about this repo nothing, `method` is a hole no static rule
+closes — the receiver could not be typed, or was typed and refused —
+`internal` is a hole in exactly what `grid drift` claims, and `macro` is an
+argument list nobody read: one count per invocation, its contents unknown
+by design. A survey that declined nothing prints no such record.
 
 `grid drift` closes its output with `miss` records for what it could not
 check: `miss <n>  unresolved references unchecked (external N, method N,
-internal N)` when the head survey declined names, and `miss ?  unresolved
+internal N, macro N)` when the head survey declined names, and `miss ?  unresolved
 references uncounted (head was not surveyed)` when head was a published
 snapshot nobody re-surveyed, so the count is unknown rather than zero. The
 split is omitted, and the message is the bare `unresolved references
 unchecked`, only when a report predates the split.
 
 A drift report with no suspects and nothing unchecked prints nothing and
-exits `0`; suspects exit `3`. An inbound
+exits `0`; suspects exit `3`. A definition absent at head only because head
+could not read its file is not a removal: its dependents are not walked, and
+the file is named once as `warn <path>  unparseable — N definitions unread,
+not removed` (or `unreadable`), which never moves the exit code — nothing
+moved, something was not read. An inbound
 walk that runs past its fuel is refused whole — exit `1` with the reason on
 stderr — never served as a shorter list. A declared covenant whose pattern
 matches nothing at drift time closes the output as a `warn` record: a rule
@@ -284,7 +289,9 @@ after any prefix of events is what a fresh `grid drift` would say — so
 nobody has to diff lists to see what changed. Watch mode has no verdict and
 always exits `0`; `grid drift` is the verb that holds. A file event the
 frontend cannot parse emits no deltas at all and says so on stderr, because
-a file grid cannot read is not a file with nothing in it.
+a file grid cannot read is not a file with nothing in it — and so does every
+later event, whatever it names, until that file parses again: the refusal is
+a fact about the tree, not about the event that first noticed it.
 
 ## Text-mode output
 
