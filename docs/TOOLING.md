@@ -35,7 +35,7 @@ and the row says so.
 | `deny.toml` `[advisories] yanked = "deny"`, `[sources] unknown-*` | supply chain | **already present.** No change. |
 | `.codespellrc` | typos in prose and comments are a gate, not a habit | **adapt.** Grid's ignore list is grid's domain vocabulary (`crate`, `ba`, `nd`, `datum`…), skips `target`, `Cargo.lock`, `docs/research`, `.grid`. |
 | `.gitguardian.yaml` | scanners skip the deliberately key-shaped fixtures | **skip.** Grid has no secret-redaction feature and no planted-key fixtures; there is nothing to exempt. |
-| `.config/nextest.toml` — `retries`, `slow-timeout`, per-binary `max-threads` | the suite's subprocess-spawning binaries do not oversubscribe the machine and hang | **adapt.** Grid's conformance and CLI suites spawn the `grid` binary, which is the same hazard yi capped at three threads. Grid caps the same way, and `just test` uses nextest only when it is on `PATH` so a fresh clone still runs the suite. |
+| `.config/nextest.toml` — `retries`, `slow-timeout`, per-binary `max-threads` | the suite's subprocess-spawning binaries do not oversubscribe the machine and hang | **adapt, minus the retries.** Grid's conformance and CLI suites spawn the `grid` binary, which is the same hazard yi capped at three threads; grid caps the same way, by binary *id* so a same-named in-process test in another crate is not swept in. `just test` uses nextest only when it is on `PATH`, so a fresh clone still runs the suite. `retries` is **0**, not yi's 1: a test that fails once and passes on retry is reported as passed, which is the failure `AGENTS.md` tells a reader to attribute ("a race, not your diff") rather than shrug at, and C11 is a claim about a race. Setting it to 0 immediately turned up one — a stale-bytecode race in `grid_test_runs_the_inventory_and_exits_three_on_a_red_test`, fixed in the same change. |
 | `Cargo.toml` `[profile.dev] debug = "line-tables-only"` + `[profile.dev.package."*"] debug = false` | debuginfo for dependencies is a large fraction of link time and nobody reads a backtrace through serde | **adopt.** Grid links a dozen test binaries and several that spawn a child; the argument transfers unchanged. |
 | `Cargo.toml` `[profile.dist]` — `opt-level = "z"`, fat LTO, `panic = "abort"`, `strip` | the shipping artifact, measured by a binary-size ratchet | **skip.** Grid has no release pipeline and no binary-size budget, so a second release profile would be a profile nothing measures. `[profile.release] lto = true, codegen-units = 1` stays as grid has it. |
 | `resolver = "3"`, `edition = "2024"` | — | **skip.** Grid is `resolver = "2"` / edition 2021. An edition bump is a code change with its own diff, not a tooling change. (README's "edition 2024 workspace" is wrong; out of scope here.) |
@@ -59,7 +59,7 @@ grid too, with `_common.py` ported as-is.
 | `check_panic.py` | a grep for `.unwrap()`/`.expect(`/`panic!`/`todo!` with a zero budget | **skip.** Redundant once the clippy denies above are in the workspace lint table: the compiler sees through macros and `cfg`, a grep does not. yi runs both; grid runs the accurate one. |
 | `check_filenames.py` | no `part_01.rs` / `foo_02.rs` — bisection is not decomposition | **adapt**, folded into `check_hygiene.py`. |
 | `check_glob_reexport.py` | zero `pub use ...::*` and `use super::*` in `src/` | **adapt**, folded into `check_hygiene.py`. |
-| `check_file_size.py` | 1,200-line ceiling, `src/` only | **adapt**, folded into `check_hygiene.py`. Three files predate the ceiling (`crates/grid/src/main.rs` 2088, `rpc.rs` 1964, `porcelain.rs` 1241); they sit in `baselines/hygiene_debt.json` at their measured size and may only shrink, and `--update` refuses to raise a number. Everything else meets the ceiling outright. |
+| `check_file_size.py` | 1,200-line ceiling, `src/` only | **adapt**, folded into `check_hygiene.py`. Three files predate the ceiling (`crates/grid/src/main.rs` 2097, `rpc.rs` 2060, `porcelain.rs` 1254, measured on this branch); they sit in `baselines/hygiene_debt.json` at their measured size and may only shrink, and `--update` refuses to raise a number. Everything else meets the ceiling outright. |
 | `check_fn_size.py` | 150-line function ceiling, brace-counted | **adapt**, folded into `check_hygiene.py`. One function predates it (`serve.rs::dispatch`, 178) and sits in the same debt list. Four ~15-line scripts asking one question — is the source shaped sanely — become one file. |
 | `check_env_surface.py` | every `YI_*` env var is a declared row; hard cap 40 | **skip.** Ported, then removed before merge. It scans `crates/*/src` only, and two of grid's four vars (`GRID_CORPUS`, `GRID_FAULT_ITERS`) are read from tests, the justfile and CI — invisible to it. Its third rule makes a declared-but-unfound row an error, so *declaring the half it cannot see fails the gate*: whichever way a developer went, the check gave a wrong answer. A hard cap of 16 guarding a surface of four is configuration for a value that never changes; the incident it inherits (jcode's 517 undocumented vars) is a different repository's. |
 | `check_blob_size.py` | no committed file over 512 KB outside an allowlist | **adapt.** Grid's allowlist is `docs/research/*.pdf` — four papers the design argues from, deliberately vendored. |
@@ -182,15 +182,70 @@ deleted. Two evidence columns carried prose fragments rather than filenames
 (`incremental≡full` on C2, `(cache)` on C4); those are now file lists, and
 the statements already said what the fragments were reaching for.
 
-`docs/ASSURANCE.md` gains **C44**: every file under `crates/wire/src` is
-byte-identical to what `gen-wire.py` writes and `rustfmt` normalizes. That is
-the claim `check_wire_drift.py` is the evidence for, and it makes the
-generated-code rule part of the assurance case rather than a habit.
+`docs/ASSURANCE.md` gains **C44**: `crates/wire/src/lib.rs` and `methods.rs`
+are byte-identical to what `gen-wire.py` writes and `rustfmt` normalizes. That
+is the claim `check_wire_drift.py` is the evidence for, and it makes the
+generated-code rule part of the assurance case rather than a habit. The row
+names the two generated files rather than the directory, because `errors.rs`
+sits beside them and is hand-written: the generator never writes it, so the
+check cannot see a change to it, and a claim should not describe a reach it
+does not have.
+
+C1's evidence token is `ci:chart-io-sanitizers` and **C3 has no CI token at
+all**. `check-assurance-links.sh` used to skip every `ci:*` token before it
+tested anything, so C3's `ci:kani` named a job that lived only in
+`.github/workflows/` — on the estate that never runs. The check now resolves a
+`ci:<job>` token against `.forgejo/workflows/`, and both rows were seen red
+before they were made honest. The Kani harnesses are real and `just verify`
+runs them; no CI job anywhere ever has. That job is a row in `docs/TODOS.md`,
+not a claim here.
 
 Dependency rule, unchanged and restated: no new **runtime** crate dependency.
 `Cargo.lock` must not gain a package for tooling. Every tool this port adds —
 `codespell`, `cargo-nextest`, `cargo-machete`, `cargo-fuzz`, `kani` — is a
 binary on `PATH`, checked for and announced-skipped when absent, exactly as yi
-treats codespell. None of them is a `dev-dependency`, so the lockfile does not
-move: `git diff` on `Cargo.lock` is empty across the whole port, and
-`docs/ASSURANCE.md`'s dependency section says so in its own words.
+treats codespell — and *announced* means the gate stays green, which the
+aggregator now actually implements rather than only documenting. None of them
+is a `dev-dependency`, so the lockfile does not move: `git diff` on
+`Cargo.lock` is empty across the whole port, and `docs/ASSURANCE.md`'s
+dependency section says so in its own words.
+
+## What the hooks do and do not gate
+
+`.githooks/pre-commit` runs `just precommit` over the **checkout**, not the
+index. A partial `git add` is therefore gated against changes that are not
+being committed: an unstaged fix can make a broken commit pass, and unrelated
+work in progress can block a clean one. This is inherited from yi and is left
+as it is deliberately — a stash-based hook has a worse failure mode in exactly
+this repository's setup, where every worktree shares one stash stack (which is
+what `just worktrees` prints and warns about). Pushing is where the tree and
+the history agree again: `just prepush` runs the whole gate against what is
+about to leave the machine.
+
+`.githooks/commit-msg` judges the subject line as it is written. The rest of
+`check_commit_style.py` — the trailer rule and the composition rule — needs a
+commit to exist and so stays in the guardrail suite, one commit behind by
+nature.
+
+## Measured, on this branch
+
+Apple M-series, warm `target/`, after the deletions and fixes above.
+
+| what | measured |
+|---|---|
+| `just precommit`, nothing changed | 2.5 s |
+| `just precommit` after touching `crates/chart/src/lib.rs` (rebuilds five downstream crates) | 4.2 s — fmt-check 0.33 s, clippy 3.5 s, `guardrails-fast` 1.5 s |
+| `scripts/check-guardrails.sh --fast` alone | 1.48 s median of five (1.39–1.64) |
+| `scripts/check-guardrails.sh`, whole | 3.8 s |
+| `cargo nextest run --workspace` | 524 tests, ~27–47 s |
+| comment lines in `crates/*/src` | 5,186 across 64 files |
+| hygiene debt | `main.rs` 2097, `rpc.rs` 2060, `porcelain.rs` 1254, `serve.rs::dispatch` 178 |
+
+The header of `check-guardrails.sh` claims the fast tier keeps the hook "under
+a couple of seconds"; `guardrails-fast` alone meets that and `just precommit`
+does not, because clippy dominates it. The honest statement is that the hook
+costs about four seconds on a change that touches a widely-depended-on crate,
+and that the ceiling is cargo's, not the guardrails'. `guardrails-fast` grows
+slowly with branch length — `check_commit_style.py` runs one `git show` per
+commit ahead of `origin/main` — which is why the number moved from 1.27 s at
+eight commits to 1.48 s at eleven.

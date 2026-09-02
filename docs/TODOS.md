@@ -283,13 +283,38 @@ plan).
 
 - **T-33 (P1, S) README rewrite** around the journeys above (done with
   this file), with the stale numbers and epochs corrected.
-- **T-34 (P1, M) Repo tooling port from yi** — CI, lint config, guards,
-  skills, comment enforcement (in progress on `claude/grid-tooling`).
+- **T-34 (P1, M) Repo tooling port from yi** — CI, lint config, guards
+  (landed on `claude/grid-tooling`). Comment enforcement and the env-var
+  and dependency-count budgets were ported and then deleted before merge;
+  `docs/TOOLING.md` records each with the reason. The vendored `har-*`
+  skills went the same way: the doctrine is read from
+  `~/Development/har-skills/skills/`, never copied here.
 - **T-35 (P1, S) `docs/PORCELAIN.md` text-mode section** covers `scope
   --bodies`, `explain` and `check --format md`, under the stated rule that
   `--json` is always the record form. (done 7702ec7)
 - **T-36 (P2, S) A walkthrough doc** — one real session transcript of A1
   on this repo, records and exit codes shown.
+- **T-37 (P1, S) A Kani job on Forgejo.** C3 ("every walk terminates
+  within fuel") has real harnesses in `crates/walk/src/proofs.rs` and
+  `crates/chart/src/proofs.rs` and a `just verify` that runs them, and no
+  CI job anywhere that ever has. The evidence column says so now rather
+  than claiming a `ci:kani` that lived on the estate with `no_push`.
+  Adding the job means a `kani-verifier` install and a runner willing to
+  spend the minutes; until it exists, C3's evidence is a person who ran
+  the proofs.
+- **T-38 (P2, S) `errors.rs` is outside `check_wire_drift.py`'s reach.**
+  `gen-wire.py` writes `crates/wire/src/lib.rs` and `methods.rs` only, so
+  a hand edit to the hand-written `errors.rs` beside them is invisible to
+  the drift check. C44 now says which files it covers instead of implying
+  the directory. Either generate the error enum from the contract's error
+  codes as well, or leave it hand-written and let the row stand — but not
+  a check that quietly means less than its name.
+- **T-39 (P2, S) The pre-commit hook gates the checkout, not the index.**
+  `just precommit` runs over the working tree, so a partial `git add` is
+  judged against changes that are not being committed. Left as it is
+  deliberately (a stash-based hook is worse where every worktree shares
+  one stash stack), recorded in `docs/TOOLING.md`, and worth revisiting
+  only with a `git worktree`-based staging copy rather than a stash.
 
 ### Future products (each its own plan; none started)
 

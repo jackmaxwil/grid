@@ -222,8 +222,9 @@ byte-identical to what `scripts/gen-wire.py` writes from the contract.
 they are on `PATH` and announced when they are not; none of them is a
 dependency, and none of them absent makes the gate red.
 
-`just hooks` points git at `.githooks/`: `just precommit` (the build-free
-subset) on commit, the whole gate on push. Nothing installs them for you.
+`just hooks` points git at `.githooks/`: the subject rule on the message being
+written, `just precommit` (the build-free subset) on commit, the whole gate on
+push. Nothing installs them for you.
 
 Deeper rungs, by the claim they evidence: `just miri` (C1), `just verify`
 (kani, C3), `just soak` (C11), `just fuzz <target>`. `just har` runs the

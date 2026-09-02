@@ -186,7 +186,8 @@ not add the test.
   type from `feat|fix|docs|test|perf|refactor|chore|build|ci|revert`, the
   sentence imperative, lowercase, no terminal period, at most 72 characters
   after the colon and 100 for the whole line. A PR title is judged by the same
-  rule, by the same script, in CI.
+  rule, by the same script, in CI, and the `commit-msg` hook judges the subject
+  as you write it rather than one commit later.
 - Deviations from a settled decision are recorded, not silently taken: the
   claim row, the plan, or `docs/TOOLING.md`, in the same change as the code.
   A plan that landed differently than written says so at the end of it.
