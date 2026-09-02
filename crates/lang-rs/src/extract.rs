@@ -9,7 +9,7 @@ use quote::ToTokens;
 use syn::spanned::Spanned;
 use syn::{ImplItem, Item, Stmt, TraitItem};
 
-use crate::{canon, sig};
+use crate::{canon, sig, types};
 
 /// Extract every definition in a Rust source file, outermost first, each
 /// nested definition following its parent.
@@ -64,7 +64,7 @@ fn scoped(cfg: &[String], attrs: &[syn::Attribute]) -> Vec<String> {
     out
 }
 
-fn join(prefix: &str, name: &str) -> String {
+pub(crate) fn join(prefix: &str, name: &str) -> String {
     if prefix.is_empty() {
         name.to_owned()
     } else {
@@ -90,6 +90,8 @@ struct Facts<'a> {
     complexity: u16,
     /// Every predicate conditioning this definition, outermost first.
     cfg: Vec<String>,
+    /// The callee facts of a function, for the method-call rule.
+    method: Option<grid_datum::MethodFacts>,
 }
 
 fn push<T: ToTokens + Spanned>(node: &T, facts: Facts, source: &str, out: &mut Vec<Definition>) {
@@ -105,6 +107,7 @@ fn push<T: ToTokens + Spanned>(node: &T, facts: Facts, source: &str, out: &mut V
         shape: Datum::of_canonical_bytes(&canon::canonical_bytes(&facts.shaped)),
         complexity: facts.complexity,
         cfg: grid_datum::cfg_join(&facts.cfg),
+        method: facts.method,
     });
 }
 
@@ -155,6 +158,16 @@ fn complexity_of(block: &syn::Block) -> u16 {
     cx.0
 }
 
+/// A free function as a callee: no receiver, and its written return for a
+/// local bound by `f(..)`.
+fn free_fn_facts(sig: &syn::Signature) -> grid_datum::MethodFacts {
+    grid_datum::MethodFacts {
+        recv: None,
+        plain_impl: true,
+        ret: types::ret_of(sig, None, &types::generic_names(&sig.generics)),
+    }
+}
+
 fn walk(items: &[Item], source: &str, prefix: &str, cfg: &[String], out: &mut Vec<Definition>) {
     for item in items {
         match item {
@@ -172,6 +185,7 @@ fn walk(items: &[Item], source: &str, prefix: &str, cfg: &[String], out: &mut Ve
                         interface: sig::of_fn(&f.vis, &f.sig),
                         complexity: complexity_of(&f.block),
                         cfg: cfg.clone(),
+                        method: Some(free_fn_facts(&f.sig)),
                     },
                     source,
                     out,
@@ -190,6 +204,7 @@ fn walk(items: &[Item], source: &str, prefix: &str, cfg: &[String], out: &mut Ve
                         interface: sig::of_type(s, sig::keep_struct),
                         complexity: 1,
                         cfg: scoped(cfg, &s.attrs),
+                        method: None,
                     },
                     source,
                     out,
@@ -207,6 +222,7 @@ fn walk(items: &[Item], source: &str, prefix: &str, cfg: &[String], out: &mut Ve
                         interface: sig::of_type(e, sig::keep_enum),
                         complexity: 1,
                         cfg: scoped(cfg, &e.attrs),
+                        method: None,
                     },
                     source,
                     out,
@@ -224,6 +240,7 @@ fn walk(items: &[Item], source: &str, prefix: &str, cfg: &[String], out: &mut Ve
                         interface: sig::of_type(u, sig::keep_union),
                         complexity: 1,
                         cfg: scoped(cfg, &u.attrs),
+                        method: None,
                     },
                     source,
                     out,
@@ -271,6 +288,7 @@ fn walk_trait(
             interface: sig::of_trait(t),
             complexity: 1,
             cfg: cfg.clone(),
+            method: None,
         },
         source,
         out,
@@ -293,6 +311,9 @@ fn walk_trait(
                 interface: sig::of_fn(&syn::Visibility::Inherited, &m.sig),
                 complexity: complexity_of(block),
                 cfg: cfg.clone(),
+                // A trait's default body is not an inherent method: no
+                // receiver rule reaches it by the type's name.
+                method: None,
             },
             source,
             out,
@@ -318,12 +339,26 @@ fn walk_impl(
     };
     let receiver = join(prefix, &receiver);
     let cfg = scoped(cfg, &i.attrs);
+    let impl_generics = types::generic_names(&i.generics);
+    let self_ty = types::type_ref(&i.self_ty, None, &impl_generics);
+    let plain_impl = types::plain_impl(i);
     for ii in &i.items {
         let ImplItem::Fn(m) = ii else { continue };
         let mc = format!("{receiver}.{}", m.sig.ident);
         let mut shaped = m.clone();
         shaped.sig.ident = anon();
         let cfg = scoped(&cfg, &m.attrs);
+        // Only an inherent method is reachable by the type's name; a trait
+        // impl's methods are candidates the rule refuses, never targets.
+        let method = i.trait_.is_none().then(|| {
+            let mut generics = impl_generics.clone();
+            generics.extend(types::generic_names(&m.sig.generics));
+            grid_datum::MethodFacts {
+                recv: types::receiver_form(&m.sig),
+                plain_impl,
+                ret: types::ret_of(&m.sig, self_ty.as_ref(), &generics),
+            }
+        });
         push(
             m,
             Facts {
@@ -333,6 +368,7 @@ fn walk_impl(
                 interface: sig::of_fn(&m.vis, &m.sig),
                 complexity: complexity_of(&m.block),
                 cfg: cfg.clone(),
+                method,
             },
             source,
             out,

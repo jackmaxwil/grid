@@ -16,10 +16,15 @@
 //! they are filled in below, because a call hiding under one of them is a real
 //! edge and silently dropping it is the failure mode this crate exists to
 //! avoid.
+use std::collections::HashMap;
+
 use rustpython_parser::ast::{self, Visitor};
 use rustpython_parser::Parse;
 
-use grid_datum::{FileRefs, Import, ParseError, RefKind, Reference};
+use grid_datum::{
+    FileRefs, Import, ParseError, Receiver, ReceiverForm, ReceiverOrigin, RefKind, Reference,
+    TypeRef,
+};
 
 /// Extract the imports and references of a Python source file.
 ///
@@ -47,7 +52,25 @@ struct Scan {
     /// Whether the innermost enclosing definition is a method — that is,
     /// whether `self` means anything here.
     in_class: Vec<bool>,
+    /// The enclosing function's parameters annotated with a name or a
+    /// dotted name, innermost function last: the one receiver type Python
+    /// syntax states. A string annotation, a subscript (`list[Foo]`) or an
+    /// unannotated parameter binds nothing here.
+    params: Vec<HashMap<String, Vec<String>>>,
     out: FileRefs,
+}
+
+/// The annotated parameters of one function, by name.
+fn annotated_params(args: &ast::Arguments) -> HashMap<String, Vec<String>> {
+    args.posonlyargs
+        .iter()
+        .chain(&args.args)
+        .chain(&args.kwonlyargs)
+        .filter_map(|a| {
+            let ann = a.def.annotation.as_deref()?;
+            Some((a.def.arg.to_string(), dotted(ann)?))
+        })
+        .collect()
 }
 
 impl Scan {
@@ -72,6 +95,37 @@ impl Scan {
             from: self.scope.clone(),
             kind,
             path,
+            receiver: None,
+        });
+    }
+
+    /// `x.m(...)` where `x` is a parameter of the enclosing function
+    /// annotated with a name: the annotation is the receiver hint. Python's
+    /// binding rules do not fix the call from it — a subclass may override
+    /// — so the resolver grades it modeled at best.
+    fn method_call(&mut self, path: Vec<String>) {
+        let receiver = match path.as_slice() {
+            [x, _] => self
+                .params
+                .last()
+                .and_then(|p| p.get(x))
+                .map(|ty| Receiver {
+                    ty: TypeRef {
+                        path: ty.clone(),
+                        args: false,
+                        form: ReceiverForm::Value,
+                        inner: None,
+                    },
+                    origin: ReceiverOrigin::Param,
+                    field: None,
+                }),
+            _ => None,
+        };
+        self.out.refs.push(Reference {
+            from: self.scope.clone(),
+            kind: RefKind::MethodCall,
+            path,
+            receiver,
         });
     }
 
@@ -104,6 +158,7 @@ impl Scan {
                     from: owner.clone(),
                     kind: RefKind::Decorator,
                     path,
+                    receiver: None,
                 });
             }
             self.visit_expr(target);
@@ -135,24 +190,30 @@ impl Scan {
 impl Visitor for Scan {
     fn visit_stmt_function_def(&mut self, node: ast::StmtFunctionDef) {
         self.decorators(node.name.as_str(), node.decorator_list);
+        let params = annotated_params(&node.args);
         // Defaults and annotations evaluate in the *enclosing* scope, so they
         // are walked before the scope changes.
         self.visit_arguments(*node.args);
+        self.params.push(params);
         self.nested(node.name.as_str(), false, |s| {
             for stmt in node.body {
                 s.visit_stmt(stmt);
             }
         });
+        self.params.pop();
     }
 
     fn visit_stmt_async_function_def(&mut self, node: ast::StmtAsyncFunctionDef) {
         self.decorators(node.name.as_str(), node.decorator_list);
+        let params = annotated_params(&node.args);
         self.visit_arguments(*node.args);
+        self.params.push(params);
         self.nested(node.name.as_str(), false, |s| {
             for stmt in node.body {
                 s.visit_stmt(stmt);
             }
         });
+        self.params.pop();
     }
 
     fn visit_stmt_class_def(&mut self, node: ast::StmtClassDef) {
@@ -308,7 +369,7 @@ impl Visitor for Scan {
                 // cannot tell them apart, so it records the shape and lets
                 // the resolver's own rules decide — a declined one is then
                 // counted as a method call rather than as an unknown name.
-                _ if path.len() > 1 => self.push(RefKind::MethodCall, path),
+                _ if path.len() > 1 => self.method_call(path),
                 _ => self.push(RefKind::Call, path),
             }
         }

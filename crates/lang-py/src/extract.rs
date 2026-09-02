@@ -71,6 +71,7 @@ fn walk(body: &[Stmt], source: &str, prefix: &str, out: &mut Vec<Definition>) {
             shape: hash_of(&shaped),
             complexity: complexity_of(stmt),
             cfg: String::new(),
+            method: None,
         });
         walk(inner, source, &callsign, out);
     }
