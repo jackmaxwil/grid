@@ -896,10 +896,15 @@ pub struct Suspects {
 #[serde(deny_unknown_fields)]
 pub struct SuspectsRankedItem {
     pub datum: Datum,
-    pub score: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
     pub via: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hops: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callsign: Option<Callsign>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materialization: Option<DefRefMaterialization>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1057,6 +1062,8 @@ pub enum TestSelectionWhy {
     Aground,
     #[serde(rename = "not_recorded")]
     NotRecorded,
+    #[serde(rename = "unwatched")]
+    Unwatched,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

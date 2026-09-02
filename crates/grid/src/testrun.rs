@@ -577,7 +577,7 @@ mod tests {
                     "step {step}: {test} was skipped, and its recorded verdict differs from a full run"
                 );
             }
-            if step > 0 {
+            if (1..5).contains(&step) {
                 assert!(
                     ran.len() < TESTS.len(),
                     "step {step}: selection ran everything ({ran:?}), so the differential proved nothing"
@@ -586,17 +586,21 @@ mod tests {
         }
         assert!(skipped_total > 0, "the sequence skipped something");
         // Step 4 (b fixed) reaches test_b and test_c through the call and
-        // leaves test_a replayed; step 5 (untested d) runs nothing.
+        // leaves test_a replayed. Step 5 moves `d`, which no trace has ever
+        // listed: nobody watched who reaches it, so nothing may replay across
+        // it and every test runs — the cost of the unwatched rule, paid
+        // exactly when a definition no test has been seen to execute moves.
         assert_eq!(fake.ran[4], [TESTS[1], TESTS[2]]);
-        assert!(
-            fake.ran.get(5).is_none_or(Vec::is_empty),
-            "{:?}",
-            fake.ran.get(5)
-        );
+        assert_eq!(fake.ran[5], TESTS, "an unwatched change runs everything");
     }
 
     /// Conservatism: a changed definition no test reaches is `uncovered`,
-    /// reported as a `warn`, and the exit code does not move for it.
+    /// reported as a `warn`, and the exit code does not move for it — but it
+    /// licenses no replay either. No retained trace lists `d`, so no trace's
+    /// silence about `d` is evidence, and every test runs (`unwatched`).
+    /// The reproduction that found this: a body broken behind a method call
+    /// the chart had declined, its test's trace misfiled, `grid test` replaying
+    /// a stale pass and printing `0 failed` beside `warn … uncovered`.
     #[test]
     fn an_uncovered_definition_warns_without_moving_the_exit() {
         let dir = repo(&owned(&python(1, 2, 9, [1, 2, 3])));
@@ -626,9 +630,25 @@ mod tests {
             .filter_map(|d| d.callsign.as_ref().map(|c| c.0.clone()))
             .collect();
         assert_eq!(uncovered, ["pkg.core.d"]);
-        assert!(plan.selected.is_empty(), "{:?}", plan.selected);
+        assert!(
+            plan.replayed.is_empty(),
+            "no trace covers `d`, so nothing replays across it: {:?}",
+            plan.replayed
+        );
+        assert!(
+            plan.selected
+                .iter()
+                .all(|s| s.why == grid_wire::TestSelectionWhy::Unwatched),
+            "{:?}",
+            plan.selected
+        );
         let code = run(dir.path(), &mut fake, true);
         assert_eq!(code, 0, "uncovered is heuristic: it never moves the exit");
+        assert_eq!(
+            fake.ran.last().map(Vec::as_slice),
+            Some(&TESTS.map(str::to_owned)[..]),
+            "every test ran rather than replaying a verdict nobody watched"
+        );
         let out = crate::porcelain::test_run(&super::finish(dir.path(), &plan, "env", &[], &[]));
         assert!(
             out.contains("warn    pkg.core.d  uncovered\n"),

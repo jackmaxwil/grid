@@ -14,7 +14,7 @@
   },
   "x-porcelain": {
     "doc": "packages/grid/docs/PORCELAIN.md",
-    "version": "2.22.0",
+    "version": "2.24.0",
     "description": "Normative grammar for human-facing stdout records. --json emits wire results verbatim; the porcelain version is reported by grid.version."
   },
   "methods": [
@@ -27,7 +27,7 @@
         {
           "name": "current versions",
           "params": [],
-          "result": { "name": "version", "value": { "wire": "1.1.0", "engine": "grid 0.1.0", "porcelain": "2.22.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
+          "result": { "name": "version", "value": { "wire": "1.1.0", "engine": "grid 0.1.0", "porcelain": "2.24.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
         }
       ],
       "result": {
@@ -695,18 +695,19 @@
           "lang": { "$ref": "#/components/schemas/Lang" },
           "signature": { "type": "string", "description": "One-line declaration as surveyed, e.g. 'def validate(self, tags: list[Tag]) -> Receipt'. Lets grid.scope return signatures without bodies." },
           "cfg": { "type": "string", "description": "The conjunction of every #[cfg(...)] predicate conditioning the definition — on the item, on each enclosing module, and on the cargo target directory — as written minus whitespace, all(...)-joined when nested; a cfg_attr(...) is recorded whole. Empty when nothing conditions it. Absent when the snapshot predates segment epoch 4 or the frontend has no such notion (Python)." },
-          "materialization": {
-            "type": "object",
-            "required": ["file", "line"],
-            "properties": {
-              "file": { "type": "string" },
-              "line": { "type": "integer", "minimum": 1 }
-            },
-            "additionalProperties": false,
-            "description": "Advisory only: where the definition currently happens to live. Files are projections; never store this as an address."
-          }
+          "materialization": { "$ref": "#/components/schemas/DefRefMaterialization" }
         },
         "additionalProperties": false
+      },
+      "DefRefMaterialization": {
+        "type": "object",
+        "required": ["file", "line"],
+        "properties": {
+          "file": { "type": "string" },
+          "line": { "type": "integer", "minimum": 1 }
+        },
+        "additionalProperties": false,
+        "description": "Advisory only: where the definition currently happens to live. Files are projections; never store this as an address."
       },
       "Relation": {
         "type": "string",
@@ -1404,12 +1405,14 @@
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["datum", "score", "via"],
+              "required": ["datum", "via"],
               "properties": {
                 "datum": { "$ref": "#/components/schemas/Datum" },
-                "score": { "type": "number", "minimum": 0, "maximum": 1 },
+                "score": { "type": "number", "minimum": 0, "maximum": 1, "description": "The Ochiai score, present only under Ochiai scoring. Absent in closure mode, where the ranking is the hop distance and the porcelain prints the word `closure` in its place — a number here would be read as confidence, and none was computed." },
                 "via": { "type": "string", "description": "Why this ranked: the intersection that implicated it." },
-                "hops": { "type": "integer", "minimum": 0, "description": "Hop distance from the test to this definition in the closure walked at head. Present only in closure mode (closure_since), where the ranking IS the hop distance and score is its monotone rendering, 1/(1+hops); absent under Ochiai scoring, which ranks by spectra rather than by distance." }
+                "hops": { "type": "integer", "minimum": 0, "description": "Hop distance from the test to this definition in the closure walked at head. Present only in closure mode (closure_since), where the ranking IS the hop distance; absent under Ochiai scoring, which ranks by spectra rather than by distance." },
+                "callsign": { "$ref": "#/components/schemas/Callsign", "description": "The name the chart asked about gives the datum, so the row can be handed to grid.resolve or grid.explain as printed. Absent when that chart no longer holds the datum." },
+                "materialization": { "$ref": "#/components/schemas/DefRefMaterialization" }
               },
               "additionalProperties": false
             }
@@ -1560,7 +1563,7 @@
         "properties": {
           "test": { "$ref": "#/components/schemas/TestId" },
           "datum": { "$ref": "#/components/schemas/Datum", "description": "The test's definition at head. Absent when the test is unresolved." },
-          "why": { "type": "string", "enum": ["reached", "no_trace", "unresolved", "aground", "not_recorded"], "description": "reached: the inbound walk from the changed set reached the test's definition (or the test itself changed). no_trace: no retained trace still describes code base holds, so the static closure alone may not excuse a skip. unresolved: the chart cannot name the test, so nothing can be said about it. aground: the walk ran out of fuel, so every test is selected. not_recorded: unreached and traced, but no verdict for this closure in this environment is on record to replay." },
+          "why": { "type": "string", "enum": ["reached", "no_trace", "unresolved", "aground", "not_recorded", "unwatched"], "description": "reached: the inbound walk from the changed set reached the test's definition (or the test itself changed). no_trace: no retained trace still describes code base holds, so the static closure alone may not excuse a skip. unresolved: the chart cannot name the test, so nothing can be said about it. aground: the walk ran out of fuel, so every test is selected. not_recorded: unreached and traced, but no verdict for this closure in this environment is on record to replay. unwatched: a definition in the changed set is covered by no retained trace at all, so nobody watched which tests reach it — a trace that does not list it is then no evidence of absence, and no test replays across it." },
           "unresolved": { "type": "string", "enum": ["ambiguous", "module_charted", "not_charted"], "description": "Why the chart cannot name the test; present only when why is unresolved. ambiguous: the name resolves to more than one definition, and two definitions are not one closure. module_charted: the module the name sits in is charted and the name itself is not — the survey saw the module and could not see this definition in it. Named for the observation, which is the same in every language; what produced it is not: on Rust a macro invocation (proptest! and its kin) defines the test and a survey charts items, never macro output; on Python a decorator or a generated attribute (parameterized.expand, globals()[name] = fn) or a definition the frontend declined. not_charted: nothing under that module is in the chart at all." }
         },
         "additionalProperties": false,

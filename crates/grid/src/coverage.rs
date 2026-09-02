@@ -92,8 +92,34 @@ struct Span {
 
 impl Mapper {
     /// The live chart's mapper, and where the mapping is happening.
-    fn open(root: &std::path::Path) -> Result<Self, chart_provider::Error> {
-        let chart = ChartDelta::open(root)?;
+    ///
+    /// `test` is refused unless it names exactly one live definition: a
+    /// trace whose caller resolves to nothing folds into no edge at all, and
+    /// retaining it printed `done 0/2` at exit 0 — a CI loop recording
+    /// nothing and reporting success. The accepted spellings are the
+    /// runner's own and the callsign, which [`crate::testplan::callsign_of`]
+    /// maps between; the refusal names them.
+    fn open(root: &std::path::Path, test: &str) -> Result<Self, String> {
+        let chart = ChartDelta::open(root).map_err(|e| e.to_string())?;
+        let hits = chart.resolve(&grid_wire::Locator::Callsign {
+            callsign: grid_wire::Callsign(test.to_owned()),
+        });
+        match hits.len() {
+            1 => {}
+            0 => {
+                return Err(format!(
+                    "`{test}` names no definition in the live snapshot — name the test as the \
+                     runner does (`<binary-id> <name>` from `cargo nextest list`, \
+                     `path/test_x.py::test_y` from pytest) or by its callsign"
+                ))
+            }
+            n => {
+                return Err(format!(
+                    "`{test}` is ambiguous: {n} definitions carry that name — name the test as \
+                     the runner does, which is unique"
+                ))
+            }
+        }
         let mut spans: BTreeMap<String, Vec<Span>> = BTreeMap::new();
         for segment in chart.head().segments() {
             for i in 0..segment.def_count() {
@@ -187,7 +213,19 @@ impl Mapper {
         }
     }
 
-    fn finish(self, trace_id: String, test: &str) -> Mapped {
+    /// The mapped trace, or the refusal: a report that reached nothing
+    /// charted is not a trace. Retained, it would say "this test reached
+    /// nothing" and license a replay on the static closure alone — the same
+    /// claim an empty report makes by a different route, refused the same way.
+    fn finish(self, trace_id: String, test: &str) -> Result<Mapped, String> {
+        if self.touched.is_empty() {
+            return Err(format!(
+                "nothing charted was reached: {} files not in the chart, {} executed lines \
+                 outside any definition — not a trace of `{test}`, because a trace that reaches \
+                 nothing would license a replay on the static closure alone",
+                self.unknown_files, self.unmapped_lines
+            ));
+        }
         let observations = self
             .touched
             .into_iter()
@@ -201,7 +239,7 @@ impl Mapper {
                 count: Some(count),
             })
             .collect();
-        Mapped {
+        Ok(Mapped {
             trace: Trace {
                 trace_id,
                 git_rev: grid_wire::GitRev(self.git_rev),
@@ -212,22 +250,26 @@ impl Mapper {
             },
             unmapped_lines: self.unmapped_lines,
             unknown_files: self.unknown_files,
-        }
+        })
     }
 }
 
-/// Map an lcov report onto the live chart as observations from `test`.
+/// Map an lcov report onto the live chart as observations from `test` —
+/// the runner's id or a callsign, either way mapped through
+/// [`crate::testplan::callsign_of`].
 ///
 /// # Errors
-/// A message when the store cannot be opened, when the text holds no `SF:`
-/// record at all, or when no `DA:` line has a count above zero — an empty,
-/// absent or all-zero report is bad input, never a trace claiming the test
-/// reached nothing (the same posture the JSON path takes). A test that ran
-/// executed at least its own body, so an all-zero report is a profile that
-/// was written somewhere else — a second `LLVM_PROFILE_FILE` in the
-/// environment — and retaining it would license a replay on the static
-/// closure alone. An lcov record grid does not read is skipped, which is the
-/// format's own rule and not a parse failure.
+/// A message when the store cannot be opened, when `test` is not exactly one
+/// live definition, when the text holds no `SF:` record at all, when no
+/// `DA:` line has a count above zero, or when no executed line landed in a
+/// charted definition — an empty, absent, all-zero or all-elsewhere report
+/// is bad input, never a trace claiming the test reached nothing (the same
+/// posture the JSON path takes). A test that ran executed at least its own
+/// body, so an all-zero report is a profile that was written somewhere else
+/// — a second `LLVM_PROFILE_FILE` in the environment — and retaining it
+/// would license a replay on the static closure alone. An lcov record grid
+/// does not read is skipped, which is the format's own rule and not a parse
+/// failure.
 pub fn trace_of_lcov(root: &std::path::Path, lcov: &str, test: &str) -> Result<Mapped, String> {
     if !lcov.lines().any(|line| line.starts_with("SF:")) {
         return Err("not an lcov report: no SF: record (an empty report is not a test that reached nothing)".to_owned());
@@ -235,7 +277,8 @@ pub fn trace_of_lcov(root: &std::path::Path, lcov: &str, test: &str) -> Result<M
     if !lcov.lines().any(|line| executed(line).is_some()) {
         return Err("every DA: count is zero: a lost profile (the test ran its own body at least), not a test that reached nothing".to_owned());
     }
-    let mut mapper = Mapper::open(root).map_err(|e| e.to_string())?;
+    let test = &crate::testplan::callsign_of(test);
+    let mut mapper = Mapper::open(root, test)?;
     let mut current: Option<usize> = None;
     for line in lcov.lines() {
         if let Some(sf) = line.strip_prefix("SF:") {
@@ -247,7 +290,40 @@ pub fn trace_of_lcov(root: &std::path::Path, lcov: &str, test: &str) -> Result<M
         };
         mapper.line(file, line_no);
     }
-    Ok(mapper.finish(format!("trace:lcov:{test}"), test))
+    mapper.finish(format!("trace:lcov:{test}"), test)
+}
+
+/// Refuse a trace naming a snapshot this store never held.
+///
+/// A trace records the snapshot its observations were mapped against, and
+/// that is what a later reader grades them under. One the store never held
+/// names a chart nobody can name back: refused, never retained as a live
+/// trace that grades nothing. A trace naming no snapshot predates the column
+/// and is taken as it is.
+///
+/// # Errors
+/// A message naming the trace and the snapshot, or the store's own when it
+/// cannot be read.
+pub fn refuse_unheld_snapshot(root: &std::path::Path, trace: &Trace) -> Result<(), String> {
+    let Some(snapshot) = &trace.snapshot else {
+        return Ok(());
+    };
+    let store =
+        grid_chart_io::Store::open(chart_provider::store_dir(root)).map_err(|e| e.to_string())?;
+    let held = store.load().snapshot_id().as_str() == snapshot.0
+        || store
+            .retained_snapshots()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .any(|id| id.as_str() == snapshot.0);
+    if held {
+        return Ok(());
+    }
+    Err(format!(
+        "trace `{}` was mapped against {}, a snapshot this store never held — survey the tree \
+         it was taken on before ingesting it",
+        trace.trace_id, snapshot.0
+    ))
 }
 
 /// The line number of a `DA:<line>,<count>` record whose count is above
@@ -266,11 +342,12 @@ fn executed(line: &str) -> Option<u32> {
 /// all 1, and an observed edge claims reach either way.
 ///
 /// # Errors
-/// A message when the store cannot be opened, when the text is not a
-/// coverage.py JSON report, or when no file has an executed line. A report
-/// grid cannot parse is bad input, and one with nothing executed is a lost
-/// context — the test ran its own body; neither is read as a test that
-/// reached nothing.
+/// A message when the store cannot be opened, when `test` is not exactly one
+/// live definition, when the text is not a coverage.py JSON report, when no
+/// file has an executed line, or when no executed line landed in a charted
+/// definition. A report grid cannot parse is bad input, and one with nothing
+/// executed is a lost context — the test ran its own body; neither is read
+/// as a test that reached nothing.
 pub fn trace_of_coverage_json(
     root: &std::path::Path,
     json: &str,
@@ -289,7 +366,8 @@ pub fn trace_of_coverage_json(
                 .to_owned(),
         );
     }
-    let mut mapper = Mapper::open(root).map_err(|e| e.to_string())?;
+    let test = &crate::testplan::callsign_of(test);
+    let mut mapper = Mapper::open(root, test)?;
     for (path, file) in &report.files {
         let Some(index) = mapper.file(path) else {
             continue;
@@ -298,7 +376,7 @@ pub fn trace_of_coverage_json(
             mapper.line(index, line_no);
         }
     }
-    Ok(mapper.finish(format!("trace:cov:{test}"), test))
+    mapper.finish(format!("trace:cov:{test}"), test)
 }
 
 #[cfg(test)]
@@ -348,6 +426,184 @@ mod tests {
         );
         // And one executed line is still a report.
         let lcov = format!("SF:{core}\nDA:1,0\nDA:2,1\nend_of_record\n");
-        assert!(trace_of_lcov(dir.path(), &lcov, "t").is_ok());
+        assert!(trace_of_lcov(dir.path(), &lcov, "tests.test_core.test_a").is_ok());
+    }
+
+    /// Conservatism: a report every file of which is outside the chart, or
+    /// every executed line of which sits in no definition, reached nothing
+    /// charted — and that is not a trace. Retained with zero observations it
+    /// would license a replay on the static closure alone, the same claim an
+    /// empty report makes by another route; both are refused, with the counts.
+    #[test]
+    fn a_report_that_reaches_nothing_charted_is_refused_not_retained_empty() {
+        use crate::testplan::fixtures::{owned, python, repo};
+        let dir = repo(&owned(&python(1, 2, 9, [1, 2, 3])));
+        let out = trace_of_lcov(
+            dir.path(),
+            "SF:/nowhere/ghost.py\nDA:1,1\nend_of_record\n",
+            "tests.test_core.test_a",
+        );
+        let err = out
+            .map(|m| m.trace.observations.len())
+            .expect_err("a report whose every file is outside the chart is not a trace");
+        assert!(
+            err.contains("1 files not in the chart"),
+            "the refusal carries the count: {err}"
+        );
+        // A line inside a charted file but outside every definition: the same.
+        let core = dir.path().join("pkg/core.py").display().to_string();
+        let out = trace_of_lcov(
+            dir.path(),
+            &format!("SF:{core}\nDA:4,1\nend_of_record\n"),
+            "tests.test_core.test_a",
+        );
+        let err = out
+            .map(|m| m.trace.observations.len())
+            .expect_err("a report whose every line is outside every definition is not a trace");
+        assert!(
+            err.contains("1 executed lines outside any definition"),
+            "{err}"
+        );
+    }
+
+    /// Conservatism: a trace naming a snapshot this store never held is
+    /// refused at ingest. It records the chart its observations were mapped
+    /// against, and a chart nobody can name back grades nothing — retaining
+    /// it at exit 0 with no observations is the empty-report claim again.
+    #[test]
+    fn a_trace_naming_a_snapshot_never_held_is_refused_at_ingest() {
+        use crate::testplan::fixtures::{owned, python, repo};
+        let dir = repo(&owned(&python(1, 2, 9, [1, 2, 3])));
+        let phantom = "snap:b3:0000000000000000000000000000000000000000000000000000000000000000";
+        let trace = grid_wire::Trace {
+            trace_id: "trace:phantom".into(),
+            git_rev: grid_wire::GitRev("HEAD".into()),
+            command: Some("tests.test_core.test_a".into()),
+            started_at: None,
+            snapshot: Some(grid_wire::SnapshotId(phantom.into())),
+            observations: Vec::new(),
+        };
+        let out =
+            crate::rpc::trace_ingest(&grid_wire::methods::TraceIngestParams { trace }, dir.path());
+        let err = out
+            .map(|r| r.resolved)
+            .expect_err("a snapshot the store never held is a refusal, not a retained trace");
+        assert!(
+            err.contains(phantom),
+            "the refusal names the snapshot: {err}"
+        );
+        assert!(
+            crate::rpc::trace_dir(dir.path())
+                .and_then(grid_trace::Store::open)
+                .and_then(|s| s.get("trace:phantom"))
+                .expect("store")
+                .is_none(),
+            "nothing was retained"
+        );
+    }
+
+    /// The test is named as the runner names it or by callsign, and either
+    /// way it is one live definition: the nextest id, the `cargo test` path
+    /// and the pytest node id all map through [`crate::testplan::callsign_of`]
+    /// to the same trace, and a name that resolves to nothing is refused with
+    /// the accepted forms — not retained as `done 0/2` at exit 0.
+    #[test]
+    fn a_runner_spelled_test_maps_to_its_callsign_and_an_unknown_name_is_refused() {
+        use crate::testplan::fixtures::{owned, python, repo};
+        let dir = repo(&owned(&python(1, 2, 9, [1, 2, 3])));
+        let core = dir.path().join("pkg/core.py").display().to_string();
+        let lcov = format!("SF:{core}\nDA:1,1\nDA:2,1\nend_of_record\n");
+        for spelling in ["tests/test_core.py::test_a", "tests.test_core.test_a"] {
+            let mapped = trace_of_lcov(dir.path(), &lcov, spelling)
+                .unwrap_or_else(|e| panic!("{spelling} is an accepted spelling: {e}"));
+            assert_eq!(
+                mapped.trace.command.as_deref(),
+                Some("tests.test_core.test_a"),
+                "{spelling} maps to the callsign"
+            );
+            assert_eq!(mapped.trace.trace_id, "trace:lcov:tests.test_core.test_a");
+            assert_eq!(mapped.trace.observations.len(), 1, "{spelling}: pkg.core.a");
+        }
+        let err = trace_of_lcov(dir.path(), &lcov, "nope::test_a")
+            .map(|m| m.trace.observations.len())
+            .expect_err("a test the chart cannot name is refused, not retained as 0/N");
+        assert!(
+            err.contains("`nope.test_a` names no definition") && err.contains("nextest list"),
+            "the refusal names the accepted forms: {err}"
+        );
+    }
+
+    /// The mapping reaches every definition kind the frontends chart: a
+    /// trait impl method, an inherent method, and a Python class method map
+    /// by their own line spans exactly as a free function does. Guarded
+    /// because a sweep read a misfiled report as this mapping missing trait
+    /// impls; it did not, and this is what says so.
+    #[test]
+    fn impl_methods_and_class_methods_map_like_free_functions() {
+        use crate::testplan::fixtures::{datum_of, owned, repo};
+        let files: Vec<(&'static str, String)> = vec![
+            (
+                "Cargo.toml",
+                "[package]\nname = \"fx\"\nversion = \"0.1.0\"\nedition = \"2021\"\n".to_owned(),
+            ),
+            (
+                "src/lib.rs",
+                "pub trait Shape {\n    fn area(&self) -> f64;\n}\n\
+                 pub struct Rect {\n    pub w: f64,\n}\n\
+                 impl Rect {\n    pub fn new(w: f64) -> Self {\n        Self { w }\n    }\n}\n\
+                 impl Shape for Rect {\n    fn area(&self) -> f64 {\n        self.w * self.w\n    }\n}\n\
+                 #[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn rect() {\n        assert_eq!(Rect::new(2.0).area(), 4.0);\n    }\n}\n"
+                    .to_owned(),
+            ),
+            (
+                "pkg/__init__.py",
+                String::new(),
+            ),
+            (
+                "pkg/shapes.py",
+                "class Rect:\n    def __init__(self, w):\n        self.w = w\n\n    def area(self):\n        return self.w * self.w\n\n\ndef test_rect():\n    assert Rect(2).area() == 4\n"
+                    .to_owned(),
+            ),
+        ];
+        let dir = repo(&owned(&files));
+        let lib = dir.path().join("src/lib.rs").display().to_string();
+        // `new` is lines 8-10, `area` 13-15, the test 20-23.
+        let lcov = format!("SF:{lib}\nDA:9,1\nDA:14,1\nDA:22,1\nend_of_record\n");
+        let mapped = trace_of_lcov(dir.path(), &lcov, "fx tests::rect").expect("maps");
+        let reached: std::collections::BTreeSet<String> = mapped
+            .trace
+            .observations
+            .iter()
+            .filter_map(|o| match &o.callee {
+                grid_wire::TraceEndpoint::Datum { datum } => Some(datum.0.clone()),
+                grid_wire::TraceEndpoint::Symbol { .. } => None,
+            })
+            .collect();
+        for callsign in ["fx.Rect.new", "fx.Rect@Shape.area", "fx.tests.rect"] {
+            assert!(
+                reached.contains(&datum_of(dir.path(), callsign)),
+                "{callsign} is reached: {reached:?}"
+            );
+        }
+        assert_eq!(mapped.unmapped_lines, 0);
+        let shapes = dir.path().join("pkg/shapes.py").display().to_string();
+        let json = format!(r#"{{"files":{{"{shapes}":{{"executed_lines":[6,10]}}}}}}"#);
+        let mapped = super::trace_of_coverage_json(dir.path(), &json, "pkg/shapes.py::test_rect")
+            .expect("maps");
+        let reached: std::collections::BTreeSet<String> = mapped
+            .trace
+            .observations
+            .iter()
+            .filter_map(|o| match &o.callee {
+                grid_wire::TraceEndpoint::Datum { datum } => Some(datum.0.clone()),
+                grid_wire::TraceEndpoint::Symbol { .. } => None,
+            })
+            .collect();
+        for callsign in ["pkg.shapes.Rect.area", "pkg.shapes.test_rect"] {
+            assert!(
+                reached.contains(&datum_of(dir.path(), callsign)),
+                "{callsign} is reached: {reached:?}"
+            );
+        }
     }
 }
