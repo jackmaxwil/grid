@@ -269,6 +269,8 @@ pub struct DriftParams {
     pub plan: Option<Plan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tests: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compat: Option<bool>,
 }
 
 pub type DriftResult = DriftReport;

@@ -348,6 +348,7 @@ pub struct Invariant {
 pub enum InvariantRule {
     ForbidEdge { forbid_edge: EdgeRule },
     RequireEdge { require_edge: EdgeRule },
+    Persisted { persisted: CallsignPattern },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -906,6 +907,14 @@ pub struct DriftSuspect {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CompatFinding {
+    pub def: DefRef,
+    pub rule: String,
+    pub declared: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriftUnchecked {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unresolved_refs: Option<u64>,
@@ -920,6 +929,8 @@ pub struct DriftUnchecked {
     pub unattributed_entries: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weak_skipped: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compat_unchecked: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -935,6 +946,8 @@ pub struct DriftReport {
     pub stale_tests: Option<Vec<StaleTest>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weak: Option<Vec<WeakTest>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compat: Option<Vec<CompatFinding>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

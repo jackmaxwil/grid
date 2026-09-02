@@ -231,6 +231,11 @@ pub struct Query<'a> {
     /// constant, because the honest thing to do when it runs out is only
     /// testable if a test can make it run out.
     pub fuel: u32,
+    /// The repo's standing invariants when the caller asked for the
+    /// Deserialize compatibility pass, `None` when it did not. `Some(&[])` is
+    /// a repo that declared nothing persisted, which still checks — the
+    /// findings are just heuristic.
+    pub compat: Option<&'a [grid_wire::Invariant]>,
 }
 
 /// What a survey declined to bind, split by why it declined.
@@ -274,6 +279,7 @@ impl<'a> Query<'a> {
             covenants: &[],
             declined: None,
             fuel: FUEL,
+            compat: None,
         }
     }
 }
@@ -292,6 +298,7 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
         covenants,
         declined,
         fuel: budget,
+        compat,
     } = *query;
     let chart = ChartDelta::open(root)?;
     let (base_epoch, head_epoch) = (chart.epoch_of(base)?, chart.epoch_of(head)?);
@@ -344,6 +351,27 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
         &mut suspects,
     );
 
+    // Deserialize compatibility over the same changed set. Last, because it
+    // reads source rather than the chart and must not be able to cost the
+    // suspect walk anything.
+    let compat = compat.map(|invariants| {
+        crate::compat::check(
+            root,
+            &changed,
+            base_epoch.segments(),
+            head_epoch.segments(),
+            &base_epoch.manifest().git_rev,
+            // A literal `HEAD` is drift's word for the working tree, which is
+            // where the head survey read its bytes; anything else is a rev the
+            // object store can serve.
+            match head {
+                SnapshotOrRev::GitRev { git_rev } if git_rev.0 == "HEAD" => None,
+                _ => Some(head_epoch.manifest().git_rev.as_str()),
+            },
+            invariants,
+        )
+    });
+
     Ok(DriftReport {
         base: SnapshotId(base_epoch.snapshot_id().as_str().to_owned()),
         head: SnapshotId(head_epoch.snapshot_id().as_str().to_owned()),
@@ -356,12 +384,14 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
             budget_rejected: u64::from(budget_rejected),
             unattributed_entries: None,
             weak_skipped: None,
+            compat_unchecked: compat.as_ref().map(|found| found.unchecked),
         },
         warnings: (!warnings.is_empty()).then_some(warnings),
         // Filled in by the caller when the report was asked for tests: both
         // are different questions over different stores.
         stale_tests: None,
         weak: None,
+        compat: compat.map(|found| found.findings),
     })
 }
 

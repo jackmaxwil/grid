@@ -278,6 +278,13 @@ pub fn drift(
     // never an absence of declarations: a covenant nobody can read is not a
     // covenant nobody made.
     let covenants = crate::covenant::load(root).map_err(crate::drift::Error::Covenants)?;
+    // Same posture for the invariant file: a rule nobody can read is not an
+    // absence of rules, so a broken file is an error rather than an empty set.
+    let invariants = if params.compat == Some(true) {
+        Some(crate::standing::load(root).map_err(crate::drift::Error::Covenants)?)
+    } else {
+        None
+    };
     let mut report = crate::drift::compute(
         root,
         &crate::drift::Query {
@@ -287,6 +294,7 @@ pub fn drift(
             plan: params.plan.as_ref(),
             covenants: &covenants,
             declined,
+            compat: invariants.as_deref(),
             ..crate::drift::Query::new(&params.base, &params.head)
         },
     )?;
@@ -1278,11 +1286,17 @@ pub fn scope(
         .map_err(chart_provider::Error::Config)?
         .into_iter()
         .filter(|inv| {
-            let rule = match &inv.rule {
-                grid_wire::InvariantRule::ForbidEdge { forbid_edge } => forbid_edge,
-                grid_wire::InvariantRule::RequireEdge { require_edge } => require_edge,
+            let patterns = match &inv.rule {
+                grid_wire::InvariantRule::ForbidEdge { forbid_edge } => {
+                    vec![&forbid_edge.src, &forbid_edge.dst]
+                }
+                grid_wire::InvariantRule::RequireEdge { require_edge } => {
+                    vec![&require_edge.src, &require_edge.dst]
+                }
+                // One pattern, over the type itself rather than over an edge.
+                grid_wire::InvariantRule::Persisted { persisted } => vec![persisted],
             };
-            [&rule.src, &rule.dst].into_iter().any(|pattern| {
+            patterns.into_iter().any(|pattern| {
                 callsigns
                     .iter()
                     .any(|c| grid_gate::pattern::matches(&pattern.0, c))

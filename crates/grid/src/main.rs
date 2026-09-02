@@ -25,6 +25,7 @@
 mod bisect;
 mod chart_provider;
 mod check;
+mod compat;
 mod compile;
 mod covenant;
 mod coverage;
@@ -86,6 +87,7 @@ fn help() {
          diff [base] [head]           what changed, in defs and edges\n  \
          drift [base] [head]          dependents of changed interfaces; exit 3 on suspects\n  \
          drift --tests                known tests whose recorded verdict no longer applies\n  \
+         drift --compat               changed Deserialize types old bytes cannot read\n  \
          covenant <A> <B> --via <w>   declare a coupling no language establishes\n  \
          watch [base]                 signed drift deltas, one file event per stdin line\n  \
          resolve <name|file|f:line>   where it is; a bare file lists its defs\n  \
@@ -525,6 +527,7 @@ fn drift_verb(args: &[&str], json: bool) -> u8 {
     let mut floor = None;
     let mut plan = None;
     let mut tests = false;
+    let mut compat = false;
     let mut positional = Vec::new();
     let mut rest = args;
     while let Some((arg, tail)) = rest.split_first() {
@@ -557,6 +560,7 @@ fn drift_verb(args: &[&str], json: bool) -> u8 {
                 rest = tail;
             }
             "--tests" => tests = true,
+            "--compat" => compat = true,
             other if other.starts_with("--") => {
                 hint(&format!("grid: unknown flag `{other}`\n{DRIFT_USAGE}"));
                 return exit::BAD_INPUT;
@@ -574,6 +578,7 @@ fn drift_verb(args: &[&str], json: bool) -> u8 {
         floor,
         plan,
         tests: tests.then_some(true),
+        compat: compat.then_some(true),
     };
     match rpc::drift(&params, root()) {
         Err(
@@ -589,8 +594,13 @@ fn drift_verb(args: &[&str], json: bool) -> u8 {
         Ok(report) => {
             // A stale verdict is proven-grade staleness — the closure key is
             // identity math — so it diverges exactly as a suspect does.
+            // A compat finding gates only where a `persisted` invariant
+            // declared that old bytes exist: that declaration is the human
+            // fact, and without it the finding is heuristic and ranks.
+            let declared_compat = report.compat.iter().flatten().any(|f| f.declared);
             let code = if report.suspects.is_empty()
                 && report.stale_tests.iter().flatten().next().is_none()
+                && !declared_compat
             {
                 exit::OK
             } else {
@@ -617,7 +627,7 @@ fn drift_verb(args: &[&str], json: bool) -> u8 {
 }
 
 const DRIFT_USAGE: &str = "usage: grid drift [<base>] [<head>] \
-     [--floor <proven|observed|modeled|heuristic>] [--plan <file>] [--tests]";
+     [--floor <proven|observed|modeled|heuristic>] [--plan <file>] [--tests] [--compat]";
 
 /// The wire spelling of an evidence grade, for `--floor` arguments. The serde
 /// names are the vocabulary, so the flag cannot drift from the contract.

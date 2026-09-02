@@ -15,7 +15,7 @@ use grid_wire::{
 };
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "2.6.0";
+pub const VERSION: &str = "2.7.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -393,7 +393,39 @@ pub fn drift(report: &grid_wire::DriftReport) -> String {
     for warning in report.warnings.iter().flatten() {
         record(&mut out, "warn", &[&warning.subject, &warning.message]);
     }
+    out.push_str(&compat(report.compat.as_deref().unwrap_or_default()));
     out.push_str(&drift_unchecked(&report.unchecked));
+    out
+}
+
+/// Deserialize compatibility findings.
+///
+/// A declared one is an `inv violated` record, because a `persisted`
+/// invariant is what turns "this shape moved" into "bytes on disk cannot be
+/// read": modeled evidence, and a gate. An undeclared one is a `warn` —
+/// heuristic, ranked, and it never moves the exit code.
+#[must_use]
+pub fn compat(findings: &[grid_wire::CompatFinding]) -> String {
+    let mut out = String::new();
+    for finding in findings {
+        let named = finding.def.callsign.as_ref().map_or_else(
+            || format!("@{}", short(&finding.def.datum)),
+            |c| c.0.clone(),
+        );
+        if finding.declared {
+            record(
+                &mut out,
+                "inv",
+                &["violated", &format!("persisted:{named}"), &finding.rule],
+            );
+        } else {
+            record(
+                &mut out,
+                "warn",
+                &[&named, &format!("compat: {}", finding.rule)],
+            );
+        }
+    }
     out
 }
 
@@ -543,6 +575,14 @@ fn drift_unchecked(unchecked: &grid_wire::DriftUnchecked) -> String {
             &mut out,
             "miss",
             &[&count, "weak-checks skipped (stale coverage)"],
+        );
+    }
+    if unchecked.compat_unchecked.is_some_and(|n| n > 0) {
+        let count = unchecked.compat_unchecked.unwrap_or_default().to_string();
+        record(
+            &mut out,
+            "miss",
+            &[&count, "compat unchecked (derive not visible)"],
         );
     }
     if unchecked.budget_rejected > 0 {

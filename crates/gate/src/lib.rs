@@ -333,6 +333,11 @@ fn violations(invariants: &[Invariant], named: &[Named<'_>]) -> Vec<InvariantVio
                     });
                 }
             }
+            // A `persisted` invariant is a claim about bytes on disk, not
+            // about edges. Nothing in a structural delta can witness it; the
+            // Deserialize compatibility pass is what checks it, and it says
+            // so where it runs rather than passing silently here.
+            InvariantRule::Persisted { .. } => {}
         }
     }
     out

@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.6.0
+version: 2.7.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -111,6 +111,23 @@ decayed trace produces no such record at all and is counted as
 `miss <n>  weak-checks skipped (stale coverage)`, because a heuristic built
 on a demoted heuristic is noise.
 
+`grid drift --compat` adds the Deserialize compatibility check over the same
+changed set: for every `struct` or `enum` deriving `Deserialize` whose
+interface moved, the two field lists are reconstructed from source at both
+snapshots and compared under the six rules old bytes care about — `required
+field added`, `field renamed without alias`, `type changed`, `variant
+removed`, `field removed under deny_unknown_fields`, `representation
+changed`. A finding is `warn <type>  compat: <rule>` and heuristic: old bytes
+are not *known* to exist, so it ranks and never moves the exit code. A type
+matching a standing `persisted` invariant is `inv violated persisted:<type>
+<rule>` instead, at `modeled`, exit `3` — the declaration is the human fact
+that old bytes exist, and it is what a static check cannot supply. A changed
+type whose derive the source does not spell out — behind a `cfg_attr`,
+produced by a macro, or carrying a serde attribute grid cannot parse — is
+skipped and closed over as `miss <n>  compat unchecked (derive not visible)`,
+never as a clean bill of health. Without `--compat` nothing of this is
+emitted and the report carries no `compat` field at all.
+
 `grid test` uses existing tags only. `hit <test>  <pass|fail>  <recorded>`
 per replayed verdict; `miss <test>  <reason>` per selected test, the reason
 one of `closure-changed` (the walk from the changed set reached it, or the
@@ -215,7 +232,8 @@ text-mode output is minor too, which carried 2.4.0 to 2.5.0 (`grid scope
 --bodies`'s document and its `# horizon:` line), and one more evidence mode
 inside an existing verb carried 2.5.0 to 2.6.0 (`grid suspects --closure`'s
 `hit` records with `closure` in the score column, its `fork`, and its closing
-`miss`)
+`miss`) and 2.6.0 to 2.7.0 (`grid drift --compat`'s `warn <type>  compat:
+<rule>`, its `inv violated persisted:<type>`, and its closing `miss`)
 — changing column
 order or meaning is major — and so is renaming a tag, which is what carried
 1.6.0 to 2.0.0 (`docs/plans/2026-09-01-naming.md`). The daemon reports this

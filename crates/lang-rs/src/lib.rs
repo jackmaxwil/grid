@@ -10,11 +10,15 @@ mod canon;
 mod cfg;
 mod extract;
 mod refs;
+mod serde_shape;
 mod sig;
 
 pub use cfg::{eval_cfg, CfgEnv};
 pub use extract::definitions;
 pub use refs::references;
+pub use serde_shape::{
+    deserialize_shape, Field as SerdeField, SerdeShape, Shape as SerdeTypeShape,
+};
 pub use sig::sig_text;
 
 use grid_datum::{Definition, FileRefs, ParseError};

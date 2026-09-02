@@ -495,6 +495,7 @@ mod tests {
                 floor: Some(Grade::Observed),
                 plan: None,
                 tests: None,
+                compat: None,
             },
             dir,
         )

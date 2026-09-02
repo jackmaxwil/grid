@@ -403,6 +403,7 @@ pub fn compute<B: AsRef<[u8]>>(inputs: &Inputs<'_, B>) -> TestPlan {
             budget_rejected,
             unattributed_entries: None,
             weak_skipped: None,
+            compat_unchecked: None,
         },
     }
 }

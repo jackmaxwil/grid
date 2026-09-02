@@ -14,7 +14,7 @@
   },
   "x-porcelain": {
     "doc": "packages/grid/docs/PORCELAIN.md",
-    "version": "2.6.0",
+    "version": "2.7.0",
     "description": "Normative grammar for human-facing stdout records. --json emits wire results verbatim; the porcelain version is reported by grid.version."
   },
   "methods": [
@@ -27,7 +27,7 @@
         {
           "name": "current versions",
           "params": [],
-          "result": { "name": "version", "value": { "wire": "1.0.0", "engine": "grid 0.1.0", "porcelain": "2.6.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
+          "result": { "name": "version", "value": { "wire": "1.0.0", "engine": "grid 0.1.0", "porcelain": "2.7.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
         }
       ],
       "result": {
@@ -486,7 +486,8 @@
         { "name": "head", "required": true, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } },
         { "name": "floor", "required": false, "schema": { "$ref": "#/components/schemas/Grade" } },
         { "name": "plan", "required": false, "schema": { "$ref": "#/components/schemas/Plan" } },
-        { "name": "tests", "required": false, "schema": { "type": "boolean", "description": "Also enumerate every known test and report the ones whose recorded verdict no longer applies." } }
+        { "name": "tests", "required": false, "schema": { "type": "boolean", "description": "Also enumerate every known test and report the ones whose recorded verdict no longer applies." } },
+        { "name": "compat", "required": false, "schema": { "type": "boolean", "description": "Also check every changed type deriving Deserialize against the rules old bytes care about. Heuristic unless a standing `persisted` invariant names the type, in which case the finding gates at modeled." } }
       ],
       "examples": [
         {
@@ -846,7 +847,8 @@
           "rule": {
             "oneOf": [
               { "type": "object", "required": ["forbid_edge"], "properties": { "forbid_edge": { "$ref": "#/components/schemas/EdgeRule" } }, "additionalProperties": false },
-              { "type": "object", "required": ["require_edge"], "properties": { "require_edge": { "$ref": "#/components/schemas/EdgeRule" } }, "additionalProperties": false }
+              { "type": "object", "required": ["require_edge"], "properties": { "require_edge": { "$ref": "#/components/schemas/EdgeRule" } }, "additionalProperties": false },
+              { "type": "object", "required": ["persisted"], "properties": { "persisted": { "$ref": "#/components/schemas/CallsignPattern", "description": "Types matching this pattern have bytes on disk written by an older version of themselves. The human fact a static check cannot establish, and the one that promotes a Deserialize compatibility finding from a warning to a gate at modeled." } }, "additionalProperties": false }
             ]
           }
         },
@@ -1379,6 +1381,17 @@
         },
         "additionalProperties": false
       },
+      "CompatFinding": {
+        "type": "object",
+        "required": ["def", "rule", "declared"],
+        "properties": {
+          "def": { "$ref": "#/components/schemas/DefRef", "description": "The type whose deserializing shape moved, as head holds it." },
+          "rule": { "type": "string", "description": "Which rule old bytes trip on: 'required field added', 'field renamed without alias', 'type changed', 'variant removed', 'field removed under deny_unknown_fields', or 'representation changed'." },
+          "declared": { "type": "boolean", "description": "True when a standing `persisted` invariant matches this type — a human said old bytes exist, which is what makes the finding modeled evidence and a gate. False is heuristic: reported, ranked, and never moves the exit code." }
+        },
+        "additionalProperties": false,
+        "description": "A changed type deriving Deserialize whose new shape cannot read what the old one wrote. Within one repository the compiler moves both ends of a serde boundary together; this is the case it cannot see."
+      },
       "DriftUnchecked": {
         "type": "object",
         "required": ["budget_rejected"],
@@ -1389,7 +1402,8 @@
           "unresolved_internal": { "type": "integer", "minimum": 0, "description": "Of unresolved_refs: names this tree could have held and the resolver could not bind — glob-supplied, ambiguous, an unresolved re-export. The population that is an actual hole in what drift claims. Absent whenever unresolved_refs is." },
           "budget_rejected": { "type": "integer", "minimum": 0, "description": "Definitions whose inbound walk ran past its budget. The walk is rejected whole, never truncated: a truncated walk is indistinguishable from a smaller one." },
           "unattributed_entries": { "type": "integer", "minimum": 0, "description": "Recorded verdicts no retained trace claims, so no test owns them and no test-staleness check covered them. Present when the report was asked for tests." },
-          "weak_skipped": { "type": "integer", "minimum": 0, "description": "Weak-test checks declined because their coverage came from a decayed trace. A heuristic built on a demoted heuristic is noise, so grid declines it and says how often." }
+          "weak_skipped": { "type": "integer", "minimum": 0, "description": "Weak-test checks declined because their coverage came from a decayed trace. A heuristic built on a demoted heuristic is noise, so grid declines it and says how often." },
+          "compat_unchecked": { "type": "integer", "minimum": 0, "description": "Changed types whose Deserialize derive the source does not spell out — behind a cfg_attr, produced by a macro, or carrying a serde attribute this reader cannot parse — plus any whose source at either snapshot could not be read. Skipped and counted, never declared compatible. Present when the report was asked for compat." }
         },
         "additionalProperties": false,
         "description": "What drift could not check. A drift report claiming no suspects where it could not see callers is dishonest silence, so the counts ride with every answer."
@@ -1404,7 +1418,8 @@
           "unchecked": { "$ref": "#/components/schemas/DriftUnchecked" },
           "warnings": { "type": "array", "items": { "$ref": "#/components/schemas/DriftWarning" }, "description": "Reported rather than refused: a declared covenant whose pattern matches nothing at drift time, and anything else drift wants a human to see without holding on it." },
           "stale_tests": { "type": "array", "items": { "$ref": "#/components/schemas/StaleTest" }, "description": "Present when the report was asked for tests: every known test whose recorded verdict no longer applies." },
-          "weak": { "type": "array", "items": { "$ref": "#/components/schemas/WeakTest" }, "description": "Present when the report was asked for tests: tests that covered a changed definition, stayed green, and were never touched. Ranked, never gated." }
+          "weak": { "type": "array", "items": { "$ref": "#/components/schemas/WeakTest" }, "description": "Present when the report was asked for tests: tests that covered a changed definition, stayed green, and were never touched. Ranked, never gated." },
+          "compat": { "type": "array", "items": { "$ref": "#/components/schemas/CompatFinding" }, "description": "Present when the report was asked for compat: changed types deriving Deserialize whose new shape cannot read old bytes. Step 9's `grid check` embeds the same findings; drift carries them so the check is exercisable now." }
         },
         "additionalProperties": false
       },
