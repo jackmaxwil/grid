@@ -190,7 +190,7 @@ plan).
   the `unchecked` line and the no-compile-record warning only when they
   changed since the last check in this store (a one-line state file).
   Stated in PORCELAIN as a `--quick` property; the full form always
-  prints them.
+  prints them. (done eb946ff)
 - **T-03 (P0, S) First-run banner for `grid test`.** When zero traces are
   retained: one stderr line naming the fact and the two commands (install
   `cargo-llvm-cov` / `pytest-cov`; run `grid test --trace --all` once).
@@ -209,19 +209,19 @@ plan).
   case. The gate stays the judge.
 - **T-09 (P1, S) Default `since` for `suspects --closure`.** The last
   snapshot at which the test recorded `pass` (from the verdict log); say
-  which one was used.
+  which one was used. (done 6dfb18c)
 - **T-10 (P1, S) Refusal hints name the command.** `interfere` on a
   superseded other store says `run grid survey in <root>`; every
-  superseded-store refusal does the same.
+  superseded-store refusal does the same. (done 545faae)
 - **T-11 (P1, S) `grid check --format md`.** One markdown document for a
   PR comment: gates, then tail, then the certificate. Porcelain stays the
-  record form; `--json` the wire form.
+  record form; `--json` the wire form. (done 7702ec7)
 - **T-12 (P1, S) `grid invariant persisted <pattern>`** (and `--list`),
-  the `covenant` verb's shape, writing `.grid/invariants.json`.
+  the `covenant` verb's shape, writing `.grid/invariants.json`. (done a558a9e)
 - **T-21 (P1, S) `scope` default depths.** With `--bodies` alone, `--sigs`
   defaults to 3; on a hub the hop-1 body layer rarely fits a small budget
   and demotes to sigs silently-but-stated. Consider `--bodies 0 --sigs 2`
-  as the documented "orient" preset and `--bodies 1 --sigs 3` as "edit".
+  as the documented "orient" preset and `--bodies 1 --sigs 3` as "edit". (done af265fe)
 - **T-22 (P2, S) `grid explain` for exit codes and record tags in
   context** (`grid explain miss`, `grid explain 3`).
 
@@ -246,7 +246,7 @@ plan).
   reference — a survey-architecture change with its own plan.
 - **T-24 (P1, S) `check` opens the store once.** Sections currently
   compose verbs that each open the store and resolve the base rev
-  (~13ms each, one git spawn for a rev). Pass the opened chart down.
+  (~13ms each, one git spawn for a rev). Pass the opened chart down. (done e27b8c5)
 - **T-25 (P2, S) `suspects --closure` by rev spawns `rev-parse`.** Resolve
   through the store's rev label first (as `check` does); 15.8ms → ~4ms.
 - **T-26 (P2, S) Body reads in `scope --bodies`.** Memoized per file
@@ -286,7 +286,8 @@ plan).
 - **T-34 (P1, M) Repo tooling port from yi** — CI, lint config, guards,
   skills, comment enforcement (in progress on `claude/grid-tooling`).
 - **T-35 (P1, S) `docs/PORCELAIN.md` text-mode section** covers `scope
-  --bodies` and `explain`; add `check --format md` when T-11 lands.
+  --bodies`, `explain` and `check --format md`, under the stated rule that
+  `--json` is always the record form. (done 7702ec7)
 - **T-36 (P2, S) A walkthrough doc** — one real session transcript of A1
   on this repo, records and exit codes shown.
 
