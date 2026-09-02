@@ -57,9 +57,11 @@ Standing rules:
 
 - `grid-wire` is the schema wall and it is **generated**. Every serialized
   shape lives there, written by `scripts/gen-wire.py` from
-  `docs/wire-v1.openrpc.json`. Never hand-edit a file under `crates/wire/src`;
-  edit the contract and run `just wire`. `check_wire_drift.py` fails when that
-  is owed.
+  `docs/wire-v1.openrpc.json` into `crates/wire/src/lib.rs` and `methods.rs`.
+  Never hand-edit either; edit the contract and run `just wire`.
+  `check_wire_drift.py` fails when that is owed. (`errors.rs` beside them is
+  hand-written and the generator does not touch it, so the check cannot see a
+  change to it either — C44 says as much.)
 - `grid-datum` is the parser-free identity vocabulary every frontend emits, so
   a `grid-lang-*` crate depends on it and never the reverse. Adding a language
   adds a `grid-lang-*` crate, never a parser above one.
@@ -202,8 +204,8 @@ not add the test.
 
 # Never
 
-- Never hand-edit `crates/wire/src` — edit `docs/wire-v1.openrpc.json` and run
-  `just wire`.
+- Never hand-edit `crates/wire/src/lib.rs` or `methods.rs` — edit
+  `docs/wire-v1.openrpc.json` and run `just wire`.
 - Never add a dependency that is not already in `docs/ASSURANCE.md`.
 - Never edit a guardrail baseline in the same commit as code.
 - Never commit while a gate is red; never commit or push unasked.

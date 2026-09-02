@@ -11,6 +11,15 @@ PY="${PY:-$(command -v python3.13 || command -v python3.12 || command -v python3
 "$PY" -c "import tomllib" 2>/dev/null || { echo "FAIL: $PY lacks tomllib (need python >= 3.11)"; exit 1; }
 FAILED=0
 run() { "$@" || FAILED=$((FAILED + 1)); }
+# An optional tool is a binary on PATH, not a dependency: absent, it is announced and the
+# gate stays green, so `just check` passes on a fresh clone — which is what README.md,
+# docs/ASSURANCE.md and docs/TOOLING.md all say and what the code used to contradict by
+# counting the absence as a failure. CI installs every one of them explicitly
+# (.forgejo/workflows/grid-gate.yml), so the checks do not quietly stop running there.
+optional() { # optional <binary> <install hint> <command...>
+  local bin="$1" hint="$2"; shift 2
+  if command -v "$bin" >/dev/null; then run "$@"; else echo "skip $bin ($hint)"; fi
+}
 
 run "$PY" scripts/guardrails/check_manifests.py
 run "$PY" scripts/guardrails/check_boundaries.py
@@ -22,20 +31,20 @@ run scripts/check-unsafe-confined.sh
 run scripts/check-assurance-links.sh
 # Prose is not exempt: grid's comments and design docs are most of what a reader gets.
 # Config and the domain-word allowlist live in .codespellrc.
-if command -v codespell >/dev/null; then run codespell; else echo "FAIL codespell (uv tool install codespell)"; FAILED=$((FAILED+1)); fi
+optional codespell "uv tool install codespell" codespell
 
 # crates/wire is generated, so proving the tree still matches its generator needs the
-# generator to run and rustfmt to normalize its output. Both are cheap, but the check
-# rewrites crates/wire/src in place and restores it, which is not something a commit hook
-# should be doing under a partially staged tree.
+# generator to run and rustfmt to normalize its output — a subprocess and a format pass per
+# commit for a file set that only a contract edit moves. Cheap, but not free, and the whole
+# point of the fast tier is that the hook is not felt.
 if [ "$FAST" -eq 1 ]; then
-  echo "skip wire_drift (--fast: it regenerates crates/wire/src in place)"
+  echo "skip wire_drift (--fast: it runs the generator and rustfmt)"
   echo "skip machete/deny (--fast: each wants a resolved dependency graph)"
 else
   run "$PY" scripts/guardrails/check_wire_drift.py --selfcheck
   run cargo doc --workspace --no-deps --document-private-items -q
-  if command -v cargo-machete >/dev/null; then run cargo machete crates; else echo "FAIL machete (cargo install cargo-machete)"; FAILED=$((FAILED+1)); fi
-  if command -v cargo-deny >/dev/null; then run cargo deny check; else echo "FAIL deny (cargo install cargo-deny)"; FAILED=$((FAILED+1)); fi
+  optional cargo-machete "cargo install cargo-machete" cargo machete crates
+  optional cargo-deny "cargo install cargo-deny" cargo deny check
 fi
 
 echo "----"

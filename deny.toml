@@ -29,6 +29,12 @@ ignore = [
 ]
 
 [licenses]
+# `exclude-dev = true` narrows the graph past some workspace members, so three allowed
+# licences — BSD-2-Clause, Zlib and grid's own LicenseRef-Proprietary — are never
+# encountered and each printed a `license-not-encountered` warning on every gate run. The
+# allowlist is the policy, not a census of what today's lockfile happens to contain, so the
+# warning class goes rather than the entries.
+unused-allowed-license = "allow"
 # CC0-1.0 is a public-domain dedication: no conditions on use, permissive in
 # the only sense that matters here (tiny-keccak, parser build-time dep).
 # LicenseRef-Proprietary is the workspace's own crates: proprietary is a

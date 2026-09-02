@@ -138,7 +138,8 @@ def selfcheck():
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--range", help="git revision range (default: HEAD --not origin/main)")
-ap.add_argument("--title", help="check a PR title instead of a commit range")
+ap.add_argument("--title", help="check one subject line instead of a commit range")
+ap.add_argument("--label", default="pr_title", help="what the one-subject check calls itself")
 ap.add_argument("--selfcheck", action="store_true", help="run the rules over fixtures")
 args = ap.parse_args()
 
@@ -148,7 +149,7 @@ if args.selfcheck:
 
 title = args.title or os.environ.get("PR_TITLE")
 if title:
-    fail([f"{title} — {e}" for e in subject_errors(title.strip())], "pr_title")
+    fail([f"{title} — {e}" for e in subject_errors(title.strip())], args.label)
     sys.exit(0)
 
 if args.range:

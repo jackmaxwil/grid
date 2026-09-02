@@ -118,10 +118,13 @@ fuzz *ARGS:
 verify *ARGS:
     cargo kani {{ARGS}}
 
-# Crash-safety soak: the PR-time loop is short, this is the 10k-iteration one.
+# Crash-safety soak. Ten thousand kill-9 rounds by default; CI lowers it at PR time
+# through the environment, because branch protection requires the job's status context on
+# every pull request and the way to make a required job affordable is to make it cheaper,
+# never to take it off the event.
 [group('test')]
 soak *ARGS:
-    GRID_FAULT_ITERS=10000 cargo test -p grid-chart-io --release --test crash_safety -- --nocapture {{ARGS}}
+    GRID_FAULT_ITERS=${GRID_FAULT_ITERS:-10000} cargo test -p grid-chart-io --release --test crash_safety -- --nocapture {{ARGS}}
 
 # The one unsafe block, under the tools that can see through it.
 [group('test')]
