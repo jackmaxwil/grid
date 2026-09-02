@@ -2400,8 +2400,8 @@ fn trace(args: &[&str], json: bool) -> u8 {
 ///
 /// CLI-only: no wire method and no daemon involvement, because the operation
 /// is a file copy between two paths on one machine and the daemon holds
-/// nothing either side needs. `--json` emits the same three lists the
-/// records carry.
+/// nothing either side needs. `--json` emits the wire `TraceTransportResult`
+/// — the same three lists the records carry, in the contract's words.
 fn trace_transport(exporting: bool, args: &[&str], json: bool, root: &std::path::Path) -> u8 {
     let verb = if exporting { "export" } else { "import" };
     let Some(dir) = args.first() else {
@@ -2429,8 +2429,13 @@ fn trace_transport(exporting: bool, args: &[&str], json: bool, root: &std::path:
         }
     };
     if json {
-        let code = emit_json(&moved);
-        return if code == exit::OK && !moved.conflicts.is_empty() {
+        let refused = !moved.conflicts.is_empty();
+        let code = emit_json(&grid_wire::TraceTransportResult {
+            written: moved.written,
+            unchanged: moved.unchanged,
+            refused: moved.conflicts,
+        });
+        return if code == exit::OK && refused {
             exit::BAD_INPUT
         } else {
             code

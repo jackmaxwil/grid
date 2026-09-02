@@ -93,6 +93,24 @@ fn traces_travel_as_a_directory_and_a_conflicting_import_is_refused() {
         "{stdout}"
     );
 
+    // `--json` is the wire result, verbatim: the contract's own type reads
+    // it back with unknown fields denied, in the contract's own words.
+    let (code, stdout) = grid(
+        local.path(),
+        &["trace", "import", &out.display().to_string(), "--json"],
+    );
+    assert_eq!(code, 0, "{stdout}");
+    let wire: grid_wire::TraceTransportResult =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout}"));
+    assert_eq!(
+        wire,
+        grid_wire::TraceTransportResult {
+            written: Vec::new(),
+            unchanged: vec!["trace:one".into(), "trace:two".into()],
+            refused: Vec::new(),
+        }
+    );
+
     // The far side re-ran `trace:one` and it watched something else. Two
     // records, one id: refused, whole, and the id is on stdout.
     let elsewhere = tempfile::tempdir().expect("tempdir");

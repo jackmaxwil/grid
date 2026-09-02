@@ -874,6 +874,14 @@ pub struct TraceDiffFirstDivergence {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct TraceTransportResult {
+    pub written: Vec<String>,
+    pub unchanged: Vec<String>,
+    pub refused: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Suspects {
     pub ranked: Vec<SuspectsRankedItem>,
 }

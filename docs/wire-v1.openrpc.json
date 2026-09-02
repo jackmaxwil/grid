@@ -1382,6 +1382,17 @@
         },
         "additionalProperties": false
       },
+      "TraceTransportResult": {
+        "type": "object",
+        "required": ["written", "unchanged", "refused"],
+        "description": "What one `grid trace export <dir>` or `grid trace import <dir>` did, by trace id — the `--json` form of the verb's records. Ids rather than counts, because a refusal has to name what it refused. CLI-only: no wire method carries it, since the transport is a file copy between two paths on one machine.",
+        "properties": {
+          "written": { "type": "array", "items": { "type": "string" }, "description": "Trace ids (Trace.trace_id) whose file the transport wrote." },
+          "unchanged": { "type": "array", "items": { "type": "string" }, "description": "Trace ids the destination already held, byte for byte — why running the transport twice writes nothing the second time." },
+          "refused": { "type": "array", "items": { "type": "string" }, "description": "Trace ids the destination holds under different bytes: never overwritten. On import the whole transport is refused when this is non-empty, so these are the ids to reconcile, not the ones that were skipped." }
+        },
+        "additionalProperties": false
+      },
       "Suspects": {
         "type": "object",
         "required": ["ranked"],

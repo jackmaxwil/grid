@@ -191,8 +191,9 @@ already there`, and an import with any such id writes *nothing* — the whole
 transport is refused, like a walk over budget — exiting `2`: a directory and
 a store disagreeing about what one run did is bad input, not code diverging
 from a promise. Both directions are idempotent, so a second run of either
-reports every trace `unchanged` and exits `0`. `--json` emits the same three
-lists; the verb is CLI-only and has no wire method.
+reports every trace `unchanged` and exits `0`. `--json` emits the wire
+`TraceTransportResult` (`written`, `unchanged`, `refused`, each a list of
+trace ids); the verb is CLI-only and no wire method carries it.
 
 `grid check --compile [-- <cargo check args>]` runs `cargo check` with the
 given arguments from the worktree root, the compiler's output on stderr. A
