@@ -108,6 +108,35 @@ fn env_hash(runner: &dyn Runner, opts: &Opts) -> String {
     format!("env:b3:{}", h.finalize().to_hex())
 }
 
+/// The first-run banner. With no retained trace at all there is nothing for
+/// selection to skip on, so `grid test` is the runner plus bookkeeping — a
+/// state the numbers alone do not explain. One stderr line: the fact and the
+/// commands that end it. Silent once any trace exists, and silent under
+/// `--trace`, which *is* the run being recommended.
+fn first_run_banner(retained: usize, trace: bool) -> Option<String> {
+    (retained == 0 && !trace).then(|| {
+        "grid: no retained traces — every test is selected until one traced run records what \
+         each test reaches: `cargo install cargo-llvm-cov && rustup component add \
+         llvm-tools-preview` (Rust) or `pip install pytest-cov` (Python), then \
+         `grid test --trace --all`"
+            .to_owned()
+    })
+}
+
+/// How many traces the store holds, without parsing any of them: retention is
+/// one file per trace, and the banner asks only whether there are none.
+fn retained_count(root: &std::path::Path) -> usize {
+    rpc::trace_dir(root)
+        .ok()
+        .and_then(|dir| std::fs::read_dir(dir).ok())
+        .map_or(0, |entries| {
+            entries
+                .flatten()
+                .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+                .count()
+        })
+}
+
 /// The whole verb, over any runner. Returns the exit code: 3 when a run
 /// test failed or a replayed verdict is `fail`, 1 when the runner could not
 /// be spawned, 0 otherwise.
@@ -147,6 +176,9 @@ pub fn drive(root: &std::path::Path, opts: &Opts, runner: &mut dyn Runner, json:
             return exit::BAD_INPUT;
         }
     };
+    if let Some(banner) = first_run_banner(retained_count(root), opts.trace) {
+        hint(&banner);
+    }
     if plan.unchecked.budget_rejected > 0 {
         hint(&format!(
             "grid: the selection walk ran past its fuel ({}) — every test is selected, \
@@ -235,9 +267,10 @@ fn finish(
     let mut warnings = Vec::new();
     let mut ran: Vec<TestOutcome> = Vec::new();
 
-    // One record call per trace id: a traced run is one trace per test, an
-    // untraced run is one batch. Grouped rather than one call per test so
-    // the untraced CI form is one log append per run.
+    // One record call per attribution: a traced run is one trace per test, an
+    // untraced run is one `test:<callsign>` attribution per test. Grouped
+    // rather than one call per test because a traced run's grouping is what
+    // ties its batch to the trace that produced it.
     let mut batches: Vec<(Option<String>, Vec<CacheResultEntry>)> = Vec::new();
     for outcome in outcomes {
         ran.push(TestOutcome {
@@ -262,9 +295,19 @@ fn finish(
                 CacheResultEntryVerdict::Fail
             },
         };
-        match batches.iter_mut().find(|(id, _)| *id == outcome.trace_id) {
+        // A test that ran untraced still knows which test it was, and that is
+        // the whole attribution: without it the verdict is one nobody can
+        // ever tie to a test, and `check` counts it unattributed forever.
+        let attribution = outcome.trace_id.clone().or_else(|| {
+            Some(format!(
+                "{}{}",
+                crate::stale::TEST_ATTRIBUTION,
+                crate::testplan::callsign_of(&outcome.test)
+            ))
+        });
+        match batches.iter_mut().find(|(id, _)| *id == attribution) {
             Some((_, entries)) => entries.push(entry),
-            None => batches.push((outcome.trace_id.clone(), vec![entry])),
+            None => batches.push((attribution, vec![entry])),
         }
     }
     // A selected test the runner never reported on is not green. Counted as
@@ -644,6 +687,76 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("flake"));
+    }
+
+    /// The first-run banner says the fact and both install commands, once —
+    /// and stops the moment a trace exists, because a line that repeats every
+    /// run is a line an agent stops reading.
+    #[test]
+    fn the_first_run_banner_names_both_commands_and_then_stops() {
+        let banner = super::first_run_banner(0, false).expect("no traces: the banner");
+        for command in [
+            "cargo install cargo-llvm-cov",
+            "rustup component add llvm-tools-preview",
+            "pip install pytest-cov",
+            "grid test --trace --all",
+        ] {
+            assert!(banner.contains(command), "{command} is missing:\n{banner}");
+        }
+        assert_eq!(banner.lines().count(), 1, "one line:\n{banner}");
+        assert_eq!(super::first_run_banner(1, false), None, "a trace exists");
+        assert_eq!(super::first_run_banner(0, true), None, "--trace is the run");
+    }
+
+    /// And the count it reads is the retained store's, which starts empty and
+    /// is not empty after a traced run.
+    #[test]
+    fn the_retained_count_follows_the_store() {
+        let dir = repo(&owned(&python(1, 2, 9, [1, 2, 3])));
+        assert_eq!(super::retained_count(dir.path()), 0);
+        let mut fake = Fake {
+            root: dir.path().to_path_buf(),
+            ran: Vec::new(),
+        };
+        assert_eq!(run(dir.path(), &mut fake, true), 0);
+        assert!(super::retained_count(dir.path()) > 0);
+    }
+
+    /// A verdict recorded for a test that ran untraced names its own test in
+    /// the `test:` namespace, so the enumeration behind `grid check`'s
+    /// `unattributed` count owns it rather than counting it forever.
+    #[test]
+    fn an_untraced_run_attributes_its_verdicts_to_their_tests() {
+        let dir = repo(&owned(&python(1, 2, 9, [1, 2, 3])));
+        let mut fake = Fake {
+            root: dir.path().to_path_buf(),
+            ran: Vec::new(),
+        };
+        let untraced = Opts {
+            base: None,
+            trace: false,
+            replay: true,
+            args: Vec::new(),
+        };
+        assert_eq!(drive(dir.path(), &untraced, &mut fake, false), 0);
+        let cache = grid_cache::Cache::open(crate::rpc::cache_path(dir.path())).expect("cache");
+        let ids: std::collections::BTreeSet<&str> = cache
+            .entries()
+            .filter_map(|(_, e)| e.trace_id.as_deref())
+            .collect();
+        assert!(
+            ids.contains("test:tests.test_core.test_a"),
+            "the untraced verdict names its test: {ids:?}"
+        );
+        // And the enumeration attributes every one of them.
+        let epoch = grid_chart_io::Store::open(crate::chart_provider::store_dir(dir.path()))
+            .expect("store")
+            .load();
+        let found = crate::stale::tests(dir.path(), epoch.segments(), |test| {
+            grid_chart::DatumId::parse(&crate::testplan::fixtures::datum_of(dir.path(), test))
+        })
+        .expect("enumeration answers");
+        assert_eq!(found.unattributed, 0, "every verdict names its test");
     }
 
     /// A verdict replayed from the cache as `fail` is as red as a fresh one:

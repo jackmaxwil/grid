@@ -115,7 +115,8 @@ help` lists every verb, `grid explain` defines every word.
   retained trace always runs; a walk over budget runs everything and says
   why. Without traces `grid test` is your runner plus bookkeeping — run
   `grid test --trace --all` once (needs `cargo-llvm-cov` or `pytest-cov`)
-  and selection starts.
+  and selection starts — `grid test` says so itself, once, while the
+  trace store is empty, and `just traces` runs the install check for you.
 - **Nondeterministic, never "flake".** Same closure key, same
   environment, opposite verdict: the claim is "not the charted code". A
   race is code.
