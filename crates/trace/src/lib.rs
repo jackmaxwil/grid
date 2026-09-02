@@ -269,6 +269,51 @@ struct Record {
     trace: Trace,
     hops: Vec<(String, String)>,
 }
+/// The wire-epoch-0 on-disk shape (`wake` + `trace`), read and never
+/// written: the naming plan renamed the directory and moved every file
+/// whole, and a retained trace is user data — a file that stops parsing is
+/// a file that was dropped, whatever the rename said.
+#[derive(serde::Deserialize)]
+struct FormerRecord {
+    wake: FormerTrace,
+    trace: Vec<(String, String)>,
+}
+#[derive(serde::Deserialize)]
+struct FormerTrace {
+    wake_id: String,
+    git_rev: grid_wire::GitRev,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    started_at: Option<String>,
+    observations: Vec<grid_wire::TraceObservation>,
+}
+impl From<FormerRecord> for Record {
+    fn from(former: FormerRecord) -> Self {
+        Self {
+            trace: Trace {
+                trace_id: former.wake.wake_id,
+                git_rev: former.wake.git_rev,
+                command: former.wake.command,
+                started_at: former.wake.started_at,
+                observations: former.wake.observations,
+            },
+            hops: former.trace,
+        }
+    }
+}
+impl Record {
+    /// Parse a retained file: the current shape, else the epoch-0 shape.
+    /// The error reported is the current shape's, because that is the one
+    /// a file written today is held to.
+    fn parse(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice::<Self>(bytes).or_else(|current| {
+            serde_json::from_slice::<FormerRecord>(bytes)
+                .map(Self::from)
+                .map_err(|_| current)
+        })
+    }
+}
 /// Why a store operation failed.
 #[derive(Debug)]
 pub enum StoreError {
@@ -360,7 +405,7 @@ impl Store {
                 continue;
             }
             let bytes = std::fs::read(&path)?;
-            let record: Record = serde_json::from_slice(&bytes)
+            let record = Record::parse(&bytes)
                 .map_err(|e| StoreError::Corrupt(format!("{}: {e}", path.display())))?;
             let mut hops = Vec::with_capacity(record.hops.len());
             for (caller, callee) in &record.hops {
@@ -393,8 +438,7 @@ impl Store {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(StoreError::Io(e)),
         };
-        let record: Record =
-            serde_json::from_slice(&bytes).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+        let record = Record::parse(&bytes).map_err(|e| StoreError::Corrupt(e.to_string()))?;
         if record.trace.trace_id != trace_id {
             return Err(StoreError::Corrupt(format!(
                 "filed under {trace_id}, holds {}",
