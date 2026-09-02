@@ -28,7 +28,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use grid_chart::{DatumId, Ordinal, Segment};
-use grid_wire::Zoc;
+use grid_wire::Grade;
 
 /// Walk budget for one key. A closure wider than this is rejected, not
 /// truncated: truncation is indistinguishable from a smaller closure, and that
@@ -54,7 +54,7 @@ enum Follows {
     /// The datum is the whole closure.
     Nothing,
     /// Only edges of exactly this evidence grade.
-    Graded(Zoc),
+    Graded(Grade),
     /// Every edge, whatever its grade.
     Everything,
 }
@@ -74,7 +74,7 @@ impl Kind {
             Self::Lint => Follows::Nothing,
             // A signature closure is only as good as the edges it trusts, so
             // typecheck follows proven edges and stops at anything weaker.
-            Self::Typecheck => Follows::Graded(Zoc::Proven),
+            Self::Typecheck => Follows::Graded(Grade::Proven),
             Self::Test => Follows::Everything,
         }
     }
@@ -227,7 +227,7 @@ impl<'a, B: AsRef<[u8]>> Chart<'a, B> {
         while let Some(current) = frontier.pop() {
             for (seg, ord) in self.locate(current) {
                 for edge in seg.out_edges(ord) {
-                    if matches!(follows, Follows::Graded(want) if edge.zoc != want) {
+                    if matches!(follows, Follows::Graded(want) if edge.grade != want) {
                         continue;
                     }
                     fuel = fuel.checked_sub(1).ok_or(Reject::FuelExhausted)?;
@@ -275,10 +275,10 @@ pub struct Entry {
     pub verdict: Verdict,
     /// RFC 3339 UTC, second resolution — the wire's `recorded_at`.
     pub recorded_at: String,
-    /// The trace this verdict came from, when a wake produced it. This is
-    /// also how a verdict is attributed to a test: a retained wake names the
+    /// The trace this verdict came from, when a trace produced it. This is
+    /// also how a verdict is attributed to a test: a retained trace names the
     /// test it came from, so the log needs no second copy of the name.
-    pub wake_id: Option<String>,
+    pub trace_id: Option<String>,
     /// The environment the verdict was produced in.
     ///
     /// Stored because a [`Key`] is a hash and cannot be inverted: without
@@ -368,7 +368,7 @@ impl Cache {
             key.to_hex(),
             entry.verdict.tag(),
             entry.recorded_at,
-            entry.wake_id.as_deref().unwrap_or("-"),
+            entry.trace_id.as_deref().unwrap_or("-"),
             entry.env_hash.as_deref().unwrap_or("-"),
         )?;
         file.sync_data()?;
@@ -386,7 +386,7 @@ fn parse_line(line: &str) -> Option<(Key, Entry)> {
         None | Some("-") => None,
         Some(value) => Some(value.to_string()),
     };
-    let wake_id = optional(Some(fields.next()?));
+    let trace_id = optional(Some(fields.next()?));
     // Appended after the format shipped: a line written before it simply
     // ends here, and the field reads as unknown rather than as absent.
     let env_hash = optional(fields.next());
@@ -399,7 +399,7 @@ fn parse_line(line: &str) -> Option<(Key, Entry)> {
         Entry {
             verdict,
             recorded_at,
-            wake_id,
+            trace_id,
             env_hash,
         },
     ))

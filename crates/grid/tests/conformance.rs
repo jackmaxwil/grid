@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 fn contract() -> Value {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/wire-v0.openrpc.json"
+        "/../../docs/wire-v1.openrpc.json"
     );
     serde_json::from_str(&std::fs::read_to_string(path).expect("read contract"))
         .expect("parse contract")
@@ -163,11 +163,11 @@ fn version_example_is_served_over_the_socket() {
 }
 
 #[test]
-fn track_lint_example_is_served_verbatim() {
+fn plan_lint_example_is_served_verbatim() {
     let contract = contract();
     let dir = repo();
     // The example's finding cites a standing invariant, which lives in the
-    // repo, not in the track: writing it here is what makes the example real.
+    // repo, not in the plan: writing it here is what makes the example real.
     std::fs::create_dir_all(dir.path().join(".grid")).expect("mkdir");
     std::fs::write(
         dir.path().join(".grid/invariants.json"),
@@ -186,15 +186,15 @@ fn track_lint_example_is_served_verbatim() {
 
     let daemon = Daemon::start(dir.path());
     let response = daemon.call(
-        "grid.track.lint",
-        &example_params(&contract, "grid.track.lint"),
+        "grid.plan.lint",
+        &example_params(&contract, "grid.plan.lint"),
     );
 
     let expected = &contract["methods"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|m| m["name"] == "grid.track.lint")
+        .find(|m| m["name"] == "grid.plan.lint")
         .unwrap()["examples"][0]["result"]["value"];
     assert_eq!(
         &response["result"], expected,
@@ -211,7 +211,7 @@ fn gate_check_answers_with_a_verdict_the_contract_accepts() {
     // The example gates against a snapshot id, and there is no snapshot store
     // until wave 5 — so the example's *shape* is exercised against real revs.
     let mut params = example_params(&contract, "grid.gate.check");
-    params["track"]["base"] = json!({"git_rev": "HEAD~1"});
+    params["plan"]["base"] = json!({"git_rev": "HEAD~1"});
     params["head"] = json!({"git_rev": "HEAD"});
 
     let response = daemon.call("grid.gate.check", &params);
@@ -220,10 +220,10 @@ fn gate_check_answers_with_a_verdict_the_contract_accepts() {
         response.get("error").is_none(),
         "gate.check errored: {response}"
     );
-    // Every required field of XteVerdict is present.
+    // Every required field of GateVerdict is present.
     for key in [
         "gate",
-        "track_id",
+        "plan_id",
         "head",
         "matched",
         "missing",
@@ -250,7 +250,7 @@ fn gate_check_answers_with_a_verdict_the_contract_accepts() {
         .is_empty());
     // And the verdict deserializes into the generated type: the daemon's
     // answer is a wire value, not a lookalike.
-    let typed: Result<grid_wire::XteVerdict, _> = serde_json::from_value(result.clone());
+    let typed: Result<grid_wire::GateVerdict, _> = serde_json::from_value(result.clone());
     assert!(typed.is_ok(), "verdict must deserialize: {typed:?}");
 }
 
@@ -264,14 +264,14 @@ fn a_bad_request_is_an_error_response_not_a_crash() {
         -32601
     );
     // Unknown params are a wire error: deny_unknown_fields is the point.
-    let bad = daemon.call("grid.track.lint", &json!({"track": {"nope": 1}}));
+    let bad = daemon.call("grid.plan.lint", &json!({"plan": {"nope": 1}}));
     assert_eq!(bad["error"]["code"], -32602);
     // A snapshot id has no store to resolve against yet: a typed refusal.
     let unknown = daemon.call(
         "grid.gate.check",
         &json!({
-            "track": {
-                "track_id": "track:t",
+            "plan": {
+                "plan_id": "plan:t",
                 "base": {"snapshot": "snap:b3:00"},
                 "delta": {"defs": [], "edges": []}
             },
@@ -282,7 +282,7 @@ fn a_bad_request_is_an_error_response_not_a_crash() {
     // The daemon is still serving after all of that.
     assert_eq!(
         daemon.call("grid.version", &json!({}))["result"]["wire"],
-        "0.1.0"
+        "1.0.0"
     );
 }
 
@@ -385,7 +385,7 @@ fn wave_ten_methods_reject_bad_params_and_absent_history() {
 }
 
 #[test]
-fn delta_answers_with_a_made_good_the_contract_accepts() {
+fn delta_answers_with_a_diff_the_contract_accepts() {
     let dir = repo();
     let daemon = Daemon::start(dir.path());
     let response = daemon.call(
@@ -395,10 +395,7 @@ fn delta_answers_with_a_made_good_the_contract_accepts() {
     assert!(response.get("error").is_none(), "delta errored: {response}");
     let result = &response["result"];
     for key in ["base", "head", "defs", "edges"] {
-        assert!(
-            result.get(key).is_some(),
-            "MadeGood missing {key}: {result}"
-        );
+        assert!(result.get(key).is_some(), "Diff missing {key}: {result}");
     }
     // `b.py` is added in the second commit of the fixture repo, and the
     // chart names definitions, not files.
@@ -513,7 +510,7 @@ fn seed_chart(dir: &Path) -> (String, String) {
             src: caller,
             dst: target,
             relation: grid_wire::Relation::Calls,
-            zoc: grid_wire::Zoc::Proven,
+            grade: grid_wire::Grade::Proven,
         }],
     )
     .expect("build segment");
@@ -648,12 +645,12 @@ fn the_contract_example_shape_is_served() {
     assert!(result["misses"].is_array());
 }
 
-/// Write a track file into the repo's store and return its id.
-fn write_track(dir: &Path, id: &str, track: &Value) -> String {
-    let tracks = dir.join(".grid/tracks");
-    std::fs::create_dir_all(&tracks).expect("mkdir tracks");
-    std::fs::write(tracks.join(format!("{id}.json")), track.to_string()).expect("write track");
-    format!("track:{id}")
+/// Write a plan file into the repo's store and return its id.
+fn write_plan(dir: &Path, id: &str, plan: &Value) -> String {
+    let plans = dir.join(".grid/plans");
+    std::fs::create_dir_all(&plans).expect("mkdir plans");
+    std::fs::write(plans.join(format!("{id}.json")), plan.to_string()).expect("write plan");
+    format!("plan:{id}")
 }
 
 /// The wave 6 fixture: two functions, one caller, and an imported-but-
@@ -727,11 +724,11 @@ fn todo_is_the_gate_verdict_as_a_worklist_over_the_socket() {
     let daemon = Daemon::start(dir.path());
     let surveyed = daemon.call("grid.survey.run", &json!({}));
     let base = surveyed["result"]["snapshot_id"].clone();
-    write_track(
+    write_plan(
         dir.path(),
         "todo",
         &json!({
-            "track_id": "track:todo/v1",
+            "plan_id": "plan:todo/v1",
             "base": {"snapshot": base},
             "delta": {
                 "defs": [{"action": "modify", "callsign": "pkg.main.sweep"}],
@@ -742,7 +739,7 @@ fn todo_is_the_gate_verdict_as_a_worklist_over_the_socket() {
     );
 
     let mut params = example_params(&contract, "grid.todo");
-    params["track"] = json!("track:todo");
+    params["plan"] = json!("plan:todo");
     let response = daemon.call("grid.todo", &params);
     let result = &response["result"];
     assert!(response.get("error").is_none(), "todo errored: {response}");
@@ -799,15 +796,15 @@ fn edit_apply_example_is_served_and_conflicts_are_typed_over_the_socket() {
 
 #[test]
 fn the_agent_loop_runs_over_the_socket_with_no_human_file_edits() {
-    // The wave's accept criterion: plan, track, implement via edit.apply,
+    // The wave's accept criterion: plan, plan, implement via edit.apply,
     // gate — the whole loop as socket calls.
     let dir = repo_with_an_unused_import();
     let daemon = Daemon::start(dir.path());
 
-    // Plan: survey, author the track against that snapshot, lint it.
+    // Plan: survey, author the plan against that snapshot, lint it.
     let base = daemon.call("grid.survey.run", &json!({}))["result"]["snapshot_id"].clone();
-    let track = json!({
-        "track_id": "track:loop-v1",
+    let plan = json!({
+        "plan_id": "plan:loop-v1",
         "base": {"snapshot": base},
         "delta": {
             "defs": [{"action": "modify", "callsign": "pkg.main.sweep"}],
@@ -815,7 +812,7 @@ fn the_agent_loop_runs_over_the_socket_with_no_human_file_edits() {
                        "relation": "calls", "dst": "pkg.util.extra"}]
         }
     });
-    let lint = daemon.call("grid.track.lint", &json!({"track": track}));
+    let lint = daemon.call("grid.plan.lint", &json!({"plan": plan}));
     assert!(
         lint["result"]["errors"]
             .as_array()
@@ -827,7 +824,7 @@ fn the_agent_loop_runs_over_the_socket_with_no_human_file_edits() {
     // Gate before implementing: hold, with the promised edge itemized.
     let held = daemon.call(
         "grid.gate.check",
-        &json!({"track": track, "head": {"snapshot": base}}),
+        &json!({"plan": plan, "head": {"snapshot": base}}),
     );
     assert_eq!(held["result"]["gate"], "hold");
     assert_eq!(
@@ -862,20 +859,20 @@ fn the_agent_loop_runs_over_the_socket_with_no_human_file_edits() {
     let resurveyed = daemon.call("grid.survey.run", &json!({}))["result"]["snapshot_id"].clone();
     let passed = daemon.call(
         "grid.gate.check",
-        &json!({"track": track, "head": {"snapshot": resurveyed}}),
+        &json!({"plan": plan, "head": {"snapshot": resurveyed}}),
     );
     assert_eq!(
         passed["result"]["gate"], "pass",
         "the promised edge is now made good: {passed}"
     );
-    write_track(dir.path(), "loop", &track);
-    let todo = daemon.call("grid.todo", &json!({"track": "track:loop"}));
+    write_plan(dir.path(), "loop", &plan);
+    let todo = daemon.call("grid.todo", &json!({"plan": "plan:loop"}));
     assert_eq!(todo["result"]["fraction"], json!({"num": 2, "den": 2}));
 }
 
-fn wake_json(wake_id: &str, hops: &[(&str, &str)]) -> Value {
+fn trace_json(trace_id: &str, hops: &[(&str, &str)]) -> Value {
     json!({
-        "wake_id": wake_id,
+        "trace_id": trace_id,
         "git_rev": "4f2c9e1",
         "observations": hops.iter().map(|(caller, callee)| json!({
             "caller": { "datum": caller },
@@ -885,7 +882,7 @@ fn wake_json(wake_id: &str, hops: &[(&str, &str)]) -> Value {
 }
 #[test]
 #[allow(clippy::similar_names)] // caller/callee are the domain words
-fn wake_ingest_and_diff_are_served_over_the_socket() {
+fn trace_ingest_and_diff_are_served_over_the_socket() {
     let dir = repo();
     seed_chart(dir.path());
     let daemon = Daemon::start(dir.path());
@@ -895,9 +892,9 @@ fn wake_ingest_and_diff_are_served_over_the_socket() {
     );
     // A symbol endpoint resolves against the same chart `grid.resolve` uses.
     let response = daemon.call(
-        "grid.wake.ingest",
-        &json!({ "wake": {
-            "wake_id": "wake:g",
+        "grid.trace.ingest",
+        &json!({ "trace": {
+            "trace_id": "trace:g",
             "git_rev": "4f2c9e1",
             "observations": [{ "caller": { "symbol": "caller" }, "callee": { "datum": callee } }],
         }}),
@@ -908,12 +905,12 @@ fn wake_ingest_and_diff_are_served_over_the_socket() {
     assert_eq!(result["unresolved_symbols"], json!([]));
     // Red calls back; the diff must find the fork and the added edge.
     daemon.call(
-        "grid.wake.ingest",
-        &json!({ "wake": wake_json("wake:r", &[(caller, callee), (callee, caller)]) }),
+        "grid.trace.ingest",
+        &json!({ "trace": trace_json("trace:r", &[(caller, callee), (callee, caller)]) }),
     );
     let response = daemon.call(
-        "grid.wake.diff",
-        &json!({ "green": "wake:g", "red": "wake:r" }),
+        "grid.trace.diff",
+        &json!({ "green": "trace:g", "red": "trace:r" }),
     );
     let diff = &response["result"];
     // After the shared first hop, red continues callee -> caller: the fork's
@@ -925,17 +922,17 @@ fn wake_ingest_and_diff_are_served_over_the_socket() {
         "green had no second hop: {response}"
     );
     assert_eq!(diff["added"].as_array().expect("added").len(), 1);
-    assert_eq!(diff["added"][0]["zoc"], "observed");
+    assert_eq!(diff["added"][0]["grade"], "observed");
     assert_eq!(diff["removed"].as_array().expect("removed").len(), 0);
 }
 #[test]
-fn an_unknown_wake_id_is_the_contracts_error() {
+fn an_unknown_trace_id_is_the_contracts_error() {
     let dir = repo();
     seed_chart(dir.path());
     let daemon = Daemon::start(dir.path());
     let response = daemon.call(
-        "grid.wake.diff",
-        &json!({ "green": "wake:nope", "red": "wake:alsono" }),
+        "grid.trace.diff",
+        &json!({ "green": "trace:nope", "red": "trace:alsono" }),
     );
     assert_eq!(
         response["error"]["code"],
@@ -949,9 +946,9 @@ fn ingest_resolved_nothing_is_counts_not_silence() {
     seed_chart(dir.path());
     let daemon = Daemon::start(dir.path());
     let response = daemon.call(
-        "grid.wake.ingest",
-        &json!({ "wake": {
-            "wake_id": "wake:u",
+        "grid.trace.ingest",
+        &json!({ "trace": {
+            "trace_id": "trace:u",
             "git_rev": "4f2c9e1",
             "observations": [
                 { "caller": { "symbol": "no.such" }, "callee": { "symbol": "nor.this" } },
@@ -964,11 +961,11 @@ fn ingest_resolved_nothing_is_counts_not_silence() {
     assert_eq!(result["unresolved_symbols"], json!(["no.such", "nor.this"]));
 }
 
-/// Wave 9: the leadline walk, served. The fixture's proven edge is
+/// Wave 9: the budgeted walk, served. The fixture's proven edge is
 /// `pkg.main.sweep -> pkg.util.helper`, so an inbound walk from the callee
-/// must reach the caller and answer with a wire `LeadlineResult`.
+/// must reach the caller and answer with a wire `WalkResult`.
 #[test]
-fn query_walk_answers_with_a_leadline_result_the_contract_accepts() {
+fn query_walk_answers_with_a_walk_result_the_contract_accepts() {
     let dir = repo_with_an_unused_import();
     let daemon = Daemon::start(dir.path());
     let snapshot = daemon.call("grid.survey.run", &json!({}))["result"]["snapshot_id"].clone();
@@ -983,9 +980,9 @@ fn query_walk_answers_with_a_leadline_result_the_contract_accepts() {
         }}),
     );
     assert!(response.get("error").is_none(), "walk errored: {response}");
-    let typed: Result<grid_wire::LeadlineResult, _> =
+    let typed: Result<grid_wire::WalkResult, _> =
         serde_json::from_value(response["result"].clone());
-    let walk = typed.expect("the answer is a wire LeadlineResult, not a lookalike");
+    let walk = typed.expect("the answer is a wire WalkResult, not a lookalike");
     assert_eq!(walk.snapshot.0, snapshot.as_str().expect("snapshot id"));
     let reached = walk
         .reached
@@ -1014,15 +1011,15 @@ fn query_walk_rejects_params_the_wire_does_not_define() {
     assert!(response.get("result").is_none());
 }
 
-/// Wave 9: the reviewer's bundle, served. Same track the gate holds on, so
-/// the pack's verdict is the gate's.
+/// Wave 9: the reviewer's bundle, served. Same plan the gate holds on, so
+/// the check's verdict is the gate's.
 #[test]
-fn review_pack_answers_with_a_review_pack_the_contract_accepts() {
+fn check_answers_with_a_check_result_the_contract_accepts() {
     let dir = repo_with_an_unused_import();
     let daemon = Daemon::start(dir.path());
     let base = daemon.call("grid.survey.run", &json!({}))["result"]["snapshot_id"].clone();
-    let track_value = json!({
-        "track_id": "track:review/v1",
+    let plan_value = json!({
+        "plan_id": "plan:review/v1",
         "base": {"snapshot": base},
         "delta": {
             "defs": [{"action": "modify", "callsign": "pkg.main.sweep"}],
@@ -1030,50 +1027,220 @@ fn review_pack_answers_with_a_review_pack_the_contract_accepts() {
                        "relation": "calls", "dst": "pkg.util.extra"}]
         }
     });
-    let track = write_track(dir.path(), "review", &track_value);
+    let plan = write_plan(dir.path(), "review", &plan_value);
 
     let response = daemon.call(
-        "grid.review.pack",
-        &json!({"track": track, "head": {"snapshot": base}}),
+        "grid.check",
+        &json!({"plan": plan, "head": {"snapshot": base}}),
     );
-    assert!(response.get("error").is_none(), "pack errored: {response}");
-    let typed: Result<grid_wire::ReviewPack, _> =
+    assert!(response.get("error").is_none(), "check errored: {response}");
+    let typed: Result<grid_wire::CheckResult, _> =
         serde_json::from_value(response["result"].clone());
-    let pack = typed.expect("the answer is a wire ReviewPack, not a lookalike");
+    let answer = typed.expect("the answer is a wire CheckResult, not a lookalike");
     // Nothing was implemented, so the gate holds and the promise is unmet:
-    // a pack never disagrees with `grid.gate.check` about that.
+    // a check never disagrees with `grid.gate.check` about that.
+    assert!(answer.why.is_some(), "the why rides with the verdict");
     let gate = daemon.call(
         "grid.gate.check",
-        &json!({"track": track_value, "head": {"snapshot": base}}),
+        &json!({"plan": plan_value, "head": {"snapshot": base}}),
     );
     assert_eq!(
-        serde_json::to_value(&pack.verdict).expect("verdict"),
+        serde_json::to_value(&answer.verdict).expect("verdict"),
         gate["result"],
-        "the pack's verdict is the gate's"
+        "the check's verdict is the gate's"
     );
 }
 
-/// A wake the log does not hold is the contract's unknown-wake error, not a
-/// pack computed as if coverage had been asked for and found empty.
+/// A trace the log does not hold is the contract's unknown-trace error, not an
+/// answer computed as if coverage had been asked for and found empty.
 #[test]
-fn review_pack_with_an_unknown_wake_is_the_contracts_error() {
+fn check_with_an_unknown_trace_is_the_contracts_error() {
     let dir = repo_with_an_unused_import();
     let daemon = Daemon::start(dir.path());
     let base = daemon.call("grid.survey.run", &json!({}))["result"]["snapshot_id"].clone();
-    let track = write_track(
+    let plan = write_plan(
         dir.path(),
-        "review-wake",
+        "review-trace",
         &json!({
-            "track_id": "track:review-wake/v1",
+            "plan_id": "plan:review-trace/v1",
             "base": {"snapshot": base},
             "delta": {"defs": [{"action": "modify", "callsign": "pkg.main.sweep"}], "edges": []}
         }),
     );
 
     let response = daemon.call(
-        "grid.review.pack",
-        &json!({"track": track, "head": {"snapshot": base}, "wake": "wake:nope"}),
+        "grid.check",
+        &json!({"plan": plan, "head": {"snapshot": base}, "trace": "trace:nope"}),
     );
     assert_eq!(response["error"]["code"], -32008, "got {response}");
     assert!(response.get("result").is_none());
+}
+
+/// Conservatism: a retired word is never emitted again.
+///
+/// The naming plan (`docs/plans/2026-09-01-naming.md`) renames a set of
+/// nouns and verbs and keeps every old word *answerable* by `grid explain`
+/// — but never *spoken*. This test walks every verb's usage and one
+/// representative invocation and asserts that neither stdout nor stderr
+/// contains a retired token as a word. `explain` appears only as its usage
+/// line: an explain answer is the one place a former name is allowed, and
+/// the alias test covers that side.
+mod conservatism {
+    use super::{repo_with_an_unused_import, Command, Path, Stdio};
+
+    /// The retired tokens, as words. `made-good` is checked separately
+    /// because its spellings straddle the word split.
+    const RETIRED: &[&str] = &[
+        "zoc",
+        "zocs",
+        "xte",
+        "leadline",
+        "leadlines",
+        "wake",
+        "wakes",
+        "track",
+        "tracks",
+        "leg",
+        "legs",
+        "bind",
+        "binds",
+    ];
+    const RETIRED_COMPOUNDS: &[&str] = &["made-good", "made_good", "madegood"];
+
+    /// Every retired word in `text`, as it was spelled there.
+    fn retired_words(text: &str) -> Vec<String> {
+        let lower = text.to_lowercase();
+        let mut found: Vec<String> = lower
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| RETIRED.contains(w))
+            .map(str::to_owned)
+            .collect();
+        found.extend(
+            RETIRED_COMPOUNDS
+                .iter()
+                .filter(|c| lower.contains(**c))
+                .map(|c| (*c).to_owned()),
+        );
+        found.sort();
+        found.dedup();
+        found
+    }
+
+    /// One invocation in the fixture repo, stdout and stderr concatenated —
+    /// hints are output too, and a hint is where an old word hides best.
+    fn run(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new(env!("CARGO_BIN_EXE_grid"))
+            .args(args)
+            .current_dir(dir)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run grid");
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    }
+
+    #[test]
+    fn no_verb_speaks_a_retired_word() {
+        let dir = repo_with_an_unused_import();
+        run(dir.path(), &["survey"]);
+
+        // Usage lines: every verb, invoked wrongly enough to print its own
+        // usage, plus the banner and the verb listing.
+        let usages: &[&[&str]] = &[
+            &[],
+            &["help"],
+            &["diff", "--nope"],
+            &["drift", "--nope"],
+            &["watch", "--nope"],
+            &["resolve"],
+            &["uses"],
+            &["scope"],
+            &["orphans", "--nope"],
+            &["hotspots", "--nope"],
+            &["log"],
+            &["suspects"],
+            &["gate"],
+            &["todo"],
+            &["cache"],
+            &["cache", "lookup"],
+            &["edit"],
+            &["explain"],
+            &["covenant"],
+            &["plan"],
+            &["plan", "lint"],
+            &["check"],
+            &["trace"],
+            &["trace", "ingest"],
+            &["trace", "diff"],
+            &["nosuchverb"],
+        ];
+        // Representative invocations: the answering path, not the refusal.
+        let calls: &[&[&str]] = &[
+            &["version"],
+            &["survey"],
+            &["diff"],
+            &["drift"],
+            &["resolve", "sweep"],
+            &["uses", "helper"],
+            &["scope", "pkg.util.**"],
+            &["orphans"],
+            &["hotspots"],
+            &["roots"],
+            &["log", "sweep"],
+            &["covenant", "--list"],
+            // The plan store and everything that names a plan id: the id
+            // prefix is porcelain too.
+            &["plan", "new", "demo"],
+            &["plan", "show", "plan:demo"],
+            &["plan", "lint", "plan:demo"],
+            &["gate", "plan:demo"],
+            &["todo", "plan:demo"],
+            &["check", "--plan", "plan:demo", "--why"],
+        ];
+
+        let mut offenders: Vec<(String, Vec<String>)> = Vec::new();
+        for args in usages.iter().chain(calls.iter()) {
+            let words = retired_words(&run(dir.path(), args));
+            if !words.is_empty() {
+                offenders.push((args.join(" "), words));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "retired words are still spoken:\n{}",
+            offenders
+                .iter()
+                .map(|(argv, words)| format!("  grid {argv} -> {}", words.join(", ")))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+}
+
+/// A retired method name is unknown, never quietly mapped to its successor.
+///
+/// Epoch 0 is served by nothing (`docs/plans/2026-09-01-naming.md`): a client
+/// that still speaks `grid.wake.ingest` must be told the method does not
+/// exist, not handed an answer computed under a name it did not ask for.
+#[test]
+fn a_retired_method_name_is_unknown_not_remapped() {
+    let dir = repo();
+    let daemon = Daemon::start(dir.path());
+    for retired in [
+        "grid.wake.ingest",
+        "grid.wake.diff",
+        "grid.track.lint",
+        "grid.track.estimate",
+        "grid.review.pack",
+    ] {
+        let response = daemon.call(retired, &json!({}));
+        assert_eq!(
+            response["error"]["code"], -32601,
+            "{retired} must be unknown, got {response}"
+        );
+        assert!(response.get("result").is_none(), "{retired}: {response}");
+    }
 }

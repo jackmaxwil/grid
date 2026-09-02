@@ -1,4 +1,4 @@
-//! D7 conformance: every example in wire-v0.openrpc.json round-trips through
+//! D7 conformance: every example in wire-v1.openrpc.json round-trips through
 //! the generated types byte-canonically; a mutated example fails.
 
 use serde_json::{json, Map, Value};
@@ -6,7 +6,7 @@ use serde_json::{json, Map, Value};
 fn contract() -> Value {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/wire-v0.openrpc.json"
+        "/../../docs/wire-v1.openrpc.json"
     );
     serde_json::from_str(&std::fs::read_to_string(path).expect("read contract"))
         .expect("parse contract")
@@ -50,21 +50,21 @@ fn roundtrip(method: &str, params: &[Value], result: &Value) {
         "grid.snapshot.current" => SnapshotCurrentParams, Snapshot,
         "grid.survey.run" => SurveyRunParams, Snapshot,
         "grid.resolve" => ResolveParams, Vec<DefRef>,
-        "grid.delta" => DeltaParams, MadeGood,
+        "grid.delta" => DeltaParams, Diff,
         "grid.drift" => DriftParams, DriftReport,
-        "grid.gate.check" => GateCheckParams, XteVerdict,
-        "grid.query.walk" => QueryWalkParams, LeadlineResult,
+        "grid.gate.check" => GateCheckParams, GateVerdict,
+        "grid.query.walk" => QueryWalkParams, WalkResult,
         "grid.anchor.carry" => AnchorCarryParams, Vec<CarriedAnchor>,
-        "grid.wake.ingest" => WakeIngestParams, WakeIngestResult,
+        "grid.trace.ingest" => TraceIngestParams, TraceIngestResult,
         "grid.cache.check" => CacheCheckParams, CacheCheckResult,
         "grid.cache.record" => CacheRecordParams, CacheRecordResult,
         "grid.scope" => ScopeParams, ScopePack,
-        "grid.track.lint" => TrackLintParams, LintResult,
-        "grid.track.estimate" => TrackEstimateParams, Estimate,
+        "grid.plan.lint" => PlanLintParams, LintResult,
+        "grid.plan.estimate" => PlanEstimateParams, Estimate,
         "grid.edit.apply" => EditApplyParams, EditResult,
         "grid.todo" => TodoParams, TodoList,
-        "grid.review.pack" => ReviewPackParams, ReviewPack,
-        "grid.wake.diff" => WakeDiffParams, WakeDiff,
+        "grid.check" => CheckParams, CheckResult,
+        "grid.trace.diff" => TraceDiffParams, TraceDiff,
         "grid.suspects" => SuspectsParams, Suspects,
         "grid.bisect" => BisectParams, BisectResult,
     );

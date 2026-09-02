@@ -9,7 +9,7 @@
 //!
 //! Precisely, over a base and a head snapshot:
 //!
-//! - The changed set `C` is every definition in `MadeGood(base, head)` that
+//! - The changed set `C` is every definition in `Diff(base, head)` that
 //!   was `Removed`, or `Modified` with `sig_changed` `Some(true)` **or**
 //!   `None`. Unknown counts as changed: a snapshot from before segment epoch
 //!   3 carries no interface identity, and treating that silence as "held"
@@ -22,9 +22,9 @@
 //!   base and head. A dependent that changed at all is assumed handled;
 //!   whether it changed *correctly* is the gate's question, not drift's.
 //!
-//! Observed coupling joins the walk once the floor admits it. A wake's edges
+//! Observed coupling joins the walk once the floor admits it. A trace's edges
 //! are not in the chart — the chart holds what the language proves — so they
-//! are read from the wake store and graded by [`grid_wake::grade`] against
+//! are read from the trace store and graded by [`grid_trace::grade`] against
 //! the *base* chart, the one the dependents were depending on. An edge whose
 //! endpoints are both still interned there is `observed`; one whose trace
 //! describes code that base no longer holds is `heuristic` with reason
@@ -48,9 +48,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use grid_chart::{DatumId, Ordinal, Segment};
 use grid_wire::{
-    Callsign, Covenant, Datum, DefChange, DefChangeAction, DefRef, DriftReport, DriftSuspect,
-    DriftUnchecked, MadeGood, Relation, SnapshotId, SnapshotOrRev, Track, TrackDefPromiseAction,
-    Zoc,
+    Callsign, Covenant, Datum, DefChange, DefChangeAction, DefRef, Diff, DriftReport, DriftSuspect,
+    DriftUnchecked, Grade, Plan, PlanDefPromiseAction, Relation, SnapshotId, SnapshotOrRev,
 };
 
 use crate::chart_provider::{self, ChartDelta};
@@ -87,24 +86,24 @@ pub enum Error {
     /// One or more inbound walks ran past [`FUEL`]. The answer is refused
     /// whole rather than served short.
     BudgetRejected(u32),
-    /// The test-staleness enumeration could not read the wake store or the
+    /// The test-staleness enumeration could not read the trace store or the
     /// verdict log. Not an empty answer: a log that fails to open has
     /// unknown contents.
     Stale(String),
     /// The covenant declaration file exists but does not parse. A broken
     /// declaration must never read as an absence of declarations.
     Covenants(String),
-    /// The retained wakes could not be read. Not an empty observation set:
+    /// The retained traces could not be read. Not an empty observation set:
     /// a store that fails to open has unknown contents, and answering
     /// "nothing was observed" for it would be a fabricated all-clear.
-    Wake(grid_wake::StoreError),
+    Trace(grid_trace::StoreError),
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Chart(e) => write!(f, "{e}"),
-            Self::Wake(e) => write!(f, "{e}"),
+            Self::Trace(e) => write!(f, "{e}"),
             Self::Covenants(msg) | Self::Stale(msg) => f.write_str(msg),
             Self::BudgetRejected(n) => write!(
                 f,
@@ -125,12 +124,12 @@ impl From<chart_provider::Error> for Error {
 
 /// Evidence rank, strongest first — the `at_or_above` order the rest of the
 /// engine uses.
-pub(crate) const fn rank(z: Zoc) -> u8 {
+pub(crate) const fn rank(z: Grade) -> u8 {
     match z {
-        Zoc::Proven => 0,
-        Zoc::Observed => 1,
-        Zoc::Modeled => 2,
-        Zoc::Heuristic => 3,
+        Grade::Proven => 0,
+        Grade::Observed => 1,
+        Grade::Modeled => 2,
+        Grade::Heuristic => 3,
     }
 }
 
@@ -146,9 +145,8 @@ pub(crate) struct Changed {
 /// The changed set `C`. `Modified` with `sig_changed: Some(false)` is
 /// excluded — the body moved and no caller can see it — and everything else
 /// with a base-side datum is in.
-fn changed_set(made_good: &MadeGood) -> Vec<&DefChange> {
-    made_good
-        .defs
+fn changed_set(diff: &Diff) -> Vec<&DefChange> {
+    diff.defs
         .iter()
         .filter(|d| match d.action {
             DefChangeAction::Removed => true,
@@ -163,12 +161,8 @@ fn changed_set(made_good: &MadeGood) -> Vec<&DefChange> {
 
 /// Every callsign the delta reports as changed in any way. A dependent whose
 /// callsign is in here changed too, so it is not a suspect.
-pub(crate) fn touched(made_good: &MadeGood) -> HashSet<&str> {
-    made_good
-        .defs
-        .iter()
-        .map(|d| d.callsign.0.as_str())
-        .collect()
+pub(crate) fn touched(diff: &Diff) -> HashSet<&str> {
+    diff.defs.iter().map(|d| d.callsign.0.as_str()).collect()
 }
 
 /// The sigs of a live set, by callsign — read once so the report can state
@@ -194,20 +188,20 @@ fn sig_datum(sig: Option<&[u8; 32]>) -> Option<Datum> {
     sig.map(|s| wire_datum(DatumId(*s)))
 }
 
-/// Does a track promise that this callsign will be touched?
+/// Does a plan promise that this callsign will be touched?
 ///
 /// A promise to `Modify` or `Remove` is the human saying "I will get to it",
 /// and `grid gate` already holds when a promise is not made good. Drift lists
 /// what nobody has even promised; the gate judges promises. `Add` does not
 /// suppress: promising to add something says nothing about an existing
 /// dependent.
-fn promised(track: Option<&Track>, callsign: &str) -> bool {
-    track.is_some_and(|t| {
+fn promised(plan: Option<&Plan>, callsign: &str) -> bool {
+    plan.is_some_and(|t| {
         t.delta.defs.iter().any(|p| {
             matches!(
                 p.action,
-                TrackDefPromiseAction::Modify | TrackDefPromiseAction::Remove
-            ) && grid_xte::pattern::matches(&p.callsign.0, callsign)
+                PlanDefPromiseAction::Modify | PlanDefPromiseAction::Remove
+            ) && grid_gate::pattern::matches(&p.callsign.0, callsign)
         })
     })
 }
@@ -221,10 +215,10 @@ pub struct Query<'a> {
     /// The snapshot they may now be stale against.
     pub head: &'a SnapshotOrRev,
     /// Weakest evidence an edge may carry and still implicate a dependent.
-    pub floor: Zoc,
-    /// A promise file, if one was named: a suspect the track promises to
+    pub floor: Grade,
+    /// A promise file, if one was named: a suspect the plan promises to
     /// modify or remove is suppressed, because the gate already judges it.
-    pub track: Option<&'a Track>,
+    pub plan: Option<&'a Plan>,
     /// The repo's declared couplings. Empty is a repo that has declared
     /// none, which is not the same as one whose declaration file is
     /// unreadable — that is the caller's error to raise.
@@ -240,15 +234,15 @@ pub struct Query<'a> {
 
 impl<'a> Query<'a> {
     /// The everyday question: everything grid can stand behind — proven
-    /// edges and live observations — with no track, no covenants, and the
+    /// edges and live observations — with no plan, no covenants, and the
     /// default budget.
     #[must_use]
     pub fn new(base: &'a SnapshotOrRev, head: &'a SnapshotOrRev) -> Self {
         Self {
             base,
             head,
-            floor: Zoc::Observed,
-            track: None,
+            floor: Grade::Observed,
+            plan: None,
             covenants: &[],
             declined_refs: None,
             fuel: FUEL,
@@ -266,27 +260,27 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
         base,
         head,
         floor,
-        track,
+        plan,
         covenants,
         declined_refs,
         fuel: budget,
     } = *query;
     let chart = ChartDelta::open(root)?;
     let (base_epoch, head_epoch) = (chart.epoch_of(base)?, chart.epoch_of(head)?);
-    let made_good = grid_chart::made_good(
+    let diff = grid_chart::diff(
         SnapshotId(base_epoch.snapshot_id().as_str().to_owned()),
         base_epoch.segments(),
         SnapshotId(head_epoch.snapshot_id().as_str().to_owned()),
         head_epoch.segments(),
     );
 
-    let touched = touched(&made_good);
-    let changed = changed_set_of(&made_good, base_epoch.segments(), head_epoch.segments());
+    let touched = touched(&diff);
+    let changed = changed_set_of(&diff, base_epoch.segments(), head_epoch.segments());
 
     // Observed coupling, graded against base. Loaded once: the store is a
     // directory read, and doing it per changed definition would make the
     // cost quadratic in the size of the delta.
-    let observed = if rank(floor) >= rank(Zoc::Observed) {
+    let observed = if rank(floor) >= rank(Grade::Observed) {
         observed_inbound(root, base_epoch.segments())?
     } else {
         HashMap::new()
@@ -304,7 +298,7 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
             budget_rejected = budget_rejected.saturating_add(1);
             continue;
         };
-        fold_rows(&chart, change, found, &touched, track, &mut suspects);
+        fold_rows(&chart, change, found, &touched, plan, &mut suspects);
     }
 
     if budget_rejected > 0 {
@@ -383,7 +377,7 @@ fn fire_covenants<B: AsRef<[u8]>>(
                 |d| def_ref(chart, d, Some(&hit.moved)),
             ),
             relation: COVENANT_RELATION,
-            zoc: Zoc::Modeled,
+            grade: Grade::Modeled,
             // A covenant fires on the body, not the interface, so there is
             // no sig transition to show — and showing one would suggest the
             // wrong reason for the finding.
@@ -430,8 +424,8 @@ fn datum_of<B: AsRef<[u8]>>(segments: &[Segment<B>], callsign: &str) -> Option<D
 pub(crate) fn inbound_of<B: AsRef<[u8]>>(
     segments: &[Segment<B>],
     change: &Changed,
-    floor: Zoc,
-    observed: &HashMap<DatumId, Vec<grid_wake::Graded>>,
+    floor: Grade,
+    observed: &HashMap<DatumId, Vec<grid_trace::Graded>>,
     mut fuel: u32,
 ) -> Option<Vec<Inbound>> {
     let mut found = Vec::new();
@@ -441,7 +435,7 @@ pub(crate) fn inbound_of<B: AsRef<[u8]>>(
         };
         for edge in segment.in_edges(ord) {
             fuel = fuel.checked_sub(1)?;
-            if !DEPENDENCY_RELATIONS.contains(&edge.relation) || rank(edge.zoc) > rank(floor) {
+            if !DEPENDENCY_RELATIONS.contains(&edge.relation) || rank(edge.grade) > rank(floor) {
                 continue;
             }
             let (Some(datum), Some(callsign)) =
@@ -453,7 +447,7 @@ pub(crate) fn inbound_of<B: AsRef<[u8]>>(
                 datum,
                 callsign: Some(callsign.to_owned()),
                 relation: edge.relation,
-                zoc: edge.zoc,
+                grade: edge.grade,
                 reason: None,
             });
         }
@@ -462,14 +456,14 @@ pub(crate) fn inbound_of<B: AsRef<[u8]>>(
     // proved. It is charged no fuel: the store was read once, and the budget
     // bounds the graph walk, which is the unbounded part.
     for graded in observed.get(&change.datum).into_iter().flatten() {
-        if rank(graded.zoc) > rank(floor) {
+        if rank(graded.grade) > rank(floor) {
             continue;
         }
         found.push(Inbound {
             datum: graded.edge.caller,
             callsign: name_at(segments, graded.edge.caller),
             relation: Relation::Calls,
-            zoc: graded.zoc,
+            grade: graded.grade,
             reason: graded.reason.map(str::to_owned),
         });
     }
@@ -480,13 +474,13 @@ pub(crate) fn inbound_of<B: AsRef<[u8]>>(
 /// transition to report. Split out of [`compute`] so the one place that
 /// decides *what counts as changed* is readable on its own.
 pub(crate) fn changed_set_of<A: AsRef<[u8]>, B: AsRef<[u8]>>(
-    made_good: &MadeGood,
+    diff: &Diff,
     base: &[Segment<A>],
     head: &[Segment<B>],
 ) -> Vec<Changed> {
     let base_sigs = sigs_by_callsign(base);
     let head_sigs = sigs_by_callsign(head);
-    changed_set(made_good)
+    changed_set(diff)
         .into_iter()
         .filter_map(|d| {
             let datum = DatumId::parse(&d.before.as_ref()?.0)?;
@@ -511,7 +505,7 @@ pub(crate) fn fold_rows(
     change: &Changed,
     found: Vec<Inbound>,
     touched: &HashSet<&str>,
-    track: Option<&Track>,
+    plan: Option<&Plan>,
     suspects: &mut BTreeMap<(String, String, u8), DriftSuspect>,
 ) {
     for dep in found {
@@ -521,7 +515,7 @@ pub(crate) fn fold_rows(
         if dep
             .callsign
             .as_deref()
-            .is_some_and(|c| touched.contains(c) || promised(track, c))
+            .is_some_and(|c| touched.contains(c) || promised(plan, c))
         {
             continue;
         }
@@ -535,8 +529,8 @@ pub(crate) fn fold_rows(
         // findings.
         match suspects.entry(key) {
             std::collections::btree_map::Entry::Occupied(mut slot) => {
-                if rank(dep.zoc) < rank(slot.get().zoc) {
-                    slot.get_mut().zoc = dep.zoc;
+                if rank(dep.grade) < rank(slot.get().grade) {
+                    slot.get_mut().grade = dep.grade;
                     slot.get_mut().reason = dep.reason;
                 }
             }
@@ -545,7 +539,7 @@ pub(crate) fn fold_rows(
                     dependent: def_ref(chart, dep.datum, dep.callsign.as_deref()),
                     changed: def_ref(chart, change.datum, Some(&change.callsign)),
                     relation: dep.relation,
-                    zoc: dep.zoc,
+                    grade: dep.grade,
                     sig_before: change.sig_before.clone(),
                     sig_after: change.sig_after.clone(),
                     reason: dep.reason,
@@ -566,7 +560,7 @@ pub(crate) struct Inbound {
     /// would be the silence the report shape exists to prevent.
     callsign: Option<String>,
     relation: Relation,
-    zoc: Zoc,
+    grade: Grade,
     reason: Option<String>,
 }
 
@@ -580,7 +574,7 @@ impl Inbound {
     }
 }
 
-/// Observed edges from the retained wakes, graded against `segments` and
+/// Observed edges from the retained traces, graded against `segments` and
 /// indexed by the definition they point *at* — the shape the inbound walk
 /// asks in.
 ///
@@ -590,18 +584,20 @@ impl Inbound {
 pub(crate) fn observed_inbound<B: AsRef<[u8]>>(
     root: &std::path::Path,
     segments: &[Segment<B>],
-) -> Result<HashMap<DatumId, Vec<grid_wake::Graded>>, Error> {
-    let store = grid_wake::Store::open(crate::rpc::wake_dir(root)).map_err(Error::Wake)?;
-    let mut out: HashMap<DatumId, Vec<grid_wake::Graded>> = HashMap::new();
-    for stored in store.retained().map_err(Error::Wake)? {
+) -> Result<HashMap<DatumId, Vec<grid_trace::Graded>>, Error> {
+    let store = crate::rpc::trace_dir(root)
+        .and_then(grid_trace::Store::open)
+        .map_err(Error::Trace)?;
+    let mut out: HashMap<DatumId, Vec<grid_trace::Graded>> = HashMap::new();
+    for stored in store.retained().map_err(Error::Trace)? {
         for edge in stored.edges() {
-            let graded = grid_wake::grade(segments, edge);
+            let graded = grid_trace::grade(segments, edge);
             out.entry(graded.edge.callee).or_default().push(graded);
         }
     }
     // Deterministic: a store's directory order is not a contract.
     for edges in out.values_mut() {
-        edges.sort_by_key(|g| (g.edge.caller, rank(g.zoc)));
+        edges.sort_by_key(|g| (g.edge.caller, rank(g.grade)));
         edges.dedup_by_key(|g| g.edge.caller);
     }
     Ok(out)
@@ -640,7 +636,7 @@ mod tests {
     //! nobody can reach.
     use super::{compute, Error, Query};
     use grid_chart::{build, DatumId, Def, DefFacts, Edge};
-    use grid_wire::{GitRev, Relation, SnapshotOrRev, Zoc};
+    use grid_wire::{GitRev, Grade, Relation, SnapshotOrRev};
 
     fn def(callsign: &str, datum: u8, sig: u8) -> Def {
         Def {
@@ -664,7 +660,7 @@ mod tests {
             src: DatumId([src; 32]),
             dst: DatumId([dst; 32]),
             relation: Relation::Calls,
-            zoc: Zoc::Proven,
+            grade: Grade::Proven,
         }
     }
 

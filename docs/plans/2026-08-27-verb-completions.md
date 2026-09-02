@@ -34,7 +34,7 @@ Sequencing (each step independently shippable, gates green between):
 4. orphans + uses --relation (small, reads what 3 wrote)
 5. lcov observed tier        (medium, needs 3)
 6. field edges               (small, frontend-only)
-7. legs, grid log, bisect    (large, needs nothing above but pays last)
+7. edits, grid log, bisect   (large, needs nothing above but pays last)
 ```
 
 ---
@@ -110,14 +110,14 @@ one row:
 - Porcelain: glyph `>` with the old name in the context column, mirroring
   the edge `moved_from` rendering:
   `def     >  survey.extract_all  (was survey.collect_facts)  @6e05`.
-- xte/gate: `TrackDefPromiseAction::Move` (`"move"`, additive) so a rename
+- gate: `PlanDefPromiseAction::Move` (`"move"`, additive) so a rename
   can be promised; an unpromised Moved row is one unpromised change, not
   an unpromised add *and* an unpromised remove.
 
 **Tests.** Delta fixture: rename a def between two surveyed states, assert
 one `moved` row and zero added/removed rows; the ambiguous-pair case
 asserts the -/+ fallback. Gate test: a promised `move` passes, an
-unpromised one holds the gate with a single xte line.
+unpromised one holds the gate with a single verdict line.
 
 ---
 
@@ -211,11 +211,11 @@ fixture answers `Foo` for `--relation implements` and nothing for
 
 ## 5. Observed tier for Rust: lcov ingestion, no tracer
 
-**Problem.** `wake`/`suspects`/`review --wake`/`bisect` need runtime
+**Problem.** `trace`/`suspects`/`check --trace`/`bisect` need runtime
 evidence; only Python traces exist. Writing a Rust tracer is a project.
 Coverage already exists: `cargo llvm-cov --lcov` per test run.
 
-**Design.** New ingest path: `grid wake ingest --lcov <file> --test <name>`.
+**Design.** New ingest path: `grid trace ingest --lcov <file> --test <name>`.
 
 - lcov is line-oriented: `SF:<path>` opens a file record, `DA:<line>,<n>`
   marks an executed line. The parser is a fold over lines; std only.
@@ -224,9 +224,9 @@ Coverage already exists: `cargo llvm-cov --lcov` per test run.
   epoch's `DefLocs` (item 3) → datum. Executed lines that land in no def
   (module level, macro output) are dropped — omission, counted and
   reported in the ingest summary.
-- Wire fit, no schema change: `WakeObservation { caller:
+- Wire fit, no schema change: `TraceObservation { caller:
   Symbol("test:<name>"), callee: Datum(d) }` — "this test reached this
-  datum", observed grade. One wake per test invocation; per-test
+  datum", observed grade. One trace per test invocation; per-test
   granularity comes from running suites test-by-test (nextest or
   `--test-threads` batching is the caller's business, not grid's).
 - Suspects/Ochiai then works on Rust unchanged: it consumes touch sets.
@@ -268,31 +268,31 @@ survey.FileFacts --relation writes_field` answers `survey.extract`.
 
 ---
 
-## 7. Legs, `grid log`, and a bisect that opens
+## 7. Edits, `grid log`, and a bisect that opens
 
 **Problem.** `bisect` fails closed: grid retains snapshots, not an
-ordered history. The ontology already names the missing nouns: `leg` (one
-edit edge, was→now) and `log` (the patch DAG). `grid log X` — a datum's
+ordered history. The ontology already names the missing nouns: `edit` (one
+edit edge, was→now) and `history` (the patch DAG). `grid log X` — a datum's
 history, blame in identity space — falls out of the same store.
 
 **Design.**
 
-- *Storage*: `.grid/log` — append-only JSONL of wire `Leg` rows
+- *Storage*: `.grid/log` — append-only JSONL of wire `Edit` rows
   (`from`/`to` datums, `git_rev`, `at`), fsynced on append with the same
-  write-then-rename discipline as the manifest. JSONL because legs are
+  write-then-rename discipline as the manifest. JSONL because edits are
   wire types already and the log is read start-to-end; a CSR log is
   premature until a real log is slow.
-- *Writers*, two: `grid edit apply` records one leg per `Modified` detail
-  (it already computes was→now); `survey_run` records legs derived from
+- *Writers*, two: `grid edit apply` records one edit per `Modified` detail
+  (it already computes was→now); `survey_run` records edits derived from
   the delta against the previous live snapshot — same-datum joins from
   item 2 give `from`, modified rows give both ends. Edits made outside
-  grid are thus still captured at the next survey, coarser (one leg per
+  grid are thus still captured at the next survey, coarser (one edit row per
   survey interval, not per edit).
 - *`grid log <name>`*: resolve the name, walk the log backwards
-  collecting legs whose `to` (then transitively `from`) chains to it:
-  `leg  @6e05 -> @3243  @1177722  2026-08-27` rows, newest first.
+  collecting edits whose `to` (then transitively `from`) chains to it:
+  `edit  @6e05 -> @3243  @1177722  2026-08-27` rows, newest first.
 - *Bisect*: `bisect.rs`'s pure search is already written and seeded-
-  history-tested. Feed it the leg chain for the suspect datum plus cache
+  history-tested. Feed it the edit chain for the suspect datum plus cache
   verdicts (`grid cache record test …` outcomes keyed by datum, which
   exist). The wire method stops failing closed when the chain for the
   queried datum has ≥ 2 entries with at least one recorded verdict at
@@ -301,8 +301,8 @@ history, blame in identity space — falls out of the same store.
 
 **Tests.** Log append survives kill-9 (extend the crash_safety harness to
 the log file — same temp+rename invariant); `grid log` over a seeded
-three-edit chain prints three legs in order; bisect over that chain with
-a verdict flip localizes the culprit leg; a datum with no history keeps
+three-edit chain prints three edit rows in order; bisect over that chain
+with a verdict flip localizes the culprit edit; a datum with no history keeps
 the fail-closed error verbatim.
 
 **Ceilings.** No cross-rename identity chase in `log` v1 (a rename is a
@@ -318,17 +318,17 @@ verb's help).
 **Problem.** Complexity alone is noise (a flat match table scores high
 and is fine); complexity times edit-frequency is the empirically backed
 "refactor this first" signal. Grid is uniquely placed: its churn is in
-identity space — legs chain datums, so the count survives renames.
+identity space — edits chain datums, so the count survives renames.
 
 **Design.** One read-only walk: for every live def, `score =
-complexity × (1 + legs touching its datum lineage)`. Porcelain, sorted
+complexity × (1 + edits touching its datum lineage)`. Porcelain, sorted
 descending, file:line from item 3:
 
 ```
-hot     survey.run_sources  cx 14  legs 6  crates/survey/src/lib.rs:243
+hot     survey.run_sources  cx 14  edits 6  crates/survey/src/lib.rs:243
 ```
 
-Until item 7 lands, `legs` degrades to "changed in the current worktree
+Until item 7 lands, `edits` degrades to "changed in the current worktree
 diff" (0/1) and the header says so. No thresholds, no gate, no exit-code
 opinion: clippy owns lints; grid reports, and the header names the
 evidence grade (heuristic). `--limit N` defaults to 20.
@@ -350,7 +350,7 @@ work. Revisit only if hotspot rankings mislead in practice.
 - `grid resolve survey.extract` prints `crates/survey/src/lib.rs:<line>`.
 - A rename in the working tree shows one `>` row in bare `grid`.
 - `grid orphans` on this repo returns a reviewed, plausible list.
-- `cargo llvm-cov --lcov | grid wake ingest --lcov -` then
+- `cargo llvm-cov --lcov | grid trace ingest --lcov -` then
   `grid suspects <failing-test>` ranks datums on Rust.
 - `grid log survey.extract` shows the perf-pass edit chain.
 - `grid hotspots` ranks a branchy, frequently edited def above a large

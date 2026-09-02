@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     Anchor, CacheCheckRequest, CacheResultEntry, CallsignPattern, CarriedAnchor, Datum, DefRef,
-    DriftReport, EditResult, EditSpec, Estimate, GitRev, LeadlineQuery, LeadlineResult, LintResult,
-    Locator, MadeGood, ReviewPack, ScopePack, Snapshot, SnapshotId, SnapshotOrRev, Suspects,
-    TodoList, Track, TrackId, Wake, WakeDiff, WakeId, XteVerdict, Zoc,
+    Diff, DriftReport, EditResult, EditSpec, Estimate, GateVerdict, GitRev, Grade, LintResult,
+    Locator, Plan, PlanId, ScopePack, Snapshot, SnapshotId, SnapshotOrRev, Suspects, TodoList,
+    Trace, TraceDiff, TraceId, WalkQuery, WalkResult,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -58,24 +58,24 @@ pub struct DeltaParams {
     pub head: SnapshotOrRev,
 }
 
-pub type DeltaResult = MadeGood;
+pub type DeltaResult = Diff;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GateCheckParams {
-    pub track: Track,
+    pub plan: Plan,
     pub head: SnapshotOrRev,
 }
 
-pub type GateCheckResult = XteVerdict;
+pub type GateCheckResult = GateVerdict;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueryWalkParams {
-    pub query: LeadlineQuery,
+    pub query: WalkQuery,
 }
 
-pub type QueryWalkResult = LeadlineResult;
+pub type QueryWalkResult = WalkResult;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -88,13 +88,13 @@ pub type AnchorCarryResult = Vec<CarriedAnchor>;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WakeIngestParams {
-    pub wake: Wake,
+pub struct TraceIngestParams {
+    pub trace: Trace,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WakeIngestResult {
+pub struct TraceIngestResult {
     pub observed_edges: u64,
     pub resolved: u64,
     pub unresolved_symbols: Vec<String>,
@@ -114,7 +114,7 @@ pub struct CacheRecordParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<SnapshotId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wake_id: Option<String>,
+    pub trace_id: Option<String>,
     pub results: Vec<CacheResultEntry>,
 }
 
@@ -156,21 +156,21 @@ pub type ScopeResult = ScopePack;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TrackLintParams {
-    pub track: Track,
+pub struct PlanLintParams {
+    pub plan: Plan,
 }
 
-pub type TrackLintResult = LintResult;
+pub type PlanLintResult = LintResult;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TrackEstimateParams {
-    pub track: Track,
+pub struct PlanEstimateParams {
+    pub plan: Plan,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<SnapshotOrRev>,
 }
 
-pub type TrackEstimateResult = Estimate;
+pub type PlanEstimateResult = Estimate;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -183,7 +183,7 @@ pub type EditApplyResult = EditResult;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TodoParams {
-    pub track: TrackId,
+    pub plan: PlanId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head: Option<SnapshotOrRev>,
 }
@@ -192,30 +192,28 @@ pub type TodoResult = TodoList;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ReviewPackParams {
-    pub track: TrackId,
+pub struct CheckParams {
+    pub plan: PlanId,
     pub head: SnapshotOrRev,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wake: Option<WakeId>,
+    pub trace: Option<TraceId>,
 }
-
-pub type ReviewPackResult = ReviewPack;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WakeDiffParams {
-    pub green: WakeId,
-    pub red: WakeId,
+pub struct TraceDiffParams {
+    pub green: TraceId,
+    pub red: TraceId,
 }
 
-pub type WakeDiffResult = WakeDiff;
+pub type TraceDiffResult = TraceDiff;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SuspectsParams {
     pub test: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wake: Option<WakeId>,
+    pub trace: Option<TraceId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<SnapshotOrRev>,
 }
@@ -236,9 +234,9 @@ pub struct DriftParams {
     pub base: SnapshotOrRev,
     pub head: SnapshotOrRev,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub floor: Option<Zoc>,
+    pub floor: Option<Grade>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub track: Option<Track>,
+    pub plan: Option<Plan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tests: Option<bool>,
 }

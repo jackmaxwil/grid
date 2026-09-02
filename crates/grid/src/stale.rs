@@ -4,10 +4,10 @@
 //! about a specific key, and nobody asks. Stale verdicts need *enumeration*:
 //! pushed, not pulled.
 //!
-//! The registry exists already and implicitly: every `grid wake ingest --test
-//! <name>` names a test, and a retained wake carries that name. So the set of
-//! known tests is the set of names the wake store holds, and a verdict is
-//! attributed to a test through the wake id the cache line already records —
+//! The registry exists already and implicitly: every `grid trace ingest --test
+//! <name>` names a test, and a retained trace carries that name. So the set of
+//! known tests is the set of names the trace store holds, and a verdict is
+//! attributed to a test through the trace id the cache line already records —
 //! no second copy of the name anywhere.
 //!
 //! For each known test, its closure key is recomputed at head and looked up:
@@ -28,7 +28,7 @@ use grid_wire::{DriftWarning, StaleTest, StaleTestReason};
 pub struct Report {
     /// Tests whose recorded verdict no longer applies, sorted by name.
     pub stale: Vec<StaleTest>,
-    /// Recorded verdicts that name no retained wake, so no test owns them.
+    /// Recorded verdicts that name no retained trace, so no test owns them.
     /// Counted rather than ignored: an unattributed verdict is one this
     /// enumeration silently did not check.
     pub unattributed: u64,
@@ -42,7 +42,7 @@ pub struct Report {
 /// the head chart.
 ///
 /// # Errors
-/// A human-readable message when the wake store or the verdict log cannot be
+/// A human-readable message when the trace store or the verdict log cannot be
 /// read. Neither is an empty set: a store that fails to open has unknown
 /// contents, and reporting "no stale tests" for it would be exactly the
 /// dishonest silence this verb exists to end.
@@ -51,14 +51,15 @@ pub fn tests<B: AsRef<[u8]>>(
     head: &[grid_chart::Segment<B>],
     resolve: impl Fn(&str) -> Option<grid_chart::DatumId>,
 ) -> Result<Report, String> {
-    let wakes = grid_wake::Store::open(crate::rpc::wake_dir(root))
+    let traces = crate::rpc::trace_dir(root)
+        .and_then(grid_trace::Store::open)
         .and_then(|store| store.retained())
         .map_err(|e| e.to_string())?;
-    // wake id -> the test that produced it. A wake with no command names no
+    // trace id -> the test that produced it. A trace with no command names no
     // test, and its verdicts are unattributed rather than guessed at.
-    let test_of: BTreeMap<&str, &str> = wakes
+    let test_of: BTreeMap<&str, &str> = traces
         .iter()
-        .filter_map(|w| Some((w.wake.wake_id.as_str(), w.wake.command.as_deref()?)))
+        .filter_map(|w| Some((w.trace.trace_id.as_str(), w.trace.command.as_deref()?)))
         .collect();
 
     let cache = grid_cache::Cache::open(crate::rpc::cache_path(root)).map_err(|e| e.to_string())?;
@@ -71,7 +72,7 @@ pub fn tests<B: AsRef<[u8]>>(
     let mut unattributed = 0u64;
     for (_, entry) in cache.entries() {
         let attributed = entry
-            .wake_id
+            .trace_id
             .as_deref()
             .and_then(|id| test_of.get(id))
             .zip(entry.env_hash.as_deref());
@@ -79,7 +80,7 @@ pub fn tests<B: AsRef<[u8]>>(
             Some((test, env)) => {
                 envs.entry(test).or_default().insert(env);
             }
-            // Either the verdict named no wake, or its wake is not retained,
+            // Either the verdict named no trace, or its trace is not retained,
             // or it predates the environment column. All three mean the same
             // thing: nobody can say which test it belongs to.
             None => unattributed = unattributed.saturating_add(1),
@@ -146,31 +147,33 @@ mod tests {
     use super::{tests as enumerate, StaleTestReason};
     use grid_chart::{DatumId, Segment};
 
-    fn seeded(wake_id: &str, command: Option<&str>, env: Option<&str>) -> tempfile::TempDir {
+    fn seeded(trace_id: &str, command: Option<&str>, env: Option<&str>) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
-        let wake = grid_wire::Wake {
-            wake_id: wake_id.to_owned(),
+        let trace = grid_wire::Trace {
+            trace_id: trace_id.to_owned(),
             git_rev: grid_wire::GitRev("rev".into()),
             command: command.map(str::to_owned),
             started_at: None,
             observations: Vec::new(),
         };
-        let store = grid_wake::Store::open(crate::rpc::wake_dir(dir.path())).expect("wake store");
+        let store = crate::rpc::trace_dir(dir.path())
+            .and_then(grid_trace::Store::open)
+            .expect("trace store");
         let empty: [Segment<Vec<u8>>; 0] = [];
         store
-            .put(&wake, &grid_wake::ingest(&empty, &wake))
+            .put(&trace, &grid_trace::ingest(&empty, &trace))
             .expect("retain");
 
         let mut cache = grid_cache::Cache::open(crate::rpc::cache_path(dir.path())).expect("cache");
         // The key's value is irrelevant: what matters is that an entry
-        // exists and says which wake and which environment produced it.
+        // exists and says which trace and which environment produced it.
         cache
             .put(
                 seed_key(),
                 grid_cache::Entry {
                     verdict: grid_cache::Verdict::Pass,
                     recorded_at: "1970-01-01T00:00:00Z".into(),
-                    wake_id: Some(wake_id.to_owned()),
+                    trace_id: Some(trace_id.to_owned()),
                     env_hash: env.map(str::to_owned),
                 },
             )
@@ -203,7 +206,7 @@ mod tests {
     /// one-directional soundness read backwards.
     #[test]
     fn a_closure_that_cannot_be_established_is_stale_never_fresh() {
-        let dir = seeded("wake:t", Some("m.t"), Some("env-1"));
+        let dir = seeded("trace:t", Some("m.t"), Some("env-1"));
         let empty: [Segment<Vec<u8>>; 0] = [];
         let found =
             enumerate(dir.path(), &empty, |_| Some(DatumId([1; 32]))).expect("enumeration answers");
@@ -213,11 +216,11 @@ mod tests {
         assert_eq!(found.unattributed, 0);
     }
 
-    /// A verdict whose wake names no test cannot be attributed, and is
+    /// A verdict whose trace names no test cannot be attributed, and is
     /// counted rather than checked-and-passed.
     #[test]
     fn a_verdict_from_a_nameless_wake_is_unattributed() {
-        let dir = seeded("wake:t", None, Some("env-1"));
+        let dir = seeded("trace:t", None, Some("env-1"));
         let empty: [Segment<Vec<u8>>; 0] = [];
         let found =
             enumerate(dir.path(), &empty, |_| Some(DatumId([1; 32]))).expect("enumeration answers");
@@ -229,7 +232,7 @@ mod tests {
     /// key it was filed under cannot be recomputed without it.
     #[test]
     fn a_verdict_with_no_recorded_environment_is_unattributed() {
-        let dir = seeded("wake:t", Some("m.t"), None);
+        let dir = seeded("trace:t", Some("m.t"), None);
         let empty: [Segment<Vec<u8>>; 0] = [];
         let found =
             enumerate(dir.path(), &empty, |_| Some(DatumId([1; 32]))).expect("enumeration answers");

@@ -1,7 +1,7 @@
 //! Build-time generation of the `grid explain` corpus.
 //!
 //! Two sources of truth, one generated table: the wire contract's schema
-//! descriptions (`docs/wire-v0.openrpc.json`) and the normative vocabulary
+//! descriptions (`docs/wire-v1.openrpc.json`) and the normative vocabulary
 //! (`docs/ONTOLOGY.md`). ONTOLOGY wins a collision — it is the curated
 //! answer; the wire description is the fallback for everything else. Nothing
 //! about help text is hand-maintained in the binary, so help cannot drift
@@ -12,7 +12,7 @@ use std::path::Path;
 
 fn main() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let wire = manifest.join("../../docs/wire-v0.openrpc.json");
+    let wire = manifest.join("../../docs/wire-v1.openrpc.json");
     let ontology = manifest.join("../../docs/ONTOLOGY.md");
     println!("cargo:rerun-if-changed={}", wire.display());
     println!("cargo:rerun-if-changed={}", ontology.display());
@@ -31,11 +31,19 @@ fn main() {
         }
     }
 
-    // Ontology table rows: `| `token` | the answer |`. Overrides win.
+    // Ontology table rows: `| `token` | the answer |`. Overrides win. The
+    // `## Former names` table is `| old | new |` instead — an alias, not a
+    // definition — so it is collected separately and never enters the corpus.
+    let mut former: BTreeMap<String, String> = BTreeMap::new();
+    let mut in_former = false;
     for line in std::fs::read_to_string(&ontology)
         .expect("ONTOLOGY.md is readable")
         .lines()
     {
+        if let Some(heading) = line.strip_prefix("## ") {
+            in_former = heading.trim() == "Former names";
+            continue;
+        }
         let cells: Vec<&str> = line.split('|').map(str::trim).collect();
         // split('|') on "| a | b |" yields ["", "a", "b", ""].
         let [empty, token, meaning, ..] = cells.as_slice() else {
@@ -47,10 +55,24 @@ fn main() {
         let Some(token) = token.strip_prefix('`').and_then(|t| t.strip_suffix('`')) else {
             continue;
         };
-        if token == "token" || token.starts_with('-') {
+        if token == "token" || token == "old" || token.starts_with('-') {
             continue;
         }
-        entries.insert((*token).to_string(), one_line(meaning));
+        if in_former {
+            let now = meaning
+                .strip_prefix('`')
+                .and_then(|m| m.strip_suffix('`'))
+                .expect("a former-names row names the new token in backticks");
+            former.insert((*token).to_string(), now.to_string());
+        } else {
+            entries.insert((*token).to_string(), one_line(meaning));
+        }
+    }
+    for (old, now) in &former {
+        assert!(
+            entries.contains_key(now),
+            "former name `{old}` points at `{now}`, which ONTOLOGY.md does not define"
+        );
     }
 
     let mut generated = String::from(
@@ -59,6 +81,15 @@ fn main() {
     );
     for (token, meaning) in &entries {
         writeln!(generated, "    ({token:?}, {meaning:?}),").expect("write to string");
+    }
+    generated.push_str("];\n");
+    generated.push_str(
+        "/// Retired words: old token -> the token that replaced it, sorted by\n\
+         /// old token. GENERATED from ONTOLOGY.md's `## Former names` table.\n\
+         pub static FORMER: &[(&str, &str)] = &[\n",
+    );
+    for (old, now) in &former {
+        writeln!(generated, "    ({old:?}, {now:?}),").expect("write to string");
     }
     generated.push_str("];\n");
     std::fs::write(

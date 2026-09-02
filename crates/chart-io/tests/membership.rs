@@ -30,7 +30,7 @@ fn image(defs: &[Def]) -> Vec<u8> {
 }
 
 /// The plan's ground truth: a membership merge-diff finds exactly the
-/// definitions `made_good` reports as added and removed. The two paths share
+/// definitions `diff` reports as added and removed. The two paths share
 /// no code — one is set algebra over ordinals, the other loads and compares
 /// definitions — so agreement is evidence.
 #[test]
@@ -56,7 +56,7 @@ fn a_membership_diff_agrees_with_the_delta_path() {
         Change::Added(d) | Change::Removed(d) => d.0,
     });
 
-    let delta = grid_chart::made_good(
+    let delta = grid_chart::diff(
         grid_wire::SnapshotId(base.as_str().to_owned()),
         store.epoch_of(&base).expect("base").segments(),
         grid_wire::SnapshotId(head.as_str().to_owned()),

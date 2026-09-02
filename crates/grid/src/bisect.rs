@@ -15,7 +15,7 @@ use crate::chart_provider;
 #[derive(Debug)]
 pub enum Error {
     #[allow(dead_code)]
-    UnknownWake(String),
+    UnknownTrace(String),
     InsufficientHistory(String),
     Chart(chart_provider::Error),
 }
@@ -23,7 +23,7 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnknownWake(id) => write!(f, "unknown wake: {id}"),
+            Self::UnknownTrace(id) => write!(f, "unknown trace: {id}"),
             Self::InsufficientHistory(why) => write!(f, "insufficient history: {why}"),
             Self::Chart(error) => error.fmt(f),
         }
@@ -75,13 +75,13 @@ pub fn search(chain: &[Probe]) -> Result<BisectResult, Error> {
     })
 }
 
-/// Production entry point: the retained patch log in append order, each leg
-/// probed with the outcome recorded for `(its datum, this test)`. A leg
+/// Production entry point: the retained patch log in append order, each edit
+/// probed with the outcome recorded for `(its datum, this test)`. A edit
 /// with no recorded outcome cannot be probed and is skipped; a chain whose
 /// probed ends are not good-then-bad still refuses — fail closed stays the
 /// contract, the condition just became satisfiable.
 pub fn run(params: &BisectParams, root: &Path) -> Result<BisectResult, Error> {
-    let outcomes = crate::legs::outcomes(root);
+    let outcomes = crate::history::outcomes(root);
     let verdict_of = |datum: &str| {
         outcomes
             .iter()
@@ -90,19 +90,19 @@ pub fn run(params: &BisectParams, root: &Path) -> Result<BisectResult, Error> {
             .map(|o| o.fails)
     };
     let mut chain = Vec::new();
-    for leg in crate::legs::read(root) {
+    for edit in crate::history::read(root) {
         if chain.is_empty() {
-            if let Some(fails) = verdict_of(&leg.from.0) {
+            if let Some(fails) = verdict_of(&edit.from.0) {
                 chain.push(Probe {
-                    culprit: leg.from.clone(),
+                    culprit: edit.from.clone(),
                     fails,
                     cached: true,
                 });
             }
         }
-        if let Some(fails) = verdict_of(&leg.to.0) {
+        if let Some(fails) = verdict_of(&edit.to.0) {
             chain.push(Probe {
-                culprit: leg.to.clone(),
+                culprit: edit.to.clone(),
                 fails,
                 cached: true,
             });

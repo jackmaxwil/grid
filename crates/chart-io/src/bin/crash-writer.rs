@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use grid_chart::{build, DatumId, Def, Edge};
-use grid_wire::{Lang, Relation, Zoc};
+use grid_wire::{Grade, Lang, Relation};
 
 fn main() {
     let dir = PathBuf::from(std::env::args().nth(1).expect("usage: crash-writer <dir>"));
@@ -28,7 +28,7 @@ fn main() {
                 src: DatumId([i; 32]),
                 dst: DatumId([i + 1; 32]),
                 relation: Relation::Calls,
-                zoc: Zoc::Proven,
+                grade: Grade::Proven,
             })
             .collect();
         let image = build(&defs, &edges).expect("build");

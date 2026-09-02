@@ -25,9 +25,9 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 | C15 | an edit addressed at a stale coordinate conflicts and writes nothing; it never lands against moved code | edit_apply.rs | 6 |
 
 | C16 | an observed edge exists only where both endpoints resolve; every endpoint that does not resolve is returned, never dropped | ingest.rs | 8 |
-| C17 | two wakes fork at the first hop where their call order parts, and each trace's exclusive edges are itemized | diff.rs | 8 |
+| C17 | two traces fork at the first hop where their call order parts, and each trace's exclusive edges are itemized | diff.rs | 8 |
 
-| C18 | a bridged hop the language does not establish is labeled `Zoc::Modeled`, is deterministic, and is never upgraded to proven | query.rs walk.rs | 9 |
+| C18 | a bridged hop the language does not establish is labeled `Grade::Modeled`, is deterministic, and is never upgraded to proven | query.rs walk.rs | 9 |
 | C19 | `grid.query.walk` answers over the real socket with the same traversal the engine uses, not a second one | conformance.rs walk.rs | 9 |
 | C20 | a review pack contains only paths that fulfill the request, plus the divergences that refused it | porcelain.rs conformance.rs | 9 |
 
@@ -37,9 +37,9 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 
 | C24 | a definition's `sig` moves when and only when a caller could see the change; a snapshot that predates the sig column answers *unknown*, never *unchanged* | sig.rs sig_delta.rs epochs.rs | 10+ |
 | C25 | a drift suspect is a dependent whose own datum did not move, reached by an edge at or above the query's floor; an inbound walk over budget refuses the whole answer, and every reference the survey declined is counted in the report, never silently absent | drift.rs conformance.rs | 10+ |
-| C26 | an observed edge is graded `observed` only while both its endpoints are interned in the chart asked about; any endpoint that cannot be verified demotes it to `heuristic` with reason `stale-trace`, and the retained wake is never rewritten | decay.rs drift.rs | 10+ |
+| C26 | an observed edge is graded `observed` only while both its endpoints are interned in the chart asked about; any endpoint that cannot be verified demotes it to `heuristic` with reason `stale-trace`, and the retained trace is never rewritten | decay.rs drift.rs | 10+ |
 | C27 | a covenant fires only where one declared side changed and the other held, is symmetric in the two patterns, gates at `modeled` because a human declared it, and warns rather than silently passing when a pattern matches nothing at drift time | drift.rs covenant.rs | 10+ |
-| C28 | a test's recorded verdict is reported fresh only when its closure key, recomputed at head, is one the cache holds; a closure that cannot be established is stale, and a verdict no retained wake claims is counted rather than checked | stale.rs drift.rs | 10+ |
+| C28 | a test's recorded verdict is reported fresh only when its closure key, recomputed at head, is one the cache holds; a closure that cannot be established is stale, and a verdict no retained trace claims is counted rather than checked | stale.rs drift.rs | 10+ |
 | C29 | a membership diff of two snapshots names exactly the definitions the delta path does; an image extended one snapshot at a time is byte-identical to one rebuilt from the whole chain; a snapshot the chain never held is a typed refusal, never an empty diff | membership.rs | 10+ |
 | C30 | a weak-test finding requires all four facts — the definition's datum moved, a live trace covers it, the test's own datum held, and a pass is on record at both endpoints — is graded heuristic, and never moves the exit code; coverage from a decayed trace yields no finding and is counted | weak.rs | 10+ |
 | C31 | an aground walk's `complete_within` is a layer it fully expanded, so the answer truncated to that depth equals the unbudgeted walk's under the same filter; a walk whose first layer did not finish certifies nothing | certificate.rs walk.rs | 10+ |
@@ -110,17 +110,17 @@ Every dependency in `Cargo.lock` gets a line here saying why it is in the TCB.
   `serde_json` becomes a *build* dependency of `grid` (the explain corpus is
   generated from the wire contract at build time); it has been in the TCB
   since Wave 1, so the lockfile gains no package.
-- Wave 8 (`wake`): no new dependencies. A wake is ingested through
+- Wave 8 (`trace`): no new dependencies. A trace is ingested through
   `grid-chart`'s own resolver (the `grid.resolve` rule, so a trace names
   datums the same way every other verb does), retention is one `std::fs`
-  file per wake keyed by `blake3` — already in the TCB, and hashing the id
-  means no wake id is also a path — and the diff is `BTreeMap`/`BTreeSet`
+  file per trace keyed by `blake3` — already in the TCB, and hashing the id
+  means no trace id is also a path — and the diff is `BTreeMap`/`BTreeSet`
   ordering, not a graph library.
-- Wave 9 (`leadline` in `grid`): no new packages. `grid` gains a path
-  dependency on the workspace's existing `grid-leadline` crate so the daemon
+- Wave 9 (`walk` in `grid`): no new packages. `grid` gains a path
+  dependency on the workspace's existing `grid-walk` crate so the daemon
   runs the *same* traversal the engine is proven on (C3) rather than a second
   implementation the proofs would not cover; `Cargo.lock` gains nothing.
-  Modeled bridge hops are static tables in `grid-leadline`, not an inference
+  Modeled bridge hops are static tables in `grid-walk`, not an inference
   engine: a table is auditable and deterministic, and it is why C18 can say
   a modeled hop never becomes proven.
 
@@ -150,7 +150,7 @@ and is caught anyway by the manifest checksum before any byte is interpreted.
 Interpretation happens in `grid-chart`, which is safe code, so hostile bytes
 reach validation and nothing else (C1).
 
-- Wave 3 (`xte`, `grid`): `serde_json` — already in the TCB from Wave 1; the
+- Wave 3 (`gate`, `grid`): `serde_json` — already in the TCB from Wave 1; the
   daemon speaks JSON-RPC, which is the wire's own format, so no second codec
   enters. `proptest` (dev-only) — the property harness C8/C9 are evidenced by.
   `tempfile` (dev-only) — the CLI and socket tests need a throwaway git repo;

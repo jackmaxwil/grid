@@ -5,15 +5,15 @@
 //! `grep '^edge  miss'` is the explanation and `awk` is the parser. Nothing
 //! here writes to stderr: hints are the caller's business.
 
-use grid_wire::methods::{CacheRecordResult, WakeIngestResult};
+use grid_gate::lint::{relation_name, render_edge};
+use grid_wire::methods::{CacheRecordResult, TraceIngestResult};
 use grid_wire::{
-    CacheCheckResult, CacheHitVerdict, DefChangeAction, EdgeChange, LintResult,
-    TestComparisonActual, TestComparisonExpected, TrackEdgePromise, XteVerdict, XteVerdictGate,
+    CacheCheckResult, CacheHitVerdict, DefChangeAction, EdgeChange, GateVerdict, GateVerdictGate,
+    LintResult, PlanEdgePromise, TestComparisonActual, TestComparisonExpected,
 };
-use grid_xte::lint::{relation_name, render_edge};
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "1.6.0";
+pub const VERSION: &str = "2.0.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -78,15 +78,15 @@ pub type NameOf<'a> = dyn Fn(&grid_wire::Datum) -> Option<String> + 'a;
 
 /// Promise arrows drop the leading action word: the verdict role column
 /// already says what happened to the promise.
-fn promise_arrow(p: &TrackEdgePromise) -> String {
+fn promise_arrow(p: &PlanEdgePromise) -> String {
     let rendered = render_edge(p);
     rendered
         .split_once(' ')
         .map_or(rendered.clone(), |(_, rest)| rest.to_string())
 }
 
-const fn zoc_name(z: grid_wire::Zoc) -> &'static str {
-    use grid_wire::Zoc as Z;
+const fn grade_name(z: grid_wire::Grade) -> &'static str {
+    use grid_wire::Grade as Z;
     match z {
         Z::Proven => "proven",
         Z::Observed => "observed",
@@ -112,17 +112,17 @@ const fn actual_name(a: TestComparisonActual) -> &'static str {
     }
 }
 
-/// Render a gate verdict. The first record is `pass` or `hold` with the track
+/// Render a gate verdict. The first record is `pass` or `hold` with the plan
 /// and snapshot; every divergence follows as its own record.
 #[must_use]
-pub fn verdict(v: &XteVerdict, name: &NameOf) -> String {
+pub fn verdict(v: &GateVerdict, name: &NameOf) -> String {
     let mut out = String::new();
-    let head = grid_xte::snapshot_display(&v.head);
+    let head = grid_gate::snapshot_display(&v.head);
     let tag = match v.gate {
-        XteVerdictGate::Pass => "pass",
-        XteVerdictGate::Hold => "hold",
+        GateVerdictGate::Pass => "pass",
+        GateVerdictGate::Hold => "hold",
     };
-    record(&mut out, tag, &[&v.track_id, &head]);
+    record(&mut out, tag, &[&v.plan_id, &head]);
 
     // Verdict roles on `edge` records, padded to the widest of them so the
     // arrow column lines up whichever roles a verdict happens to contain.
@@ -136,7 +136,11 @@ pub fn verdict(v: &XteVerdict, name: &NameOf) -> String {
         record(
             &mut out,
             "edge",
-            &[&role("surplus"), &edge_arrow(c, name), zoc_name(c.edge.zoc)],
+            &[
+                &role("surplus"),
+                &edge_arrow(c, name),
+                grade_name(c.edge.grade),
+            ],
         );
     }
     for c in &v.tolerated {
@@ -146,7 +150,7 @@ pub fn verdict(v: &XteVerdict, name: &NameOf) -> String {
             &[
                 &role("tolerated"),
                 &edge_arrow(c, name),
-                zoc_name(c.edge.zoc),
+                grade_name(c.edge.grade),
             ],
         );
     }
@@ -164,34 +168,34 @@ pub fn verdict(v: &XteVerdict, name: &NameOf) -> String {
     out
 }
 
-/// Render a track: its promises as `todo` records, since a promise is work
+/// Render a plan: its promises as `todo` records, since a promise is work
 /// not yet made good, plus its standing invariants.
 #[must_use]
-pub fn track(t: &grid_wire::Track) -> String {
+pub fn plan(t: &grid_wire::Plan) -> String {
     let mut out = String::new();
     let base = match &t.base {
         grid_wire::SnapshotOrRev::GitRev { git_rev } => git_rev.0.clone(),
-        grid_wire::SnapshotOrRev::Snapshot { snapshot } => grid_xte::snapshot_display(snapshot),
+        grid_wire::SnapshotOrRev::Snapshot { snapshot } => grid_gate::snapshot_display(snapshot),
     };
-    record(&mut out, "todo", &[&t.track_id, &base]);
+    record(&mut out, "todo", &[&t.plan_id, &base]);
     for d in &t.delta.defs {
         let action = match d.action {
-            grid_wire::TrackDefPromiseAction::Add => "+",
-            grid_wire::TrackDefPromiseAction::Remove => "-",
-            grid_wire::TrackDefPromiseAction::Modify => "~",
-            grid_wire::TrackDefPromiseAction::Move => ">",
+            grid_wire::PlanDefPromiseAction::Add => "+",
+            grid_wire::PlanDefPromiseAction::Remove => "-",
+            grid_wire::PlanDefPromiseAction::Modify => "~",
+            grid_wire::PlanDefPromiseAction::Move => ">",
         };
         record(&mut out, "def", &[action, &d.callsign.0]);
     }
     for e in &t.delta.edges {
         let glyph = match e.action {
-            grid_wire::TrackEdgePromiseAction::Add => "+",
-            grid_wire::TrackEdgePromiseAction::Remove => "-",
-            grid_wire::TrackEdgePromiseAction::Move => ">",
+            grid_wire::PlanEdgePromiseAction::Add => "+",
+            grid_wire::PlanEdgePromiseAction::Remove => "-",
+            grid_wire::PlanEdgePromiseAction::Move => ">",
         };
         record(&mut out, "edge", &[glyph, &promise_arrow(e)]);
     }
-    // A track's tests are promises, not comparisons: there is no actual
+    // A plan's tests are promises, not comparisons: there is no actual
     // outcome to put in a `test` record's `expected=actual` column yet.
     for t in t.tests.iter().flatten() {
         record(&mut out, "todo", &["test", &t.test, expect_name(t.expect)]);
@@ -213,7 +217,7 @@ const fn expect_name(e: grid_wire::ExpectedTestExpect) -> &'static str {
 
 /// Render a lint result as `warn` records: callsign, then message — the two
 /// columns the grammar defines, no more. Severity is not a column because it
-/// is the exit code: a track with errors exits 2, a track with only warnings
+/// is the exit code: a plan with errors exits 2, a plan with only warnings
 /// exits 0. Callers that need the split structurally read `--json`, which is
 /// the `LintResult` verbatim with its two arrays intact.
 #[must_use]
@@ -270,9 +274,9 @@ pub fn snapshot(s: &grid_wire::Snapshot, run: Option<(u64, std::time::Duration)>
 /// callsign, and a trailing column that is the datum transition for a def and
 /// the evidence grade for an edge.
 #[must_use]
-pub fn diff(made_good: &grid_wire::MadeGood, name: &NameOf) -> String {
+pub fn diff(diff: &grid_wire::Diff, name: &NameOf) -> String {
     let mut out = String::new();
-    for d in &made_good.defs {
+    for d in &diff.defs {
         // `old→new` when both exist, otherwise the one that does: an added
         // definition has no before, a removed one has no after.
         // A move's datum held still; the interesting column is the old name.
@@ -295,7 +299,7 @@ pub fn diff(made_good: &grid_wire::MadeGood, name: &NameOf) -> String {
         }
         record(&mut out, "def", &columns);
     }
-    for e in &made_good.edges {
+    for e in &diff.edges {
         let glyph = match e.action {
             grid_wire::EdgeChangeAction::Added => "+",
             grid_wire::EdgeChangeAction::Removed => "-",
@@ -304,7 +308,7 @@ pub fn diff(made_good: &grid_wire::MadeGood, name: &NameOf) -> String {
         // A moved edge's trailing column is where it came from; anything else
         // reports the evidence that establishes it.
         let context = e.moved_from.as_ref().map_or_else(
-            || zoc_name(e.edge.zoc).to_owned(),
+            || grade_name(e.edge.grade).to_owned(),
             |from| format!("from {}", short(&from.src)),
         );
         record(&mut out, "edge", &[glyph, &edge_arrow(e, name), &context]);
@@ -396,13 +400,13 @@ pub fn declined(paths: &[String]) -> String {
     out
 }
 
-/// One `bind` record per declared covenant: the two patterns and the
+/// One `covenant` record per declared covenant: the two patterns and the
 /// boundary they meet across. A declaration, printed the way it was made.
 #[must_use]
 pub fn covenants(rows: &[grid_wire::Covenant]) -> String {
     let mut out = String::new();
     for c in rows {
-        record(&mut out, "bind", &[&c.a.0, &c.b.0, &c.via]);
+        record(&mut out, "covenant", &[&c.a.0, &c.b.0, &c.via]);
     }
     out
 }
@@ -427,7 +431,7 @@ fn drift_columns(s: &grid_wire::DriftSuspect) -> Vec<String> {
         _ => "sig?".to_owned(),
     };
     vec![
-        role(zoc_name(s.zoc)),
+        role(grade_name(s.grade)),
         name(&s.dependent),
         format!("<-{}-", relation_name(s.relation)),
         name(&s.changed),
@@ -550,7 +554,7 @@ pub fn refs_as(defs: &[grid_wire::DefRef], tag: &str) -> String {
     out
 }
 
-/// One row per hotspot: `hot  callsign  cx N  legs M  file:line`.
+/// One row per hotspot: `hot  callsign  cx N  edits M  file:line`.
 #[must_use]
 pub fn hotspots(rows: &[crate::rpc::Hotspot]) -> String {
     let mut out = String::new();
@@ -566,7 +570,7 @@ pub fn hotspots(rows: &[crate::rpc::Hotspot]) -> String {
             &[
                 &r.callsign,
                 &format!("cx {}", r.complexity),
-                &format!("legs {}", r.legs),
+                &format!("edits {}", r.edits),
                 &at,
             ],
         );
@@ -574,20 +578,23 @@ pub fn hotspots(rows: &[crate::rpc::Hotspot]) -> String {
     out
 }
 
-/// One row per leg, newest first: `leg  @from -> @to  rev`.
+/// One row per edit, newest first: `edit  @from -> @to  rev`.
 #[must_use]
-pub fn legs(rows: &[grid_wire::Leg]) -> String {
+pub fn edits(rows: &[grid_wire::Edit]) -> String {
     let mut out = String::new();
-    for leg in rows {
-        let rev = leg
+    for edit in rows {
+        let rev = edit
             .git_rev
             .as_ref()
             .map(|r| r.0.clone())
             .unwrap_or_default();
         record(
             &mut out,
-            "leg",
-            &[&format!("{} -> {}", short(&leg.from), short(&leg.to)), &rev],
+            "edit",
+            &[
+                &format!("{} -> {}", short(&edit.from), short(&edit.to)),
+                &rev,
+            ],
         );
     }
     out
@@ -628,7 +635,7 @@ fn edge_records(out: &mut String, edges: &[grid_wire::Edge], name: &NameOf) {
         record(
             out,
             "edge",
-            &[&role(zoc_name(edge.zoc)), &chart_edge_arrow(edge, name)],
+            &[&role(grade_name(edge.grade)), &chart_edge_arrow(edge, name)],
         );
     }
 }
@@ -672,7 +679,7 @@ pub fn uses(edges: &[grid_wire::Edge], name: &NameOf) -> String {
 /// Render a worklist: one `done` record carrying the overall fraction and
 /// the per-kind split (the CLI plan's `done 3/5 promises · edges 2/3 ·
 /// defs 1/1 · tests 0/1`, split at the column boundary), then every pending
-/// promise rendered exactly as the track store renders a fresh one — a
+/// promise rendered exactly as the plan store renders a fresh one — a
 /// promise is the same work whether it is being planned or chased.
 #[must_use]
 pub fn todo(list: &grid_wire::TodoList) -> String {
@@ -694,18 +701,18 @@ pub fn todo(list: &grid_wire::TodoList) -> String {
     );
     for d in &list.defs_pending {
         let action = match d.action {
-            grid_wire::TrackDefPromiseAction::Add => "+",
-            grid_wire::TrackDefPromiseAction::Remove => "-",
-            grid_wire::TrackDefPromiseAction::Modify => "~",
-            grid_wire::TrackDefPromiseAction::Move => ">",
+            grid_wire::PlanDefPromiseAction::Add => "+",
+            grid_wire::PlanDefPromiseAction::Remove => "-",
+            grid_wire::PlanDefPromiseAction::Modify => "~",
+            grid_wire::PlanDefPromiseAction::Move => ">",
         };
         record(&mut out, "def", &[action, &d.callsign.0]);
     }
     for e in &list.edges_pending {
         let glyph = match e.action {
-            grid_wire::TrackEdgePromiseAction::Add => "+",
-            grid_wire::TrackEdgePromiseAction::Remove => "-",
-            grid_wire::TrackEdgePromiseAction::Move => ">",
+            grid_wire::PlanEdgePromiseAction::Add => "+",
+            grid_wire::PlanEdgePromiseAction::Remove => "-",
+            grid_wire::PlanEdgePromiseAction::Move => ">",
         };
         record(&mut out, "edge", &[glyph, &promise_arrow(e)]);
     }
@@ -755,10 +762,10 @@ pub fn edit_conflicts(conflicts: &[grid_wire::EditResultConflictsItem]) -> Strin
     out
 }
 
-/// `done` / `warn` records for a wake ingest: how much of the trace became
+/// `done` / `warn` records for a trace ingest: how much of the trace became
 /// edges, and every symbol that did not (C15 — returned, never dropped).
 #[must_use]
-pub fn wake_ingest(result: &WakeIngestResult, total: u64) -> String {
+pub fn trace_ingest(result: &TraceIngestResult, total: u64) -> String {
     let mut out = String::new();
     record(
         &mut out,
@@ -770,11 +777,11 @@ pub fn wake_ingest(result: &WakeIngestResult, total: u64) -> String {
     }
     out
 }
-/// `fork` / `edge` records for a wake diff: where the traces parted, then
+/// `fork` / `edge` records for a trace diff: where the traces parted, then
 /// what each does that the other never did. Handles are datum-short because a
-/// wake is addressed by content, like a cache verdict.
+/// trace is addressed by content, like a cache verdict.
 #[must_use]
-pub fn wake_diff(diff: &grid_wire::WakeDiff) -> String {
+pub fn trace_diff(diff: &grid_wire::TraceDiff) -> String {
     let mut out = String::new();
     if let Some(fork) = &diff.first_divergence {
         let callee =
@@ -798,10 +805,10 @@ pub fn wake_diff(diff: &grid_wire::WakeDiff) -> String {
         )
     };
     for e in &diff.removed {
-        record(&mut out, "edge", &["-", &arrow(e), zoc_name(e.zoc)]);
+        record(&mut out, "edge", &["-", &arrow(e), grade_name(e.grade)]);
     }
     for e in &diff.added {
-        record(&mut out, "edge", &["+", &arrow(e), zoc_name(e.zoc)]);
+        record(&mut out, "edge", &["+", &arrow(e), grade_name(e.grade)]);
     }
     out
 }

@@ -1,4 +1,4 @@
-//! lcov -> wake: line coverage translated into test-reach observations.
+//! lcov -> trace: line coverage translated into test-reach observations.
 //!
 //! `cargo llvm-cov --lcov` (and lcov proper) emit `SF:<path>` file records
 //! holding `DA:<line>,<count>` execution counts. Every executed line that
@@ -9,19 +9,19 @@
 //! ingestion itself holds. Only two record kinds are read; the rest of the
 //! lcov vocabulary is skipped by design.
 //!
-//! An lcov wake is a *reach set*: hop order is file order and means
-//! nothing, so `grid wake diff`'s first-divergence walk is not meaningful
+//! An lcov trace is a *reach set*: hop order is file order and means
+//! nothing, so `grid trace diff`'s first-divergence walk is not meaningful
 //! over these — the edge sets are.
 use std::collections::BTreeMap;
 
 use grid_chart::Ordinal;
-use grid_wire::{Wake, WakeEndpoint, WakeObservation};
+use grid_wire::{Trace, TraceEndpoint, TraceObservation};
 
 use crate::chart_provider::{self, ChartDelta};
 
 /// Everything one lcov file mapped to, before ingestion.
 pub struct LcovWake {
-    pub wake: Wake,
+    pub trace: Trace,
     /// Executed lines that landed in no charted definition.
     pub unmapped_lines: u64,
     /// `SF:` files the chart holds no definitions for.
@@ -32,7 +32,7 @@ pub struct LcovWake {
 ///
 /// # Errors
 /// [`chart_provider::Error`] if the store cannot be opened.
-pub fn wake_of(
+pub fn trace_of(
     root: &std::path::Path,
     lcov: &str,
     test: &str,
@@ -101,19 +101,19 @@ pub fn wake_of(
 
     let observations = touched
         .into_iter()
-        .map(|(datum, count)| WakeObservation {
-            caller: WakeEndpoint::Symbol {
+        .map(|(datum, count)| TraceObservation {
+            caller: TraceEndpoint::Symbol {
                 symbol: test.to_owned(),
             },
-            callee: WakeEndpoint::Datum {
+            callee: TraceEndpoint::Datum {
                 datum: grid_wire::Datum(datum),
             },
             count: Some(count),
         })
         .collect();
     Ok(LcovWake {
-        wake: Wake {
-            wake_id: format!("wake:lcov:{test}"),
+        trace: Trace {
+            trace_id: format!("trace:lcov:{test}"),
             git_rev: grid_wire::GitRev(chart_provider::resolve_rev(root, "HEAD")),
             command: Some(test.to_owned()),
             started_at: None,

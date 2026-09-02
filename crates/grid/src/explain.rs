@@ -20,6 +20,15 @@ pub fn main(args: &[&str]) -> u8 {
     if let Some(prefix) = token.strip_prefix('@') {
         return explain_handle(prefix);
     }
+    // A retired word answers with the word that replaced it. The alias is
+    // checked first: the wire contract may still carry a schema of the old
+    // name, and the former-names table is the curated answer.
+    if let Some((old, now)) = former(token) {
+        if let Some(answer) = lookup(now) {
+            println!("{token} — formerly `{old}`, now `{now}`: {answer}");
+            return exit::OK;
+        }
+    }
     if let Some(answer) = lookup(token) {
         println!("{token} — {answer}");
         return exit::OK;
@@ -38,6 +47,16 @@ fn lookup(token: &str) -> Option<&'static str> {
         .binary_search_by(|(key, _)| (*key).cmp(token.as_str()))
         .ok()
         .map(|i| EXPLAIN[i].1)
+}
+
+/// The former-names entry for a token, case-insensitive: the old spelling as
+/// ONTOLOGY.md writes it, and the token that replaced it.
+fn former(token: &str) -> Option<(&'static str, &'static str)> {
+    let token = token.to_lowercase();
+    FORMER
+        .binary_search_by(|(key, _)| (*key).cmp(token.as_str()))
+        .ok()
+        .map(|i| FORMER[i])
 }
 
 /// `grid explain @<prefix>` — what the chart calls the datum the prefix pins.
@@ -93,7 +112,7 @@ mod tests {
         assert!(lookup("datum").is_some());
         assert!(lookup("hold").is_some());
         // The wire contract's schema descriptions, lowercased schema names.
-        assert!(lookup("xteverdict").is_some());
+        assert!(lookup("gateverdict").is_some());
         assert!(lookup("callsignpattern").is_some());
     }
 
@@ -105,6 +124,47 @@ mod tests {
         let mut prev = keys.next().expect("nonempty corpus");
         for key in keys {
             assert!(prev < key, "corpus keys out of order: {prev} !< {key}");
+            prev = key;
+        }
+    }
+
+    #[test]
+    fn every_retired_word_still_answers() {
+        // The plan's contract: an old word is never emitted and always
+        // answerable, with the new word's definition attached to it.
+        for (old, now) in FORMER {
+            let answer = lookup(now).unwrap_or_else(|| panic!("`{now}` has no definition"));
+            assert!(
+                !answer.is_empty(),
+                "`{old}` -> `{now}` answers with nothing"
+            );
+        }
+        // The words the plan retired, each one of them.
+        for old in [
+            "zoc",
+            "xte",
+            "leadline",
+            "made-good",
+            "wake",
+            "track",
+            "leg",
+            "fix",
+            "bind",
+            "log",
+        ] {
+            assert!(former(old).is_some(), "`{old}` is not a former name");
+        }
+        // And a current word answers directly, with no alias line.
+        assert!(former("grade").is_none());
+        assert!(lookup("grade").is_some());
+    }
+
+    #[test]
+    fn the_former_table_is_sorted_and_unique() {
+        let mut keys = FORMER.iter().map(|(k, _)| *k);
+        let mut prev = keys.next().expect("nonempty alias table");
+        for key in keys {
+            assert!(prev < key, "alias keys out of order: {prev} !< {key}");
             prev = key;
         }
     }

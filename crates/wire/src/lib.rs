@@ -1,6 +1,6 @@
 //! grid-wire - versioned external schemas; the only public vocabulary.
 //!
-//! GENERATED from docs/wire-v0.openrpc.json by scripts/gen-wire.py - do not
+//! GENERATED from docs/wire-v1.openrpc.json by scripts/gen-wire.py - do not
 //! edit by hand. `deny_unknown_fields` everywhere: unknown keys are a wire
 //! error, never silently dropped.
 
@@ -52,7 +52,7 @@ pub struct AstPath(pub Vec<PathStep>);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Fix {
+pub struct Position {
     pub datum: Datum,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<AstPath>,
@@ -74,7 +74,7 @@ pub struct Handle(pub String);
 #[serde(untagged)]
 pub enum Locator {
     Datum { datum: Datum },
-    Fix { fix: Fix },
+    Position { position: Position },
     Callsign { callsign: Callsign },
     Handle { handle: Handle },
     FileLine { file: String, line: u64 },
@@ -130,7 +130,7 @@ pub enum Relation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Zoc {
+pub enum Grade {
     #[serde(rename = "proven")]
     Proven,
     #[serde(rename = "observed")]
@@ -147,14 +147,14 @@ pub struct Edge {
     pub src: Datum,
     pub relation: Relation,
     pub dst: Datum,
-    pub zoc: Zoc,
+    pub grade: Grade,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Leg {
+pub struct Edit {
     pub from: Datum,
     pub to: Datum,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -238,7 +238,7 @@ pub struct EdgeChangeMovedFrom {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct MadeGood {
+pub struct Diff {
     pub base: SnapshotId,
     pub head: SnapshotId,
     pub defs: Vec<DefChange>,
@@ -247,13 +247,13 @@ pub struct MadeGood {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TrackDefPromise {
-    pub action: TrackDefPromiseAction,
+pub struct PlanDefPromise {
+    pub action: PlanDefPromiseAction,
     pub callsign: CallsignPattern,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TrackDefPromiseAction {
+pub enum PlanDefPromiseAction {
     #[serde(rename = "add")]
     Add,
     #[serde(rename = "remove")]
@@ -266,15 +266,15 @@ pub enum TrackDefPromiseAction {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TrackEdgePromise {
-    pub action: TrackEdgePromiseAction,
+pub struct PlanEdgePromise {
+    pub action: PlanEdgePromiseAction,
     pub src: CallsignPattern,
     pub relation: Relation,
     pub dst: CallsignPattern,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TrackEdgePromiseAction {
+pub enum PlanEdgePromiseAction {
     #[serde(rename = "add")]
     Add,
     #[serde(rename = "remove")]
@@ -285,9 +285,9 @@ pub enum TrackEdgePromiseAction {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TrackDelta {
-    pub defs: Vec<TrackDefPromise>,
-    pub edges: Vec<TrackEdgePromise>,
+pub struct PlanDelta {
+    pub defs: Vec<PlanDefPromise>,
+    pub edges: Vec<PlanEdgePromise>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -317,7 +317,7 @@ pub struct EdgeRule {
     pub relation: Option<Relation>,
     pub dst: CallsignPattern,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub at_or_above: Option<Zoc>,
+    pub at_or_above: Option<Grade>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -338,14 +338,14 @@ pub enum InvariantRule {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Track {
-    pub track_id: String,
+pub struct Plan {
+    pub plan_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_rev: Option<String>,
     pub base: SnapshotOrRev,
-    pub delta: TrackDelta,
+    pub delta: PlanDelta,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tests: Option<Vec<ExpectedTest>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -394,12 +394,12 @@ pub struct InvariantViolation {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct XteVerdict {
-    pub gate: XteVerdictGate,
-    pub track_id: String,
+pub struct GateVerdict {
+    pub gate: GateVerdictGate,
+    pub plan_id: String,
     pub head: SnapshotId,
-    pub matched: Vec<TrackEdgePromise>,
-    pub missing: Vec<TrackEdgePromise>,
+    pub matched: Vec<PlanEdgePromise>,
+    pub missing: Vec<PlanEdgePromise>,
     pub surplus: Vec<EdgeChange>,
     pub tolerated: Vec<EdgeChange>,
     pub defs_unaccounted: Vec<DefChange>,
@@ -410,7 +410,7 @@ pub struct XteVerdict {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum XteVerdictGate {
+pub enum GateVerdictGate {
     #[serde(rename = "pass")]
     Pass,
     #[serde(rename = "hold")]
@@ -430,16 +430,16 @@ pub struct Fuel {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LeadlineQuery {
+pub struct WalkQuery {
     pub from: Vec<Locator>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<Vec<Locator>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub direction: Option<LeadlineQueryDirection>,
+    pub direction: Option<WalkQueryDirection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relations: Option<Vec<Relation>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub at_or_above: Option<Zoc>,
+    pub at_or_above: Option<Grade>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fuel: Option<Fuel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -447,7 +447,7 @@ pub struct LeadlineQuery {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LeadlineQueryDirection {
+pub enum WalkQueryDirection {
     #[serde(rename = "out")]
     Out,
     #[serde(rename = "in")]
@@ -465,8 +465,8 @@ pub struct Path {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LeadlineResult {
-    pub status: LeadlineResultStatus,
+pub struct WalkResult {
+    pub status: WalkResultStatus,
     pub snapshot: SnapshotId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paths: Option<Vec<Path>>,
@@ -474,11 +474,11 @@ pub struct LeadlineResult {
     pub reached: Option<Vec<DefRef>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frontier: Option<Vec<Datum>>,
-    pub stats: LeadlineResultStats,
+    pub stats: WalkStats,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LeadlineResultStatus {
+pub enum WalkResultStatus {
     #[serde(rename = "complete")]
     Complete,
     #[serde(rename = "aground")]
@@ -487,7 +487,7 @@ pub enum LeadlineResultStatus {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LeadlineResultStats {
+pub struct WalkStats {
     pub visited: u64,
     pub hops: u64,
     pub ms: u64,
@@ -499,7 +499,7 @@ pub struct LeadlineResultStats {
 #[serde(deny_unknown_fields)]
 pub struct Anchor {
     pub anchor_id: String,
-    pub fix: Fix,
+    pub position: Position,
     pub kind: AnchorKind,
     pub created_at: String,
 }
@@ -518,9 +518,9 @@ pub struct CarriedAnchor {
     pub anchor_id: String,
     pub status: CarriedAnchorStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fix: Option<Fix>,
+    pub position: Option<Position>,
     pub confidence: f64,
-    pub via: Vec<Leg>,
+    pub via: Vec<Edit>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -535,30 +535,30 @@ pub enum CarriedAnchorStatus {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WakeObservation {
-    pub caller: WakeEndpoint,
-    pub callee: WakeEndpoint,
+pub struct TraceObservation {
+    pub caller: TraceEndpoint,
+    pub callee: TraceEndpoint,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum WakeEndpoint {
+pub enum TraceEndpoint {
     Datum { datum: Datum },
     Symbol { symbol: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Wake {
-    pub wake_id: String,
+pub struct Trace {
+    pub trace_id: String,
     pub git_rev: GitRev,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
-    pub observations: Vec<WakeObservation>,
+    pub observations: Vec<TraceObservation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -588,7 +588,7 @@ pub struct CacheHit {
     pub verdict: CacheHitVerdict,
     pub recorded_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wake_id: Option<String>,
+    pub trace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -624,11 +624,11 @@ pub struct CacheCheckResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct TrackId(pub String);
+pub struct PlanId(pub String);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct WakeId(pub String);
+pub struct TraceId(pub String);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -646,7 +646,7 @@ pub struct ScopePack {
 #[serde(deny_unknown_fields)]
 pub struct ScopePackChurnItem {
     pub datum: Datum,
-    pub legs: u64,
+    pub edits: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -699,11 +699,11 @@ pub struct EditResultConflictsItem {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TodoList {
-    pub track_id: TrackId,
-    pub defs_done: Vec<TrackDefPromise>,
-    pub defs_pending: Vec<TrackDefPromise>,
-    pub edges_done: Vec<TrackEdgePromise>,
-    pub edges_pending: Vec<TrackEdgePromise>,
+    pub plan_id: PlanId,
+    pub defs_done: Vec<PlanDefPromise>,
+    pub defs_pending: Vec<PlanDefPromise>,
+    pub edges_done: Vec<PlanEdgePromise>,
+    pub edges_pending: Vec<PlanEdgePromise>,
     pub tests_done: Vec<String>,
     pub tests_pending: Vec<String>,
     pub fraction: TodoListFraction,
@@ -718,9 +718,16 @@ pub struct TodoListFraction {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ReviewPack {
-    pub verdict: XteVerdict,
-    pub fulfilling: Vec<ReviewPackFulfillingItem>,
+pub struct CheckResult {
+    pub verdict: GateVerdict,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<CheckWhy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckWhy {
+    pub fulfilling: Vec<CheckWhyFulfillingItem>,
     pub surplus: Vec<EdgeChange>,
     pub coverage: Vec<Datum>,
     pub open_anchors: Vec<Anchor>,
@@ -728,23 +735,23 @@ pub struct ReviewPack {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ReviewPackFulfillingItem {
-    pub promise: TrackEdgePromise,
+pub struct CheckWhyFulfillingItem {
+    pub promise: PlanEdgePromise,
     pub hops: Vec<Path>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WakeDiff {
+pub struct TraceDiff {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub first_divergence: Option<WakeDiffFirstDivergence>,
+    pub first_divergence: Option<TraceDiffFirstDivergence>,
     pub added: Vec<Edge>,
     pub removed: Vec<Edge>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WakeDiffFirstDivergence {
+pub struct TraceDiffFirstDivergence {
     pub caller: Datum,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub green_callee: Option<Datum>,
@@ -818,7 +825,7 @@ pub struct DriftSuspect {
     pub dependent: DefRef,
     pub changed: DefRef,
     pub relation: Relation,
-    pub zoc: Zoc,
+    pub grade: Grade,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sig_before: Option<Datum>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1,0 +1,3 @@
+# grid-walk
+
+Single responsibility: query engine: budgeted multi-hop traversal, evidence-labeled.
