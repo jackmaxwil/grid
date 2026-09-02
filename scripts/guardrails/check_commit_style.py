@@ -30,7 +30,7 @@ HARD_LIMIT = 100
 # yi's device, for yi's reason: these rules arrived on a lineage already ahead of main and
 # were retroactively red on subjects written before them. History before this commit is not
 # judged, and the exclusion self-expires once the lineage lands.
-STANDARD_STARTS = "9a19661"
+STANDARD_STARTS = "7879003"
 TYPES = ("feat", "fix", "docs", "test", "perf", "refactor", "chore", "build", "ci", "revert")
 CONVENTIONAL = re.compile(r"^(" + "|".join(TYPES) + r")(\([a-z0-9][a-z0-9._-]*\))?!?: (.+)$")
 GIT_NATIVE = re.compile(r"^(Merge|Revert)\b")

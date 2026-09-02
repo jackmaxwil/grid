@@ -104,6 +104,23 @@ become exactly that second copy (it ran `cargo clippy --workspace` without
 `--all-targets` and no guardrails at all, so the checks added above would
 never have run in the CI grid actually uses).
 
+The thin caller replaces exactly three jobs of the old Forgejo file —
+`build-test`, `deny` and half of `assurance` — because `just lane` runs every
+check they ran and more: `lint` is `fmt-check` plus `clippy --all-targets`,
+`guardrails` is the aggregator, which itself runs `cargo deny check`,
+`check-unsafe-confined.sh` and `check-assurance-links.sh`, and `test` is the
+suite. The jobs the justfile does *not* cover — `fuzz-build`,
+`chart-io-sanitizers`, `fault-injection`, `self-gate`, and the new `title` —
+stay beside it as their own jobs, with the fixes main proved on the estate
+runners kept verbatim: `cargo +nightly fuzz build`, because
+`rust-toolchain.toml` pins stable and a bare `cargo` after a nightly install
+is still stable; and self-gate's `set --` over `.grid/plans/*.json` in place
+of an `ls` that exits 2 on an empty glob under `bash -e`, gated to pull
+requests and excusing a diff with no charted source. Both bugs were live in
+the GitHub twin this port wrote from the pre-fix Forgejo file, so both are
+fixed there too — `pr.yml`'s `fuzz-build` and `self-gate`, and
+`postmerge.yml`'s `cargo +nightly fuzz run`.
+
 | yi job | grid |
 |---|---|
 | `pr.yml` `gate` — a `[lint, guardrails, test]` matrix over `just lane`, `fetch-depth: 0`, `rustup show`, `Swatinem/rust-cache@v2` keyed per lane | **adopt.** Action versions pinned exactly as yi pins them (`actions/checkout@v4`, `Swatinem/rust-cache@v2`, and grid's existing `dtolnay/rust-toolchain` pinned to the toolchain file's version). The rules stay in the justfile; the workflow only says which lane on which runner. |
