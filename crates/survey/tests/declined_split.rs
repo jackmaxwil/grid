@@ -288,6 +288,25 @@ fn a_definition_saturating_two_columns_is_counted_once() {
     assert_eq!(s.declined_saturated, 1, "one definition saturated");
 }
 
+/// A receiver typed by a primitive is typed outside the tree: `external`,
+/// never `method` — the tree cannot hold `str::len`.
+#[test]
+fn a_primitive_receiver_counts_external() {
+    let dir = repo(&[
+        ("Cargo.toml", "[package]\nname = \"fixture\"\n"),
+        (
+            "src/lib.rs",
+            "pub fn f(s: &str, n: u32, b: bool, c: char, x: f64) {\n\
+             \x20   s.len(); n.count_ones(); b.then_some(1); c.len_utf8(); x.floor();\n}\n",
+        ),
+    ]);
+    let s = survey(dir.path());
+    assert_eq!(
+        (s.declined_external, s.declined_method, s.declined_internal),
+        (5, 0, 0)
+    );
+}
+
 /// A prelude name is not a hole in this tree: `Some(..)`, `Ok(..)`,
 /// `drop(..)` and a derived or implemented prelude trait were never the
 /// tree's to hold, and counting them `internal` inflated the one number

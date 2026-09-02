@@ -95,8 +95,8 @@ help` lists every verb, `grid explain` defines every word.
 - **An edge exists only where the language's own binding rules establish
   it.** Glob imports, macro bodies, and method calls on receivers whose
   type is not written down are omissions, never guesses — and every
-  omission is counted: `miss 12574 references declined (external 4099,
-  method 7803 of which 64 refused, internal 672)` closes a survey of this
+  omission is counted: `miss 12574 references declined (external 4303,
+  method 7599 of which 64 refused, internal 672)` closes a survey of this
   repo — a prelude name or a Python builtin left unbound is `external`,
   never a hole. A method call on a receiver whose type the file states
   resolves by rustc's own lookup order: proven where the written form
@@ -172,8 +172,8 @@ method-calls.md`), same tree, previous binary against this one:
 | | this repo before | after | yi (5,176 defs) before | after |
 |---|---:|---:|---:|---:|
 | proven / modeled edges | 3,648 / 0 | 3,769 / 71 | 6,876 / 0 | 7,159 / 519 |
-| `external` | 2,534 | 4,099 | 10,062 | 13,742 |
-| `method` (of which refused) | 9,549 | 7,803 (64) | 23,871 | 19,074 (338) |
+| `external` | 2,534 | 4,303 | 10,062 | 14,670 |
+| `method` (of which refused) | 9,549 | 7,599 (64) | 23,871 | 18,146 (338) |
 | `internal` | 765 | 672 | 2,946 | 2,942 |
 
 Every commit that moves a number states it; a budget that does not hold is

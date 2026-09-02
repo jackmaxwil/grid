@@ -160,9 +160,9 @@ plan).
   impl, a wrapper or no inherent method stands in the way; rustc's own
   binding, run on the fixture, agrees with every emitted edge. Measured,
   same tree, previous binary against this one: this repo `method` 9,549
-  → 7,803 (64 refused), `external` 2,534 → 4,099, proven edges 3,648 →
-  3,769, modeled 0 → 71; yi `method` 23,871 → 19,074 (338 refused),
-  `external` 10,062 → 13,742, proven 6,876 → 7,159, modeled 0 → 519.
+  → 7,599 (64 refused), `external` 2,534 → 4,303, proven edges 3,648 →
+  3,769, modeled 0 → 71; yi `method` 23,871 → 18,146 (338 refused),
+  `external` 10,062 → 14,670, proven 6,876 → 7,159, modeled 0 → 519.
   Python: annotated parameters resolve modeled; zero on yi. The "cut by
   half" target was not reachable by any syntactic rule (R-1); the
   residual needs a type checker (T-45).
@@ -318,7 +318,7 @@ plan).
 ### From the method-calls plan's cut line (`docs/plans/2026-09-01-method-calls.md`)
 
 - **T-45 (P1, L) A type checker for the seventy percent.** The `method`
-  residual (7,803 here, 19,074 on yi) has no syntactic type; only
+  residual (7,599 here, 18,146 on yi) has no syntactic type; only
   rust-analyzer as a sidecar or in-process reaches it. Gated on R-5.
 - **T-46 (P1, S) Consumers of the per-definition declined split.**
   `DefRef.declined` and `declined_within` on the wire; `suspects
@@ -350,10 +350,10 @@ plan).
   no syntactic rule halves the count. 70% of Rust method calls have no
   type any syntax in the file states, 21% are calls on `std`/external
   types (now `external`), 6–9% have a charted receiver of which a little
-  over half resolve. Measured after landing: `method` −18% on this repo,
-  −20% on yi; the rest is a type checker's (R-5).
+  over half resolve. Measured after landing: `method` −20% on this repo,
+  −24% on yi; the rest is a type checker's (R-5).
 - **R-5** Does a rust-analyzer sidecar (LSP `textDocument/definition` per
-  call site, or `ra_ap_*` in-process) answer this repo's ~7,800 remaining
+  call site, or `ra_ap_*` in-process) answer this repo's ~7,600 remaining
   `method` call sites under a second, cold? The only route to the other
   seventy percent, and a dependency decision the size of `syn` again.
 - **R-2** Is a per-file incremental resolver (T-14) sound under C13, or

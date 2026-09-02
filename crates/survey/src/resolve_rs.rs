@@ -287,6 +287,15 @@ const RUST_PRELUDE: &[&str] = &[
     "Hash",
 ];
 
+/// The primitive types, which every module holds without any import and
+/// which no tree defines: a receiver typed `&str` or `u32` is typed outside
+/// the tree, and its method call is `external`, never a hole. A slice, an
+/// array or a tuple spells no path and records no hint at all.
+const PRIMITIVES: &[&str] = &[
+    "bool", "char", "str", "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64",
+    "u128", "usize", "f32", "f64",
+];
+
 /// Which population a declined Rust reference belongs to.
 ///
 /// A `use` moves the question to the binding's own head, which is where the
@@ -309,7 +318,11 @@ fn decline_of(index: &DefIndex, bindings: &Bindings, r: &Reference) -> Decline {
     if matches!(head, "crate" | "super" | "self" | "Self") || index.is_root(head) {
         return Decline::Internal;
     }
-    if r.path.len() == 1 && bound.is_none() && !RUST_PRELUDE.contains(&head) {
+    if r.path.len() == 1
+        && bound.is_none()
+        && !RUST_PRELUDE.contains(&head)
+        && !PRIMITIVES.contains(&head)
+    {
         Decline::Internal
     } else {
         Decline::External
