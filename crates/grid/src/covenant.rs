@@ -46,13 +46,17 @@ pub fn load(root: &Path) -> Result<Vec<Covenant>, String> {
 /// A human-readable message when the file cannot be written.
 pub fn save(root: &Path, covenants: &[Covenant]) -> Result<(), String> {
     let path = root.join(FILE);
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    }
+    let Some(dir) = path.parent() else {
+        return Err(format!("{} has no parent directory", path.display()));
+    };
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     let body = serde_json::to_string_pretty(covenants)
         .map_err(|e| format!("cannot serialize covenants: {e}"))?;
-    std::fs::write(&path, body + "\n").map_err(|e| format!("cannot write {}: {e}", path.display()))
+    // Published by rename, never truncated in place: this file is a
+    // declaration a human authored, and a crash between the truncate and the
+    // write would leave the repo with no rules and every gate refusing.
+    grid_chart_io::write_atomic(dir, &path, (body + "\n").as_bytes(), "covenants.json.tmp")
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
 /// One side of a covenant, resolved against a snapshot: the callsigns it

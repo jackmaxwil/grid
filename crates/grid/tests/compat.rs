@@ -433,3 +433,76 @@ fn an_invariant_over_nothing_is_refused_and_hand_authored_rules_survive() {
         .collect();
     assert_eq!(ids, ["no-app-to-db", "persisted:app.C"], "both rules stand");
 }
+
+/// T-12, conservatism: a repository declaration file is *published*, never
+/// truncated in place.
+///
+/// `.grid/invariants.json` and `.grid/covenants.json` are not engine state —
+/// they hold hand-authored rules the next survey cannot rebuild. Written with
+/// a plain `fs::write`, the file is truncated before it is filled, so a
+/// crash, a signal or ENOSPC in that window leaves it empty or half-written;
+/// `load` then returns `Err` and `gate`, `todo`, `check --plan` and `drift
+/// --compat` all refuse. `chart-io`'s `write_atomic` closes the window, and
+/// the observable difference is the inode: a file published by rename is a
+/// new one, a file truncated in place is the same one. So a reader holding
+/// the old file always sees complete old content, and no reader ever sees a
+/// half-written declaration.
+#[cfg(unix)]
+#[test]
+fn a_declaration_file_is_published_by_rename_never_truncated_in_place() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let dir = repo(
+        "#[derive(Deserialize)]\npub struct C {\n    pub a: u32,\n}\n\
+         pub fn one() -> u32 { 1 }\npub fn two() -> u32 { 2 }\n",
+        "#[derive(Deserialize)]\npub struct C {\n    pub a: u32,\n}\n\
+         pub fn one() -> u32 { 1 }\npub fn two() -> u32 { 2 }\n",
+    );
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+
+    let inode = |name: &str| {
+        std::fs::metadata(dir.path().join(name))
+            .expect("the declaration exists")
+            .ino()
+    };
+    for (file, args) in [
+        (
+            ".grid/invariants.json",
+            vec!["invariant", "persisted", "app.C"],
+        ),
+        (
+            ".grid/covenants.json",
+            vec!["covenant", "app.one", "app.two", "--via", "schema"],
+        ),
+    ] {
+        let first = grid(dir.path(), &args);
+        assert_eq!(code(&first), 0, "{}", stderr(&first));
+        let before = inode(file);
+        // A second, different declaration into the same file: the rewrite
+        // path, which is the one that truncates.
+        let mut second = args.clone();
+        if second[0] == "invariant" {
+            second[2] = "app.one";
+        } else {
+            second[1] = "app.two";
+            second[2] = "app.one";
+        }
+        let out = grid(dir.path(), &second);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        assert_ne!(
+            inode(file),
+            before,
+            "{file} was rewritten in place — the truncate window is open"
+        );
+        // And no temp file is left beside it.
+        let strays: Vec<String> = std::fs::read_dir(dir.path().join(".grid"))
+            .expect("read .grid")
+            .filter_map(|e| {
+                let name = e.ok()?.file_name();
+                (Path::new(&name).extension()? == "tmp")
+                    .then(|| name.to_string_lossy().into_owned())
+            })
+            .collect();
+        assert_eq!(strays, Vec::<String>::new(), "the publish left {strays:?}");
+    }
+}
