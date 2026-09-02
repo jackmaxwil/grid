@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     Anchor, CacheCheckRequest, CacheResultEntry, CallsignPattern, CarriedAnchor, Datum, DefRef,
-    Diff, DriftReport, EditResult, EditSpec, Estimate, GateVerdict, GitRev, Grade, LintResult,
-    Locator, Plan, PlanId, ScopePack, Snapshot, SnapshotId, SnapshotOrRev, Suspects, TestId,
-    TestPlan, TodoList, Trace, TraceDiff, TraceId, WalkQuery, WalkResult,
+    Diff, DriftReport, EditResult, EditSpec, Estimate, GateVerdict, GitRev, Grade, InterfereReport,
+    LintResult, Locator, Plan, PlanId, ScopePack, Snapshot, SnapshotId, SnapshotOrRev, Suspects,
+    TestId, TestPlan, TodoList, Trace, TraceDiff, TraceId, WalkQuery, WalkResult,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -287,3 +287,13 @@ pub struct TestPlanParams {
 }
 
 pub type TestPlanResult = TestPlan;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InterfereParams {
+    pub other_root: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<GitRev>,
+}
+
+pub type InterfereResult = InterfereReport;

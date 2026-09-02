@@ -33,6 +33,7 @@ mod drift;
 mod edit;
 mod explain;
 mod history;
+mod interfere;
 mod plan;
 mod porcelain;
 mod rpc;
@@ -90,6 +91,7 @@ fn help() {
          drift --compat               changed Deserialize types old bytes cannot read\n  \
          covenant <A> <B> --via <w>   declare a coupling no language establishes\n  \
          watch [base]                 signed drift deltas, one file event per stdin line\n  \
+         interfere <other-worktree>   what another worktree's edits and yours collide over\n  \
          resolve <name|file|f:line>   where it is; a bare file lists its defs\n  \
          uses <name> [--relation r]   proven inbound edges\n  \
          scope <pattern> [--depth N]  context pack around an edit\n  \
@@ -193,6 +195,7 @@ fn main() -> ExitCode {
         Some((&"check", args)) => check_verb(args, json),
         Some((&"explain", args)) => explain::main(args),
         Some((&"suspects", args)) => suspects(args, json),
+        Some((&"interfere", args)) => interfere_verb(args, json),
         Some((&"test", args)) => testrun::main(args, json),
         Some((&"trace", args)) => trace(args, json),
         Some((&"serve", args)) => serve::main(args),
@@ -1772,6 +1775,76 @@ fn compile_report(record: &grid_wire::CompileRecord, json: bool) -> u8 {
 
 const SUSPECTS_USAGE: &str =
     "usage: grid suspects <test> [<trace>] [<base>] [--closure <snapshot|rev>]";
+
+const INTERFERE_USAGE: &str = "usage: grid interfere <other-root> [--base <rev>]";
+
+/// `grid interfere <other-root> [--base <rev>]` — the semantic overlap
+/// between two worktrees of one repository.
+///
+/// Exit 3 when a finding gates, 0 when there is none, and 2 whenever either
+/// store could not be read — silence about a chart grid could not open would
+/// read as "no interference", which is the opposite claim.
+fn interfere_verb(args: &[&str], json: bool) -> u8 {
+    let mut base = None;
+    let mut positional = Vec::new();
+    let mut rest = args;
+    while let Some((arg, tail)) = rest.split_first() {
+        rest = tail;
+        match *arg {
+            "--base" => {
+                let (Some(rev), Some(tail)) = (rest.first(), rest.get(1..)) else {
+                    hint(INTERFERE_USAGE);
+                    return exit::BAD_INPUT;
+                };
+                base = Some((*rev).to_owned());
+                rest = tail;
+            }
+            other if other.starts_with("--") => {
+                hint(&format!("grid: unknown flag `{other}`\n{INTERFERE_USAGE}"));
+                return exit::BAD_INPUT;
+            }
+            other => positional.push(other),
+        }
+    }
+    let ([other], true) = (positional.as_slice(), positional.len() == 1) else {
+        hint(INTERFERE_USAGE);
+        return exit::BAD_INPUT;
+    };
+    let params = grid_wire::methods::InterfereParams {
+        other_root: (*other).to_owned(),
+        base: base.map(grid_wire::GitRev),
+    };
+    match rpc::interfere(&params, root()) {
+        Err(error) => {
+            hint(&format!("grid: {error}"));
+            match error {
+                interfere::Error::Drift(_) => exit::INTERNAL,
+                interfere::Error::Unreadable(_) | interfere::Error::Git(_) => exit::BAD_INPUT,
+            }
+        }
+        Ok(report) => {
+            let code = if report.suspects.is_empty() {
+                exit::OK
+            } else {
+                exit::DIVERGENCE
+            };
+            if json {
+                return match emit_json(&report) {
+                    exit::OK => code,
+                    failure => failure,
+                };
+            }
+            print!("{}", porcelain::interfere(&report));
+            if code == exit::DIVERGENCE {
+                hint(
+                    "grid: the other worktree edited something these depend on — \
+                     rebase or talk before either of you merges",
+                );
+            }
+            code
+        }
+    }
+}
 
 /// `grid suspects <test> [<trace>] [<base>] [--closure <since>]` — rank
 /// changed definitions for the named test, in one of two evidence modes.

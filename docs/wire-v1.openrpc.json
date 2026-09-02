@@ -14,7 +14,7 @@
   },
   "x-porcelain": {
     "doc": "packages/grid/docs/PORCELAIN.md",
-    "version": "2.7.0",
+    "version": "2.8.0",
     "description": "Normative grammar for human-facing stdout records. --json emits wire results verbatim; the porcelain version is reported by grid.version."
   },
   "methods": [
@@ -27,7 +27,7 @@
         {
           "name": "current versions",
           "params": [],
-          "result": { "name": "version", "value": { "wire": "1.0.0", "engine": "grid 0.1.0", "porcelain": "2.7.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
+          "result": { "name": "version", "value": { "wire": "1.0.0", "engine": "grid 0.1.0", "porcelain": "2.8.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
         }
       ],
       "result": {
@@ -559,6 +559,42 @@
       ],
       "result": { "name": "plan", "schema": { "$ref": "#/components/schemas/TestPlan" } },
       "errors": [{ "$ref": "#/components/errors/UnknownSnapshot" }]
+    },
+    {
+      "name": "grid.interfere",
+      "summary": "Semantic overlap between two worktrees of one repository, against their common base: the definitions both edited, and each side's drift suspects that land in the other's edits. What git's merge cannot see — a moved signature here, a caller of it there, no file in common. The other root's store is opened read-only and never written; a store that cannot be read, is superseded, or does not hold the base is a refusal, never an answer of 'no interference'.",
+      "paramStructure": "by-name",
+      "params": [
+        { "name": "other_root", "required": true, "schema": { "type": "string", "minLength": 1, "description": "Filesystem path to the other worktree's root. Its store is at <other_root>/.grid and is only ever read." } },
+        { "name": "base", "required": false, "schema": { "$ref": "#/components/schemas/GitRev", "description": "The revision both sides are compared against. Defaults to the merge base of the two worktrees' heads." } }
+      ],
+      "examples": [
+        {
+          "name": "a moved signature here, a new caller of it there",
+          "params": [{ "name": "other_root", "value": "../wt-b" }],
+          "result": {
+            "name": "interfere",
+            "value": {
+              "base": "bc21972",
+              "mine": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1",
+              "theirs": "snap:b3:a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4",
+              "both_touched": [],
+              "suspects": [
+                {
+                  "dependent": { "datum": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "callsign": "yi_console.replay" },
+                  "changed": { "datum": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "callsign": "yi_tui.drive.key_event" },
+                  "relation": "calls",
+                  "grade": "proven",
+                  "reason": "interfere:../wt-b"
+                }
+              ],
+              "unchecked": { "budget_rejected": 0 }
+            }
+          }
+        }
+      ],
+      "result": { "name": "interfere", "schema": { "$ref": "#/components/schemas/InterfereReport" } },
+      "errors": [{ "$ref": "#/components/errors/UnknownSnapshot" }, { "$ref": "#/components/errors/NoSnapshot" }]
     }
   ],
   "components": {
@@ -1422,6 +1458,20 @@
           "compat": { "type": "array", "items": { "$ref": "#/components/schemas/CompatFinding" }, "description": "Present when the report was asked for compat: changed types deriving Deserialize whose new shape cannot read old bytes. Step 9's `grid check` embeds the same findings; drift carries them so the check is exercisable now." }
         },
         "additionalProperties": false
+      },
+      "InterfereReport": {
+        "type": "object",
+        "required": ["base", "mine", "theirs", "both_touched", "suspects", "unchecked"],
+        "properties": {
+          "base": { "$ref": "#/components/schemas/GitRev", "description": "The revision both worktrees are measured from: the merge base of their heads, or the one the caller named." },
+          "mine": { "$ref": "#/components/schemas/SnapshotId", "description": "The live snapshot of the store this call ran in." },
+          "theirs": { "$ref": "#/components/schemas/SnapshotId", "description": "The live snapshot of the other root's store, as its last survey left it. Grid never surveys the other root, so this is as fresh as that survey and no fresher." },
+          "both_touched": { "type": "array", "items": { "$ref": "#/components/schemas/DefRef" }, "description": "Definitions whose datum moved on both sides since base, named as base held them. A textual conflict git will also find, listed for completeness; it does not gate." },
+          "suspects": { "type": "array", "items": { "$ref": "#/components/schemas/DriftSuspect" }, "description": "One side's drift suspects that land in the other side's edits: reason 'interfere:<other-root>'. The semantic overlap a merge cannot see, carrying the grade of the edge that found it." },
+          "unchecked": { "$ref": "#/components/schemas/DriftUnchecked", "description": "What neither side could check, summed over the two drift walks." }
+        },
+        "additionalProperties": false,
+        "description": "Two worktrees of one repository, compared against their common base."
       },
       "BisectResult": {
         "type": "object",

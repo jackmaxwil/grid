@@ -140,6 +140,27 @@ impl ChartDelta {
         (!self.head.segments().is_empty()).then(|| wire_id(self.head.snapshot_id()))
     }
 
+    /// The format epoch of a manifest this store refused to load.
+    ///
+    /// A superseded store opens *empty*, which is indistinguishable from a
+    /// store nobody has surveyed unless the caller can ask this — and for a
+    /// store in someone else's worktree the two demand opposite answers.
+    #[must_use]
+    pub const fn superseded(&self) -> Option<u32> {
+        self.store.superseded()
+    }
+
+    /// The membership image beside the chart, when one has been built.
+    ///
+    /// `None` is an absence of derived data, not a claim that nothing
+    /// changed; the next survey rebuilds it.
+    ///
+    /// # Errors
+    /// [`Error::Store`] if the image exists and cannot be read.
+    pub fn membership(&self) -> Result<Option<grid_chart::Membership<impl AsRef<[u8]>>>, Error> {
+        Ok(self.store.membership()?)
+    }
+
     /// The live epoch itself, for read-only queries that walk segments
     /// (scope, uses). Mutation stays behind `publish`: this hands out a
     /// read view, and `Epoch` exposes nothing else.

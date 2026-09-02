@@ -695,6 +695,40 @@ fn the_contract_example_shape_is_served() {
     assert!(result["misses"].is_array());
 }
 
+/// C10 for the newest method: `grid.interfere` answers over the real socket,
+/// and a root whose store it cannot read is the contract's error rather than
+/// a result saying the two worktrees do not interfere.
+#[test]
+fn interfere_is_served_over_the_socket_and_refuses_an_unreadable_root() {
+    let dir = repo();
+    let daemon = Daemon::start(dir.path());
+    daemon.call("grid.survey.run", &json!({}));
+
+    // A directory with no chart in it, named against an explicit base so the
+    // refusal under test is the store's and not the merge base's.
+    let unsurveyed = tempfile::tempdir().expect("tempdir");
+    let response = daemon.call(
+        "grid.interfere",
+        &json!({
+            "other_root": unsurveyed.path().to_str().expect("path"),
+            "base": "HEAD"
+        }),
+    );
+    assert_eq!(
+        response["error"]["code"], -32003,
+        "a root with no chart is a refusal, never an empty answer: {response}"
+    );
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("grid survey")),
+        "and it names the command that fixes it: {response}"
+    );
+
+    let bad = daemon.call("grid.interfere", &json!({"nope": true}));
+    assert_eq!(bad["error"]["code"], -32602, "got {bad}");
+}
+
 /// Write a plan file into the repo's store and return its id.
 fn write_plan(dir: &Path, id: &str, plan: &Value) -> String {
     let plans = dir.join(".grid/plans");

@@ -952,6 +952,17 @@ pub struct DriftReport {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct InterfereReport {
+    pub base: GitRev,
+    pub mine: SnapshotId,
+    pub theirs: SnapshotId,
+    pub both_touched: Vec<DefRef>,
+    pub suspects: Vec<DriftSuspect>,
+    pub unchecked: DriftUnchecked,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BisectResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub culprit: Option<Datum>,

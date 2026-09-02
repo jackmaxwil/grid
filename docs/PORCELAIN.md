@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.7.0
+version: 2.8.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -166,6 +166,21 @@ verdict prints first and the compile records follow; `--json` emits the
 `CompileReport` alone without a plan and the `CheckResult` with one. A tree
 with no `Cargo.toml` has no compile to wrap: one hint, exit `0`.
 
+`grid interfere <other-root> [--base <rev>]` compares two worktrees of one
+repository against their common base — the merge base of the two heads unless
+`--base` names one. A definition both sides moved is `warn <callsign>
+both-touched`: git's merge will find that one too, it carries no edge and so
+no evidence grade, and it does not gate. The findings only grid can see are
+`drift` records with reason `interfere:<other-root>` — one side's drift
+suspects that land in the other side's edits — carrying the grade of the edge
+that found them, and they exit `3`. The other root's store is opened
+read-only and never written, and grid never surveys it: a store that cannot
+be opened, is superseded, or does not hold the base is exit `2` with the
+command that fixes it on stderr, **never** an empty answer, because "I could
+not read that chart" and "those two worktrees do not interfere" are opposite
+claims. `theirs` is therefore as fresh as that worktree's last `grid survey`
+and no fresher.
+
 `grid watch` emits `delta` records rather than a current list: `+` a suspect
 appeared, `-` it was retracted. A consumer holds a running sum, and the sum
 after any prefix of events is what a fresh `grid drift` would say — so
@@ -233,7 +248,9 @@ text-mode output is minor too, which carried 2.4.0 to 2.5.0 (`grid scope
 inside an existing verb carried 2.5.0 to 2.6.0 (`grid suspects --closure`'s
 `hit` records with `closure` in the score column, its `fork`, and its closing
 `miss`) and 2.6.0 to 2.7.0 (`grid drift --compat`'s `warn <type>  compat:
-<rule>`, its `inv violated persisted:<type>`, and its closing `miss`)
+<rule>`, its `inv violated persisted:<type>`, and its closing `miss`) and 2.7.0 to 2.8.0
+(`grid interfere`'s `warn <callsign>  both-touched` and its `drift` reason
+`interfere:<other-root>`)
 — changing column
 order or meaning is major — and so is renaming a tag, which is what carried
 1.6.0 to 2.0.0 (`docs/plans/2026-09-01-naming.md`). The daemon reports this

@@ -15,7 +15,7 @@ use grid_wire::{
 };
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "2.7.0";
+pub const VERSION: &str = "2.8.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -426,6 +426,32 @@ pub fn compat(findings: &[grid_wire::CompatFinding]) -> String {
             );
         }
     }
+    out
+}
+
+/// `grid interfere`: what two worktrees collide over.
+///
+/// A definition both sides moved is a `warn <callsign>  both-touched` — git's
+/// merge will find that one too, and a `DefRef` carries no edge, so it has no
+/// grade to put in a `drift` record's evidence column and does not gate. The
+/// findings that only grid can see are `drift` records with reason
+/// `interfere:<other-root>`, carrying the grade of the edge that found them.
+#[must_use]
+pub fn interfere(report: &grid_wire::InterfereReport) -> String {
+    let mut out = String::new();
+    for def in &report.both_touched {
+        let named = def
+            .callsign
+            .as_ref()
+            .map_or_else(|| format!("@{}", short(&def.datum)), |c| c.0.clone());
+        record(&mut out, "warn", &[&named, "both-touched"]);
+    }
+    for suspect in &report.suspects {
+        let columns = drift_columns(suspect);
+        let refs: Vec<&str> = columns.iter().map(String::as_str).collect();
+        record(&mut out, "drift", &refs);
+    }
+    out.push_str(&drift_unchecked(&report.unchecked));
     out
 }
 

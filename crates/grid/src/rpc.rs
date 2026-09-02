@@ -357,6 +357,22 @@ pub fn drift(
     Ok(report)
 }
 
+/// `grid.interfere` — semantic overlap with another worktree of this repo.
+///
+/// # Errors
+/// [`crate::interfere::Error`] when either store cannot answer for the base,
+/// or when a drift walk refused.
+pub fn interfere(
+    params: &grid_wire::methods::InterfereParams,
+    root: &std::path::Path,
+) -> Result<grid_wire::methods::InterfereResult, crate::interfere::Error> {
+    crate::interfere::compute(
+        root,
+        std::path::Path::new(&params.other_root),
+        params.base.as_ref().map(|rev| rev.0.as_str()),
+    )
+}
+
 /// How many charted callsigns a pattern matches.
 ///
 /// Zero is the answer `grid covenant` refuses on: a declaration about code that
