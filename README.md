@@ -179,34 +179,40 @@ longer exists in the chart asked about is demoted to heuristic with reason
 
 ### What the loop cost here, measured
 
-This repository, 2026-09-02, Apple M4 Max, release binary, 541 tests under
-`cargo nextest`. `just traces` — one `cargo llvm-cov nextest` per test —
-took **22m 16s** and retained **538 traces**; two tests produced no report
-and were named, kept as verdicts with no trace rather than as empty ones.
-That is a CI-shaped cost, which is where the recipe belongs; the two lines
-in `docs/TODOS.md` T-45 are what would make it one nextest run.
+This repository, 2026-09-02, Apple M4 Max, release binary, 546 tests under
+`cargo nextest`, on a trace store created empty for the run. `just traces`
+— one `cargo llvm-cov nextest` per test — took **29m 13s** and retained
+**508 traces**; 38 reports came back with every `DA:` count zero and were
+refused as lost profiles, their verdicts kept without a trace. All 38 are
+tests that drive the real binary or daemon (`grid::conformance`, two
+`grid-wire::conformance`, one `grid-lang-py::properties` case); why their
+profile is empty is not diagnosed. Before that refusal existed, 36 of them
+were retained as traces of nothing and replayed on every later run. That is
+a CI-shaped cost, which is where the recipe belongs; the two lines in
+`docs/TODOS.md` T-45 are what would make it one nextest run.
 
 What the traces then buy, all with the build already warm:
 
 | run | selected | wall |
 |---|---|---|
-| `grid test --all` (the whole inventory) | 541 | 24.4s |
-| `grid test`, nothing changed | 28 | 0.8s |
-| `grid test`, one body edit in a leaf module | 168 | 21.9s |
-| `grid test`, one body edit in a crate everything depends on | 198 | 21.1s |
+| `grid test --all` (the whole inventory) | 546 | 29.8s |
+| `grid test`, nothing changed | 62 | 3.2s |
+| `grid test`, one body edit in a leaf module (`interfere::compute`) | 201 | 22.4s |
+| `grid test`, one body edit in a crate everything depends on (`grid-chart`) | 250 | 41.1s |
 
-The unchanged case is the one an agent meets most often, and it is 30×. A
-single edit still selects a third of the suite, because this repository's
-conformance tests spawn the real binary and a trace of one of those covers
-most of it — honest coverage, not a selection bug. The wall time barely
-moves with it: what is left is `cargo`'s link and the slowest tests, and
-selection saves the running, never the building. On a suite of slow,
-independent tests the ratio is the selection ratio; here it is not.
-
-The 28 selected when nothing changed are exactly the tests grid refuses to
-skip: 25 `unresolved:module-charted` (every `proptest!`-generated test — the
-survey charts items and a macro produces none), 2 whose coverage report
-`cargo llvm-cov` did not write, and 1 added since the last traced refresh.
+The unchanged case is the one an agent meets most often, and it is 9×. The
+62 it still runs are exactly the tests grid refuses to skip: 25
+`unresolved:module-charted` (every `proptest!`-generated test — the survey
+charts items and a macro produces none) and 37 `no-trace` (the refused
+reports above; the 38th is a `proptest!` case already in the first group).
+The 37 are the slow ones — each spawns the daemon — which is why 3.2s and
+not the 0.8s first claimed: that number was measured with 36 of them
+replayed on empty traces. A single edit still selects a third of the suite,
+because this repository's conformance tests spawn the real binary and a
+trace of one of those covers most of it — honest coverage, not a selection
+bug. The deep edit's wall time is mostly `cargo` rebuilding what depends on
+the crate; selection saves the running, never the building. On a suite of
+slow, independent tests the ratio is the selection ratio; here it is not.
 
 ## Numbers (2026-09-02, Apple M4 Max, release, this repo: 1884 defs / 3602 edges, store warm, min of 5)
 

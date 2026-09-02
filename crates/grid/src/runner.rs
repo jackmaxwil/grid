@@ -819,9 +819,12 @@ mod tests {
             .map(|s| (*s).to_owned())
             .collect();
         let out = super::passthrough("/bin/sh", dir.path(), &args).expect("the wrapper ran");
+        // Left as found: unset here, or — when this very test runs under
+        // `cargo llvm-cov` — exactly the file cargo llvm-cov named.
+        let found = std::env::var("LLVM_PROFILE_FILE").unwrap_or_else(|_| "unset".to_owned());
         assert!(
-            out.contains("unset"),
-            "under grid the wrapper leaves the profile where cargo llvm-cov put it: {out}"
+            out.contains(&found) && !out.contains("grid-profiles"),
+            "under grid the wrapper leaves the profile where cargo llvm-cov put it ({found}): {out}"
         );
         assert!(
             !dir.path().join("target/grid-profiles").exists(),
@@ -829,9 +832,12 @@ mod tests {
         );
         // On its own — the user's `cargo llvm-cov nextest --no-report` — it
         // still names one profile per test.
+        // `env_remove`, because this test may itself be running under
+        // `grid test`, whose environment says grid is driving.
         let own = std::process::Command::new("/bin/sh")
             .args(&args)
             .current_dir(dir.path())
+            .env_remove("GRID_TEST")
             .env("NEXTEST_BINARY_ID", "fx::t")
             .env("NEXTEST_TEST_NAME", "a")
             .output()

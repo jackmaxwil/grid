@@ -233,7 +233,7 @@ pub fn trace_of_lcov(root: &std::path::Path, lcov: &str, test: &str) -> Result<M
         return Err("not an lcov report: no SF: record (an empty report is not a test that reached nothing)".to_owned());
     }
     if !lcov.lines().any(|line| executed(line).is_some()) {
-        return Err("every DA: count is zero: a profile lost to another LLVM_PROFILE_FILE, not a test that reached nothing".to_owned());
+        return Err("every DA: count is zero: a lost profile (the test ran its own body at least), not a test that reached nothing".to_owned());
     }
     let mut mapper = Mapper::open(root).map_err(|e| e.to_string())?;
     let mut current: Option<usize> = None;

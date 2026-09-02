@@ -107,8 +107,10 @@ the single largest gap between grid's promise and its evidence. → T-06.
 
 **A1 — every `check` says `miss 391 unattributed entries`.** Verdicts that
 `grid test` recorded without a trace have no trace id, so `--tests`
-cannot attribute them, forever. The count only grows. → T-07, and the
-count on this repo is now 0.
+cannot attribute them, forever. The count only grows. → T-07 stops it
+growing; it does not make it fall. Lines already in the append-only log
+never gain an attribution, so on an existing store the count stays where
+it was. The 0 on this repo is a store created fresh on the branch.
 
 **A2 — authoring a plan is JSON by hand.** `grid plan new` exists; an agent
 still has to write callsign patterns and promise kinds. The journey is
@@ -230,9 +232,13 @@ plan).
   it at the start of the one-pass ingest, when T-45 lands.
 - **T-07 — done** (9700cb6): a verdict recorded by `grid test` for a test
   that ran untraced carries `test:<callsign>` in the cache line's trace-id
-  column, which `stale.rs` and `weak.rs` read. On this repo the verdict log
-  holds 2042 lines, 1529 of them so attributed, and `grid check` now reports
-  `unattributed_entries: 0` where it used to report 391 and climbing.
+  column, which `stale.rs` and `weak.rs` read. What was measured: on a
+  verdict log created fresh on this branch (`.grid/cache`, 2026-09-02
+  01:20), 2042 lines, 1529 with a `test:` attribution, 513 with a trace id,
+  `unattributed_entries: 0`. That is not the 391 falling to 0 — it is a
+  store that never held an unattributed line. `attributed()` reads only
+  the `test:` prefix, and a line already in the log never gains one, so an
+  existing store keeps its old count and merely stops growing.
 - **T-08 — done** (5723626), in part: `grid plan new [<id>] --from-diff
   <base> [--out <file>]` drafts def and edge promises from the working diff
   with the base pinned to the snapshot, and `grid plan lint` accepts it
@@ -310,13 +316,17 @@ plan).
 - **T-15 — done** (00c22ce): and it found that the traced path had never
   worked — `cargo llvm-cov` refuses `--ignore-run-fail` with
   `--no-fail-fast`, so every traced run reported no verdicts at all. With
-  the flag gone: `just traces` on this repo is 22m 16s for 538 traces, and
-  `grid test` with nothing changed is 0.8s against 24.4s for the inventory;
-  on a small Python project, 6 traces in 0.91s and a body edit selecting
-  exactly the three tests that reach it. Numbers in README. Two
-  `grid-wire::conformance` tests produce no lcov report under
-  `cargo llvm-cov` and are kept as untraced verdicts; the cause is not
-  diagnosed.
+  the flag gone, re-measured after the review fixes on a store created
+  empty for the run: `just traces` on this repo is 29m 13s for 546 tests,
+  508 traces retained and 38 reports refused as all-zero — every one a
+  test that drives the real binary or daemon, cause not diagnosed; the two
+  `grid-wire::conformance` tests the earlier run called "no report" are
+  among them. `grid test` with nothing changed is 3.2s for 62 selected
+  against 29.8s for the inventory — not the 0.8s / 28 first claimed, which
+  was measured with 36 of those tests replayed on retained traces of
+  nothing. On a small Python project, 6 traces in 0.91s and a body edit
+  selecting exactly the three tests that reach it (not re-measured).
+  Numbers in README.
 - **T-16 (P2, S) State the platform.** macOS and Linux; Windows needs a
   named-pipe daemon or a `--no-daemon` mode. Say so in README.
 - **T-32 (P2, M) Python end-to-end on a real repo.** yi's Python side has
