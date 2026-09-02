@@ -203,22 +203,39 @@ pub fn lang_of(path: &str) -> Option<Lang> {
 /// `.gitignore` line) is filtered out: the rules say not-source, and being
 /// tracked must not override that.
 ///
+/// Two `git ls-files` children, spawned together: the listing, and the
+/// subset of it the standard exclude rules match (`-ci --exclude-standard`).
+/// The second used to be `check-ignore --no-index --stdin` fed the first's
+/// output, which put two spawns in series; on a machine whose `git` is the
+/// Xcode shim each spawn is 9ms before git reads a byte, and the pair ran
+/// 24ms against 12ms side by side.
+///
 /// # Errors
 /// [`SurveyError::Git`] if `root` is not a git work tree or git fails.
 pub fn tracked(root: &Path) -> Result<Vec<PathBuf>, SurveyError> {
-    // `-z` because a path is bytes and may contain a newline; git only quotes
-    // paths in the non-`-z` form, so this is the parse that cannot be fooled.
-    let all: Vec<String> = git(root, &["ls-files", "-z"])?
-        .split(|b| *b == 0)
-        .filter(|p| !p.is_empty())
-        .map(|p| String::from_utf8_lossy(p).into_owned())
-        .collect();
-    let skip = ignored(root, &all)?;
-    Ok(all
-        .into_iter()
+    let (all, skip) = std::thread::scope(|scope| {
+        let skip = scope.spawn(|| git(root, &["ls-files", "-z", "-ci", "--exclude-standard"]));
+        let all = git(root, &["ls-files", "-z"]);
+        let skip = skip
+            .join()
+            .unwrap_or_else(|_| git(root, &["ls-files", "-z", "-ci", "--exclude-standard"]));
+        (all, skip)
+    });
+    let skip: std::collections::HashSet<String> = paths_z(&skip?).collect();
+    Ok(paths_z(&all?)
         .filter(|p| !skip.contains(p))
         .map(PathBuf::from)
         .collect())
+}
+
+/// The paths in one NUL-separated git listing. `-z` because a path is bytes
+/// and may contain a newline; git only quotes paths in the non-`-z` form,
+/// so this is the parse that cannot be fooled.
+fn paths_z(listing: &[u8]) -> impl Iterator<Item = String> + '_ {
+    listing
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8_lossy(p).into_owned())
 }
 
 /// The subset of `paths` the worktree's ignore rules match. `--no-index` so
