@@ -35,10 +35,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
+      # rust-toolchain.toml pins 1.94.0, so `cargo` alone is stable even after
+      # the nightly install; fuzz needs the nightly explicitly.
       - run: cargo install cargo-fuzz --locked
-      - run: cargo fuzz build normalize
-      - run: cargo fuzz build references
-      - run: cargo fuzz build segment
+      - run: cargo +nightly fuzz build normalize
+      - run: cargo +nightly fuzz build references
+      - run: cargo +nightly fuzz build segment
 
   # C1 evidence: the one unsafe block in grid, under the tools that can see
   # through it. MIRI interprets everything except the mmap itself; ASan runs
@@ -102,6 +104,9 @@ jobs:
   # its human override producer for the case where a grid bug blocks a grid
   # fix.
   self-gate:
+    # A grid PR carries a track; a push to main carries none, so this job
+    # only means something on pull requests.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
