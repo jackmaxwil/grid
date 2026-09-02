@@ -15,7 +15,7 @@ use grid_wire::{
 };
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "2.17.0";
+pub const VERSION: &str = "2.18.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -1223,6 +1223,42 @@ pub fn trace_ingest(result: &TraceIngestResult, total: u64) -> String {
     }
     out
 }
+/// `miss` / `done` records for a trace transport: every id the destination
+/// already holds under other bytes, then what the transport did.
+///
+/// Existing tags, as `grid test` uses existing tags: a refused id is a `miss`
+/// with its reason, and the closing `done` carries the counts. The first
+/// column of the `miss` is a trace id — a run's own name, which is what this
+/// verb addresses things by.
+#[must_use]
+pub fn trace_transport(
+    moved: &grid_trace::Moved,
+    exporting: bool,
+    dir: &std::path::Path,
+) -> String {
+    let mut out = String::new();
+    for id in &moved.conflicts {
+        record(
+            &mut out,
+            "miss",
+            &[id, "differs from the trace already there"],
+        );
+    }
+    let verb = if exporting { "exported" } else { "imported" };
+    record(
+        &mut out,
+        "done",
+        &[&format!(
+            "traces {} {verb} · {} unchanged · {} refused  {}",
+            moved.written.len(),
+            moved.unchanged.len(),
+            moved.conflicts.len(),
+            dir.display()
+        )],
+    );
+    out
+}
+
 /// The `fork` record of a trace diff: where two runs of the same test parted.
 /// Empty when they never did.
 #[must_use]

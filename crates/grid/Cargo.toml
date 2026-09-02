@@ -30,4 +30,5 @@ serde_json = "1"
 serde_json = "1"
 grid-chart = { path = "../chart", version = "0.1.0" }
 grid-chart-io = { path = "../chart-io", version = "0.1.0" }
+grid-trace = { path = "../trace", version = "0.1.0" }
 tempfile = "3"

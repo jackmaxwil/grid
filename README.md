@@ -150,6 +150,14 @@ coverage json --contexts="$t" -o cov.json
 grid trace ingest --coverage-json cov.json --test "$t"
 ```
 
+`.grid/traces` is per machine. `grid trace export <dir>` copies the retained
+traces into a directory CI can hand up as an artifact, and `grid trace
+import <dir>` pours one back into a local store — content-addressed,
+idempotent both ways, and an import that would put different content under a
+trace id the store already holds refuses the whole transport and names the
+id. An imported trace decays like any other: it is graded against the chart
+it is asked about, not the one it was taken on.
+
 `grid test --trace` runs the recipe for the tests it selected; `--all`
 for the inventory — one `cargo llvm-cov nextest` per test, because one
 profile cannot be attributed back to the tests that shared a process.

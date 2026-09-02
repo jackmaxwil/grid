@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.17.0
+version: 2.18.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -164,6 +164,19 @@ never reported on counts as failed and is named in a `warn`), `1` when the runne
 `uncovered` and `nondeterministic` are heuristic and never move it. Runner
 output goes to stderr as the runner produces it, not replayed at the end; the horizon line on stderr says how many tests were
 selected out of how many, and what the plan and the survey cost.
+
+`grid trace export <dir>` and `grid trace import <dir>` carry retained
+traces between machines, and use existing tags. Export writes one file per
+trace named by the blake3 of its own bytes; import files each one under the
+trace id the record carries. Both close with `done  traces N <exported|
+imported> · M unchanged · K refused  <dir>`. An id the destination already
+holds under different bytes is a `miss <trace-id>  differs from the trace
+already there`, and an import with any such id writes *nothing* — the whole
+transport is refused, like a walk over budget — exiting `2`: a directory and
+a store disagreeing about what one run did is bad input, not code diverging
+from a promise. Both directions are idempotent, so a second run of either
+reports every trace `unchanged` and exits `0`. `--json` emits the same three
+lists; the verb is CLI-only and has no wire method.
 
 `grid check --compile [-- <cargo check args>]` runs `cargo check` with the
 given arguments from the worktree root, the compiler's output on stderr. A
