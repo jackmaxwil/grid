@@ -142,3 +142,26 @@ fn a_damaged_chart_is_refused_with_its_recovery_and_survey_is_the_recovery() {
         stderr(&again)
     );
 }
+
+#[test]
+fn a_snapshot_carries_the_moment_it_was_published() {
+    let repo = repo();
+    let root = repo.path();
+    let out = grid(root, &["survey", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let snapshot: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
+    let created = snapshot["created_at"]
+        .as_str()
+        .expect("created_at is a string");
+    // RFC 3339 UTC at second resolution, the form the contract's examples
+    // show and `recorded_at` already uses: `2026-08-07T18:12:03Z`.
+    let shape = created.len() == 20
+        && created.ends_with('Z')
+        && created.as_bytes()[10] == b'T'
+        && created[..4].parse::<u32>().is_ok();
+    assert!(shape, "created_at is not RFC 3339: {created:?}");
+    // Read back, not re-surveyed: the same moment.
+    let current = grid(root, &["survey", "--json"]);
+    let again: serde_json::Value = serde_json::from_str(&stdout(&current)).expect("json");
+    assert_eq!(again["created_at"], snapshot["created_at"]);
+}

@@ -296,6 +296,12 @@ impl ChartDelta {
         &self.head.manifest().git_rev
     }
 
+    /// When the live snapshot was first published here, if the store can say.
+    #[must_use]
+    pub fn published_at(&self) -> Option<std::time::SystemTime> {
+        self.store.published_at(self.head.snapshot_id()).ok()
+    }
+
     /// Live-epoch counts, for the wire `Snapshot`.
     #[must_use]
     pub fn stats(&self) -> grid_wire::SnapshotStats {

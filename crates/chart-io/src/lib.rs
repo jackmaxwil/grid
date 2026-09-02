@@ -452,6 +452,18 @@ impl Store {
         Ok(file)
     }
 
+    /// When `id` was first retained here.
+    ///
+    /// A snapshot is content, not a moment (D5), so the manifest carries no
+    /// clock; the retained file's mtime is the moment it landed, and an
+    /// identical republish rewrites nothing, so the moment holds.
+    ///
+    /// # Errors
+    /// The I/O error, if the retained manifest is not there to ask.
+    pub fn published_at(&self, id: &SnapshotId) -> std::io::Result<std::time::SystemTime> {
+        fs::metadata(self.dir.join(retained_name(id)))?.modified()
+    }
+
     /// Every snapshot id the store retains, ascending — the chain, as a set.
     ///
     /// # Errors

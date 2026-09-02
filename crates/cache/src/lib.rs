@@ -406,12 +406,18 @@ fn parse_line(line: &str) -> Option<(Key, Entry)> {
 }
 
 /// `recorded_at` for a verdict recorded now: RFC 3339 UTC, second resolution.
+#[must_use]
+pub fn now_rfc3339() -> String {
+    rfc3339(std::time::SystemTime::now())
+}
+
+/// A moment as RFC 3339 UTC, second resolution — the wire's `date-time`.
 ///
 /// Written out by hand because a timestamp is not worth a dependency in the
 /// TCB, and second resolution is all the wire promises.
 #[must_use]
-pub fn now_rfc3339() -> String {
-    let secs = std::time::SystemTime::now()
+pub fn rfc3339(at: std::time::SystemTime) -> String {
+    let secs = at
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let (days, rem) = (secs / 86_400, secs % 86_400);

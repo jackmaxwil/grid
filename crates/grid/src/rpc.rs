@@ -320,7 +320,7 @@ impl Chart {
             Snapshot {
                 snapshot_id: SnapshotId(id.as_str().to_owned()),
                 git_rev: GitRev(rev),
-                created_at: String::new(),
+                created_at: created_at(&store, &id),
                 worktree_diff_hash: dirty.map(|h| format!("b3:{}", h.to_hex())),
                 stats: SnapshotStats {
                     defs: survey.defs,
@@ -342,6 +342,15 @@ impl Chart {
             },
         ))
     }
+}
+
+/// When `id` landed in `store`, as the wire's `created_at` — or empty, for
+/// a store that cannot say.
+fn created_at(store: &grid_chart_io::Store, id: &grid_chart::SnapshotId) -> String {
+    store
+        .published_at(id)
+        .map(grid_cache::rfc3339)
+        .unwrap_or_default()
 }
 
 /// The hash of the working tree's diff against `HEAD`, or `None` for a tree
@@ -957,7 +966,10 @@ pub fn snapshot_current(
     Ok(Some(Snapshot {
         snapshot_id: id,
         git_rev: GitRev(chart.git_rev().to_owned()),
-        created_at: String::new(),
+        created_at: chart
+            .published_at()
+            .map(grid_cache::rfc3339)
+            .unwrap_or_default(),
         worktree_diff_hash: chart
             .head()
             .manifest()
