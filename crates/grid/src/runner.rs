@@ -159,10 +159,21 @@ impl Real {
     ///
     /// `ponytail:` one `cargo llvm-cov` invocation per test, because a
     /// single profile cannot be attributed back to the tests that shared a
-    /// process. A nextest wrapper keying `LLVM_PROFILE_FILE` by test name
-    /// makes it one invocation — nextest configuration, not grid code.
+    /// process. The nextest wrapper template in `scripts/templates/` fixes
+    /// the attribution half — one `.profraw` per test, named by the test id
+    /// — and this loop says so when it sees those files; turning them into
+    /// traces without a second export is `docs/TODOS.md` T-45.
     fn nextest_run_traced(&self, tests: &[String]) -> Result<Vec<Outcome>, String> {
         let mut outcomes = Vec::new();
+        let profiles = profile_dir(&self.root);
+        match per_test_profiles(&profiles) {
+            0 => {}
+            found => hint(&format!(
+                "grid: {found} per-test profiles under {} — the nextest wrapper is doing its \
+                 half; grid still exports one report per test (docs/TODOS.md T-45)",
+                profiles.display()
+            )),
+        }
         let lcov = self.root.join(".grid/test/coverage.lcov");
         for test in tests {
             // One report per test, so the previous test's must be gone
@@ -437,6 +448,25 @@ impl Runner for Real {
     }
 }
 
+/// Where the nextest wrapper template writes one profile per test:
+/// `GRID_LLVM_PROFILE_DIR` when the environment names one, else
+/// `target/grid-profiles` — the same default the template's wrapper uses.
+fn profile_dir(root: &Path) -> PathBuf {
+    std::env::var_os("GRID_LLVM_PROFILE_DIR")
+        .map_or_else(|| root.join("target/grid-profiles"), PathBuf::from)
+}
+
+/// How many per-test profiles are sitting in `dir`. A directory that is not
+/// there holds none, which is the ordinary case: the template is a template.
+fn per_test_profiles(dir: &Path) -> usize {
+    std::fs::read_dir(dir).map_or(0, |entries| {
+        entries
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "profraw"))
+            .count()
+    })
+}
+
 /// nextest's filter for exactly these tests: `test(=a) + test(=b)`.
 /// `ponytail:` one expression per run, so a very large selection is bounded
 /// by the platform's argument length; a `--filterset-file` lands if a repo
@@ -658,6 +688,22 @@ mod tests {
         );
         assert_eq!(failed.len(), 1);
         assert!(!failed[0].pass);
+    }
+
+    /// The per-test profiles the nextest wrapper template leaves behind are
+    /// counted where they are, and an absent directory is none of them —
+    /// the template is a template, so the ordinary tree has no such dir.
+    #[test]
+    fn per_test_profiles_are_counted_where_the_wrapper_writes_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(super::per_test_profiles(&dir.path().join("absent")), 0);
+        assert_eq!(super::per_test_profiles(dir.path()), 0);
+        // The wrapper's own naming: the test id, percent-encoded.
+        for name in ["grid%20drift%3A%3Atests%3A%3At.profraw", "x%20y.profraw"] {
+            std::fs::write(dir.path().join(name), []).expect("write");
+        }
+        std::fs::write(dir.path().join("coverage.lcov"), []).expect("write");
+        assert_eq!(super::per_test_profiles(dir.path()), 2);
     }
 
     /// Both of the child's streams are drained while it runs, and the parse

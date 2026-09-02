@@ -199,6 +199,17 @@ plan).
   script keyed by test name sets `LLVM_PROFILE_FILE`, making `--trace`
   one invocation instead of one per test. Configuration shipped as a
   documented template, not code.
+- **T-45 (P1, M) Ingest the wrapper's per-test profiles.** T-05 shipped the
+  nextest wrapper template and grid notices the `.profraw` files it leaves
+  (one per test, named by the test id), but still runs `cargo llvm-cov
+  nextest` once per test to get an lcov report per test. Turning the
+  profiles into traces in one pass means grid spawning `llvm-profdata merge`
+  and `llvm-cov export -format=lcov` itself, per test, against the test
+  binaries — finding the tools through `rustc --print target-libdir` and the
+  objects through `cargo nextest list`. That is a third and fourth spawned
+  tool and an object-discovery path of its own, which is why the template
+  landed without it; the saving it buys is the report export, the run itself
+  already being one invocation once the wrapper is installed.
 - **T-07 (P0, S) Attribute `grid test` verdicts without a trace.** Record
   a synthetic trace id (`test:<inventory id>`) so `stale.rs` can attribute
   them; the `unattributed` count becomes what it should be — verdicts

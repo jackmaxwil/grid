@@ -151,7 +151,13 @@ grid trace ingest --coverage-json cov.json --test "$t"
 ```
 
 `grid test --trace` runs the recipe for the tests it selected; `--all`
-for the inventory. `just traces` is that run with the tool check in front of
+for the inventory — one `cargo llvm-cov nextest` per test, because one
+profile cannot be attributed back to the tests that shared a process.
+`scripts/templates/` holds a nextest wrapper script and a
+`.config/nextest.toml` that fix the attribution half: one `.profraw` per
+test, named by the test id, from one nextest run. Copy them in; grid
+installs nothing, notices the files and says so, and turning them into
+traces without a second export is `docs/TODOS.md` T-45. `just traces` is that run with the tool check in front of
 it — it prints the exact install commands and stops rather than half-tracing
 the inventory; `just traces-ci` is the same run without the check, for a
 workflow that installed them itself. Traces decay honestly: an observation whose endpoint no
