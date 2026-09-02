@@ -80,14 +80,10 @@ pub fn deserialize_shape(item_source: &str) -> SerdeShape {
         return SerdeShape::Absent;
     }
     let Ok(item) = syn::parse_str::<syn::Item>(item_source) else {
-        // Not one item: a macro body, or a span that starts mid-line. If the
-        // text mentions the derive at all, that is a boundary this reader
-        // cannot check rather than one it can clear.
-        return if item_source.contains("Deserialize") {
-            SerdeShape::Hidden
-        } else {
-            SerdeShape::Absent
-        };
+        // Not one item: a macro body, or a span that starts mid-line. The
+        // text mentions the derive (the guard above), so that is a boundary
+        // this reader cannot check rather than one it can clear.
+        return SerdeShape::Hidden;
     };
     match item {
         syn::Item::Struct(item) => of_struct(&item),
@@ -119,9 +115,12 @@ fn of_struct(item: &syn::ItemStruct) -> SerdeShape {
         let Some(ident) = field.ident.as_ref() else {
             continue;
         };
-        let Some(read) = field_of(ident, field) else {
+        let Some(mut read) = field_of(ident, field) else {
             return SerdeShape::Hidden;
         };
+        // A container-level `#[serde(default)]` defaults every field: an
+        // added field on such a struct is not a required one.
+        read.defaulted |= container.defaulted;
         fields.push(read);
     }
     SerdeShape::Visible(Shape {
@@ -196,6 +195,8 @@ fn visibility(attrs: &[syn::Attribute]) -> Visibility {
 
 struct Container {
     deny_unknown_fields: bool,
+    /// `#[serde(default)]` on the container: every field is defaulted.
+    defaulted: bool,
     representation: String,
 }
 
@@ -221,12 +222,21 @@ fn container(attrs: &[syn::Attribute]) -> Option<Container> {
     parts.sort();
     Some(Container {
         deny_unknown_fields: meta.iter().any(|(key, _)| key == "deny_unknown_fields"),
+        defaulted: meta.iter().any(|(key, _)| key == "default"),
         representation: parts.join(";"),
     })
 }
 
+/// One named field, or `None` for one this reader cannot describe: an
+/// attribute that did not parse, or `#[serde(flatten)]`, whose name never
+/// appears in the bytes and whose members live on another type — reading
+/// it as a plain field named `inner` would report a rename that never
+/// happened and hide every change inside the flattened type.
 fn field_of(ident: &syn::Ident, field: &syn::Field) -> Option<Field> {
     let meta = meta(&field.attrs)?;
+    if meta.iter().any(|(key, _)| key == "flatten") {
+        return None;
+    }
     let ty = field.ty.to_token_stream().to_string();
     Some(Field {
         name: named(&meta, &ident.to_string()),
@@ -331,6 +341,29 @@ mod tests {
         assert_eq!(read.fields[0].aliases, ["old_n"]);
         assert!(read.fields[1].defaulted);
         assert!(read.fields[2].optional);
+    }
+
+    /// A container-level `default` defaults every field, and a flattened
+    /// field is a boundary this reader cannot describe: its name is never in
+    /// the bytes and its members are another type's.
+    #[test]
+    fn a_container_default_reaches_every_field_and_flatten_is_hidden() {
+        let read = shape(
+            "#[derive(Deserialize)]\n#[serde(default)]\n\
+             pub struct C { pub a: u32, pub b: String }\n",
+        );
+        assert!(
+            read.fields.iter().all(|f| f.defaulted),
+            "every field is defaulted by the container: {:?}",
+            read.fields.iter().map(|f| f.defaulted).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            deserialize_shape(
+                "#[derive(Deserialize)]\npub struct C { pub a: u32, #[serde(flatten)] pub inner: Inner }\n"
+            ),
+            SerdeShape::Hidden,
+            "a flattened field is not a field named `inner`"
+        );
     }
 
     #[test]

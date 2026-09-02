@@ -53,13 +53,66 @@ pub(crate) fn resolve(
     out
 }
 
+/// The names the Rust 2021 prelude puts in every module without a `use`:
+/// the constructors, functions, types and traits — and the derive macros,
+/// which the extractor records as decorator references — that a bare
+/// unbound name can be without a glob import having supplied it. A name on
+/// this list that the tree itself defines resolves before this table is
+/// consulted, so the list only ever describes a name the tree did not hold.
+const RUST_PRELUDE: &[&str] = &[
+    "Some",
+    "None",
+    "Ok",
+    "Err",
+    "drop",
+    "Box",
+    "Vec",
+    "String",
+    "Option",
+    "Result",
+    "Copy",
+    "Send",
+    "Sized",
+    "Sync",
+    "Unpin",
+    "Drop",
+    "Fn",
+    "FnMut",
+    "FnOnce",
+    "ToOwned",
+    "Clone",
+    "PartialEq",
+    "PartialOrd",
+    "Eq",
+    "Ord",
+    "AsRef",
+    "AsMut",
+    "Into",
+    "From",
+    "Default",
+    "Iterator",
+    "Extend",
+    "IntoIterator",
+    "DoubleEndedIterator",
+    "ExactSizeIterator",
+    "ToString",
+    "TryFrom",
+    "TryInto",
+    "FromIterator",
+    "Debug",
+    "Hash",
+];
+
 /// Which population a declined Rust reference belongs to.
 ///
 /// A `use` moves the question to the binding's own head, which is where the
 /// crate name actually is: `HashMap::new()` under `use std::collections::…`
 /// is a path into `std`, not a bare name this tree lost. An anchor or a name
 /// the tree roots is inside it; a bare unbound name is one a glob import
-/// would have supplied, which is inside it too — and therefore a hole.
+/// would have supplied, which is inside it too — and therefore a hole —
+/// unless it is a prelude name, which every module holds without any import
+/// and which was therefore never this tree's to lose. `Some(..)`, `Ok(..)`
+/// and `drop(..)` alone were most of the `internal` count on this repo.
 fn decline_of(index: &DefIndex, bindings: &Bindings, r: &Reference) -> Decline {
     let Some(head) = r.path.first() else {
         return Decline::Internal;
@@ -72,7 +125,7 @@ fn decline_of(index: &DefIndex, bindings: &Bindings, r: &Reference) -> Decline {
     if matches!(head, "crate" | "super" | "self" | "Self") || index.is_root(head) {
         return Decline::Internal;
     }
-    if r.path.len() == 1 && bound.is_none() {
+    if r.path.len() == 1 && bound.is_none() && !RUST_PRELUDE.contains(&head) {
         Decline::Internal
     } else {
         Decline::External

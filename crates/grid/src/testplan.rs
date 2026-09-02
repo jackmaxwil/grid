@@ -380,18 +380,17 @@ pub fn compute<B: AsRef<[u8]>>(inputs: &Inputs<'_, B>) -> TestPlan {
     // be said here either.
     let mut uncovered = Vec::new();
     if reached.is_some() && !inputs.changed.is_empty() {
-        let is_selected_test = |datum: Option<DatumId>| {
-            datum.is_some_and(|d| {
-                let wire = d.to_string();
-                selected
-                    .iter()
-                    .any(|s| s.datum.as_ref().is_some_and(|x| x.0 == wire))
-            })
-        };
+        let selected_datums: HashSet<&str> = selected
+            .iter()
+            .filter_map(|s| s.datum.as_ref().map(|d| d.0.as_str()))
+            .collect();
         let edited_tests: Vec<DatumId> = inputs
             .changed
             .iter()
-            .filter(|c| is_selected_test(c.after))
+            .filter(|c| {
+                c.after
+                    .is_some_and(|d| selected_datums.contains(d.to_string().as_str()))
+            })
             .map(|c| c.before)
             .collect();
         reached_tests.extend(edited_tests.iter().copied());

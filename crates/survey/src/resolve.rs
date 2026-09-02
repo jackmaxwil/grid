@@ -177,12 +177,128 @@ pub(crate) fn relation_of(kind: RefKind, target_is_class: bool) -> Relation {
     }
 }
 
+/// The names Python's `builtins` module puts in every scope without an
+/// import — the functions, the types called as constructors, and the
+/// exception classes a `class X(Exception)` base names. A tree that defines
+/// one of these itself resolves it before this table is consulted.
+const PY_BUILTINS: &[&str] = &[
+    "abs",
+    "all",
+    "any",
+    "ascii",
+    "bin",
+    "bool",
+    "breakpoint",
+    "bytearray",
+    "bytes",
+    "callable",
+    "chr",
+    "classmethod",
+    "compile",
+    "complex",
+    "delattr",
+    "dict",
+    "dir",
+    "divmod",
+    "enumerate",
+    "eval",
+    "exec",
+    "filter",
+    "float",
+    "format",
+    "frozenset",
+    "getattr",
+    "globals",
+    "hasattr",
+    "hash",
+    "help",
+    "hex",
+    "id",
+    "input",
+    "int",
+    "isinstance",
+    "issubclass",
+    "iter",
+    "len",
+    "list",
+    "locals",
+    "map",
+    "max",
+    "memoryview",
+    "min",
+    "next",
+    "object",
+    "oct",
+    "open",
+    "ord",
+    "pow",
+    "print",
+    "property",
+    "range",
+    "repr",
+    "reversed",
+    "round",
+    "set",
+    "setattr",
+    "slice",
+    "sorted",
+    "staticmethod",
+    "str",
+    "sum",
+    "super",
+    "tuple",
+    "type",
+    "vars",
+    "zip",
+    "__import__",
+    "BaseException",
+    "Exception",
+    "ArithmeticError",
+    "AssertionError",
+    "AttributeError",
+    "EOFError",
+    "ImportError",
+    "ModuleNotFoundError",
+    "IndexError",
+    "KeyError",
+    "KeyboardInterrupt",
+    "LookupError",
+    "MemoryError",
+    "NameError",
+    "NotImplementedError",
+    "OSError",
+    "IOError",
+    "OverflowError",
+    "RecursionError",
+    "RuntimeError",
+    "StopIteration",
+    "StopAsyncIteration",
+    "SyntaxError",
+    "SystemExit",
+    "TimeoutError",
+    "TypeError",
+    "UnicodeDecodeError",
+    "UnicodeEncodeError",
+    "UnicodeError",
+    "ValueError",
+    "ZeroDivisionError",
+    "FileNotFoundError",
+    "PermissionError",
+    "FileExistsError",
+    "ConnectionError",
+    "DeprecationWarning",
+    "UserWarning",
+    "Warning",
+];
+
 /// Which population a declined Python reference belongs to.
 ///
 /// An import binding settles it: the module the head names is either one this
 /// tree roots or one it does not. Without a binding, an attribute call is a
-/// method call on a value, and a bare name is one this tree could have held —
-/// a builtin, a glob's supply, or a definition the resolver could not find.
+/// method call on a value, a builtin is a name every scope holds without an
+/// import — never this tree's to lose — and any other bare name is one this
+/// tree could have held: a glob's supply, or a definition the resolver could
+/// not find.
 fn decline_of(index: &DefIndex, bindings: &Bindings, module: &str, r: &Reference) -> Decline {
     let Some(head) = r.path.first() else {
         return Decline::Internal;
@@ -198,6 +314,9 @@ fn decline_of(index: &DefIndex, bindings: &Bindings, module: &str, r: &Reference
     }
     if r.kind == RefKind::MethodCall {
         return Decline::Method;
+    }
+    if r.path.len() == 1 && PY_BUILTINS.contains(&head.as_str()) {
+        return Decline::External;
     }
     Decline::Internal
 }

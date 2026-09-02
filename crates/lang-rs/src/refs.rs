@@ -216,14 +216,18 @@ impl<'ast> Visit<'ast> for Scan {
     }
 
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
-        // The declaration's own cfg, inline or not: an out-of-line module's
-        // file cannot see the `#[cfg]` on its `mod x;`, so the survey joins
-        // it back on by module path.
-        let cfg = grid_datum::cfg_join(&crate::extract::cfgs_of(&node.attrs));
-        if !cfg.is_empty() {
-            self.out
-                .mod_cfgs
-                .push((join(&self.scope, &node.ident.to_string()), cfg));
+        // An out-of-line module's file cannot see the `#[cfg]` on its
+        // `mod x;`, so the declaration is reported for the survey to join
+        // back on by module path. An inline module's items see it directly
+        // (the extractor scopes it), and the survey keys the join by file,
+        // so reporting one would be an entry nothing can read.
+        if node.content.is_none() {
+            let cfg = grid_datum::cfg_join(&crate::extract::cfgs_of(&node.attrs));
+            if !cfg.is_empty() {
+                self.out
+                    .mod_cfgs
+                    .push((join(&self.scope, &node.ident.to_string()), cfg));
+            }
         }
         if let Some((_, items)) = &node.content {
             self.nested(&node.ident.to_string(), false, |s| {

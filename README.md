@@ -95,8 +95,9 @@ help` lists every verb, `grid explain` defines every word.
 - **An edge exists only where the language's own binding rules establish
   it.** Glob imports, macro bodies, and method calls on receivers whose
   type is not written down are omissions, never guesses — and every
-  omission is counted: `miss 11985 references declined (external 1673,
-  method 8852, internal 1460)` closes a survey of this repo. Method calls
+  omission is counted: `miss 12246 references declined (external 2459,
+  method 9047, internal 740)` closes a survey of this repo — a prelude
+  name or a Python builtin left unbound is `external`, never a hole. Method calls
   dominate on Rust; a moved signature reached only through `x.m()`
   produces no suspect today (the compiler catches it on Rust; on Python
   nothing does). Closing that is the top item in `docs/TODOS.md`.
@@ -149,14 +150,14 @@ for the inventory. Traces decay honestly: an observation whose endpoint no
 longer exists in the chart asked about is demoted to heuristic with reason
 `stale-trace`, and the retained file is never rewritten.
 
-## Numbers (2026-09-01, Apple M4 Max, release, this repo: 1813 defs / 3419 edges)
+## Numbers (2026-09-02, Apple M4 Max, release, this repo: 1836 defs / 3473 edges, store warm, min of 5)
 
 | verb | measured |
 |---|---|
-| `grid survey` (worktree) | 80–145ms |
+| `grid survey` (worktree) | ~96ms (the dirty-diff hash rides the survey's own git thread) |
 | `grid survey <rev>` | 130ms here; 240ms on a 4312-def repo (was 5.4s: one git process, not one per file) |
-| `grid check --quick` | ~141ms, ~94ms of it the worktree survey a hook must re-run |
-| `grid check` | ~204ms |
+| `grid check --quick` | ~117ms, ~96ms of it the worktree survey a hook must re-run |
+| `grid check` | ~125ms with the base already retained |
 | `grid.test.plan` | 4–5ms warm; the run is the runner's |
 | `grid scope --bodies`, 3 hops | ~20ms |
 | `grid suspects --closure` | ~4ms by snapshot id |

@@ -81,6 +81,12 @@ fn rust_declines_split_into_external_method_and_internal() {
         "declined split for {} refs",
         s.declined_refs
     );
+    // The identity `decline()` enforces by construction, checked once here
+    // rather than by surveying the whole workspace.
+    assert_eq!(
+        s.declined_refs,
+        s.declined_external + s.declined_method + s.declined_internal
+    );
 }
 
 /// Ground truth, Python: one call into the standard library, one method call
@@ -167,22 +173,64 @@ fn a_syntactically_obvious_receiver_still_yields_no_edge() {
     );
 }
 
-/// Property (rung 3): the total is the sum, over every corpus this repo has.
+/// A prelude name is not a hole in this tree: `Some(..)`, `Ok(..)`,
+/// `drop(..)` and a derived or implemented prelude trait were never the
+/// tree's to hold, and counting them `internal` inflated the one number
+/// `grid drift` is honest by.
 #[test]
-fn the_total_is_always_the_sum_of_the_three() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("workspace root");
-    let s = survey(root);
+fn rust_prelude_names_are_external_not_internal() {
+    let dir = repo(&[
+        ("Cargo.toml", "[package]\nname = \"fixture\"\n"),
+        (
+            "src/lib.rs",
+            "#[derive(Debug, Clone)]\n\
+             pub struct Local;\n\
+             impl Default for Local {\n    fn default() -> Self {\n        Local\n    }\n}\n\
+             pub fn f() -> Option<u32> {\n    Some(1)\n}\n\
+             pub fn g() -> Result<u32, u32> {\n    Ok(1)\n}\n\
+             pub fn h() {\n    drop(f());\n}\n",
+        ),
+    ]);
+    let s = survey(dir.path());
+    assert_eq!(s.edges, 1, "`h` calls `f`; nothing else binds");
     assert_eq!(
+        s.declined_internal,
+        0,
+        "nothing here is a name the tree could have held: {:?}",
+        split(&s)
+    );
+    assert_eq!(
+        s.declined_external,
         s.declined_refs,
-        s.declined_external + s.declined_method + s.declined_internal,
-        "declined split does not add up on {}",
-        root.display()
+        "Some, Ok, drop, Debug, Clone, Default are all prelude: {:?}",
+        split(&s)
     );
-    assert!(
-        s.declined_method > 0,
-        "a Rust tree this size has method calls to count"
+    // The derives are attribute paths the extractor filters as builtin,
+    // so the calls and the `impl Default` base are what is counted.
+    assert!(s.declined_refs >= 4, "{:?}", split(&s));
+}
+
+/// The same for Python's builtins: `len`, `print`, `isinstance` and an
+/// `Exception` base are every scope's without an import.
+#[test]
+fn python_builtins_are_external_not_internal() {
+    let dir = repo(&[
+        ("pyproject.toml", "[project]\nname = \"fixture\"\n"),
+        ("pkg/__init__.py", ""),
+        (
+            "pkg/mod.py",
+            "class E(Exception):\n    pass\n\n\n\
+             def f(xs):\n    print(len(xs))\n    return isinstance(xs, list)\n",
+        ),
+    ]);
+    let s = survey(dir.path());
+    assert_eq!(s.edges, 0);
+    assert_eq!(
+        s.declined_internal,
+        0,
+        "builtins are not names this tree could have held: {:?}",
+        split(&s)
     );
+    assert_eq!(s.declined_external, s.declined_refs, "{:?}", split(&s));
+    assert!(s.declined_refs >= 4, "{:?}", split(&s));
 }
