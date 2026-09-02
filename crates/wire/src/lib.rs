@@ -1025,6 +1025,8 @@ pub struct TestSelection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub datum: Option<Datum>,
     pub why: TestSelectionWhy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unresolved: Option<TestSelectionUnresolved>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1039,6 +1041,16 @@ pub enum TestSelectionWhy {
     Aground,
     #[serde(rename = "not_recorded")]
     NotRecorded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TestSelectionUnresolved {
+    #[serde(rename = "ambiguous")]
+    Ambiguous,
+    #[serde(rename = "macro_defined")]
+    MacroDefined,
+    #[serde(rename = "not_charted")]
+    NotCharted,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

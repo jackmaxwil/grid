@@ -14,7 +14,7 @@
   },
   "x-porcelain": {
     "doc": "packages/grid/docs/PORCELAIN.md",
-    "version": "2.16.0",
+    "version": "2.17.0",
     "description": "Normative grammar for human-facing stdout records. --json emits wire results verbatim; the porcelain version is reported by grid.version."
   },
   "methods": [
@@ -27,7 +27,7 @@
         {
           "name": "current versions",
           "params": [],
-          "result": { "name": "version", "value": { "wire": "1.1.0", "engine": "grid 0.1.0", "porcelain": "2.16.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
+          "result": { "name": "version", "value": { "wire": "1.1.0", "engine": "grid 0.1.0", "porcelain": "2.17.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
         }
       ],
       "result": {
@@ -1545,7 +1545,8 @@
         "properties": {
           "test": { "$ref": "#/components/schemas/TestId" },
           "datum": { "$ref": "#/components/schemas/Datum", "description": "The test's definition at head. Absent when the test is unresolved." },
-          "why": { "type": "string", "enum": ["reached", "no_trace", "unresolved", "aground", "not_recorded"], "description": "reached: the inbound walk from the changed set reached the test's definition (or the test itself changed). no_trace: no retained trace still describes code base holds, so the static closure alone may not excuse a skip. unresolved: the chart cannot name the test, so nothing can be said about it. aground: the walk ran out of fuel, so every test is selected. not_recorded: unreached and traced, but no verdict for this closure in this environment is on record to replay." }
+          "why": { "type": "string", "enum": ["reached", "no_trace", "unresolved", "aground", "not_recorded"], "description": "reached: the inbound walk from the changed set reached the test's definition (or the test itself changed). no_trace: no retained trace still describes code base holds, so the static closure alone may not excuse a skip. unresolved: the chart cannot name the test, so nothing can be said about it. aground: the walk ran out of fuel, so every test is selected. not_recorded: unreached and traced, but no verdict for this closure in this environment is on record to replay." },
+          "unresolved": { "type": "string", "enum": ["ambiguous", "macro_defined", "not_charted"], "description": "Why the chart cannot name the test; present only when why is unresolved. ambiguous: the name resolves to more than one definition, and two definitions are not one closure. macro_defined: the module the name sits in is charted and the name itself is not, which on Rust means a macro invocation (proptest! and its kin) defines it — a survey charts items, never macro output. not_charted: nothing under that module is in the chart at all." }
         },
         "additionalProperties": false,
         "description": "One test the runner must run, and the reason. Every reason is a refusal to skip."

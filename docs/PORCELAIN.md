@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.16.0
+version: 2.17.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -143,8 +143,13 @@ emitted and the report carries no `compat` field at all.
 per replayed verdict; `miss <test>  <reason>` per selected test, the reason
 one of `closure-changed` (the walk from the changed set reached it, or the
 test itself changed), `no-trace` (no live trace watched it, so the static
-closure alone does not license a skip), `unresolved` (the chart cannot name
-it), `aground` (the walk ran past its fuel, so every test is selected), or
+closure alone does not license a skip), `unresolved:<why>` (the chart cannot
+name it — `:ambiguous` when the name resolves to more than one definition,
+`:macro-defined` when its module is charted and the name is not, which on
+Rust means a macro invocation such as `proptest!` defines it, `:not-charted`
+when nothing under that module is charted at all; bare `unresolved` from a
+plan computed before the column existed), `aground` (the walk ran past its
+fuel, so every test is selected), or
 `not-recorded` (nothing on record to replay); `test <ok|fail>  <test>
 pass=<pass|fail>` per outcome the runner reported; `warn <test>
 nondeterministic  same closure key, same env: <v1> <t1>, <v2> now` when a
