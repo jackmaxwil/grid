@@ -122,3 +122,40 @@ pub(crate) fn keep_union(item: &mut syn::ItemUnion) {
         field.attrs = keep_observable(&field.attrs);
     }
 }
+
+/// The erased signature of one definition's *own* source, rendered back as
+/// Rust text: what a caller must satisfy, with parameter patterns erased to
+/// `_` exactly as the sig identity erases them.
+///
+/// Pure — same text in, same text out — and the input is the definition's
+/// source as the worktree holds it, which is what `grid scope --sigs` packs.
+/// Three parse attempts cover every shape the extractor charts: a free item
+/// (`fn`/`struct`/`enum`/`union`/`trait`), an inherent or trait-impl method,
+/// and a trait's own method declaration. Anything else answers `None` rather
+/// than guessing.
+///
+/// ponytail: `TokenStream::to_string` spacing (`io :: Result < usize >`), not
+/// rustfmt's — a prettyprinter is a dependency, and the tokens are the claim.
+#[must_use]
+pub fn sig_text(source: &str) -> Option<String> {
+    let item = match syn::parse_str::<syn::Item>(source) {
+        Ok(syn::Item::Fn(f)) => Some(of_fn(&f.vis, &f.sig)),
+        Ok(syn::Item::Struct(s)) => Some(of_type(&s, keep_struct)),
+        Ok(syn::Item::Enum(e)) => Some(of_type(&e, keep_enum)),
+        Ok(syn::Item::Union(u)) => Some(of_type(&u, keep_union)),
+        Ok(syn::Item::Trait(t)) => Some(of_trait(&t)),
+        // A body-less `fn ...;` parses as `Item::Verbatim`, so an unmatched
+        // item is not a refusal — it falls through to the method attempts.
+        Ok(_) | Err(_) => None,
+    };
+    let method = || {
+        syn::parse_str::<syn::ImplItemFn>(source)
+            .map(|m| of_fn(&m.vis, &m.sig))
+            .or_else(|_| {
+                syn::parse_str::<syn::TraitItemFn>(source)
+                    .map(|m| of_fn(&syn::Visibility::Inherited, &m.sig))
+            })
+            .ok()
+    };
+    item.or_else(method).map(|tokens| tokens.to_string())
+}

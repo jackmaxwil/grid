@@ -216,6 +216,19 @@ impl<'ast> Visit<'ast> for Scan {
     }
 
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        // An out-of-line module's file cannot see the `#[cfg]` on its
+        // `mod x;`, so the declaration is reported for the survey to join
+        // back on by module path. An inline module's items see it directly
+        // (the extractor scopes it), and the survey keys the join by file,
+        // so reporting one would be an entry nothing can read.
+        if node.content.is_none() {
+            let cfg = grid_datum::cfg_join(&crate::extract::cfgs_of(&node.attrs));
+            if !cfg.is_empty() {
+                self.out
+                    .mod_cfgs
+                    .push((join(&self.scope, &node.ident.to_string()), cfg));
+            }
+        }
         if let Some((_, items)) = &node.content {
             self.nested(&node.ident.to_string(), false, |s| {
                 for item in items {
@@ -289,18 +302,26 @@ impl<'ast> Visit<'ast> for Scan {
     }
 
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
-        if let Some(head) = dotted(&node.receiver).as_deref() {
-            if head == ["self"]
-                && self
-                    .in_receiver
-                    .iter()
-                    .rev()
-                    .nth(1)
-                    .copied()
-                    .unwrap_or(false)
-            {
-                self.push(RefKind::SelfCall, vec![node.method.to_string()]);
-            }
+        let receiver = dotted(&node.receiver).unwrap_or_default();
+        if receiver == ["self"]
+            && self
+                .in_receiver
+                .iter()
+                .rev()
+                .nth(1)
+                .copied()
+                .unwrap_or(false)
+        {
+            self.push(RefKind::SelfCall, vec![node.method.to_string()]);
+        } else {
+            // Every other receiver needs a type to resolve, and this frontend
+            // has none (LANG_RS.md). Recorded anyway, so the call is a
+            // *declined* reference rather than an invisible one — which is
+            // the difference between a chart that knows what it missed and a
+            // chart that reports a hole as an absence.
+            let mut path = receiver;
+            path.push(node.method.to_string());
+            self.push(RefKind::MethodCall, path);
         }
         syn::visit::visit_expr_method_call(self, node);
     }

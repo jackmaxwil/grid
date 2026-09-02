@@ -190,6 +190,7 @@ fn def_ref<G: Graph + ?Sized>(graph: &G, ord: Ordinal) -> Option<DefRef> {
         callsign: graph.callsign(ord).map(|c| Callsign(c.to_string())),
         lang: graph.lang(ord),
         signature: None,
+        cfg: None,
         materialization: None,
     })
 }

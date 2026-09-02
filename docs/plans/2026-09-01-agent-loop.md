@@ -1,14 +1,160 @@
 # Agent loop: the honesty number, `grid test`, `grid check`, `grid scope --bodies`
 
-Status: **proposed**, 2026-09-01. Follows the drift plan
-(`2026-09-01-drift.md`, implemented) and the naming plan
-(`2026-09-01-naming.md`, which lands first so every verb here is born with
-its final name — this document already uses those names). Scope: what
-survived a pressure test of grid's value to a coding agent on a Rust,
-Rust + Python, or Python repository — the areas the test kept, at the
-minimum each needs. Authority: ONTOLOGY.md for vocabulary, PORCELAIN.md
-for records and exit codes, ASSURANCE.md for claims and dependency
-discipline, LANG_RS.md for the Rust frontend's ceilings.
+Status: **implemented** (steps 0–10), 2026-09-01. Every step landed as its
+own commit with the gates green — `cargo fmt --all --check`, `cargo clippy
+--workspace --all-targets` under pedantic deny, `cargo test --workspace`,
+`cargo deny check`, plus `scripts/check-assurance-links.sh` and
+`scripts/check-unsafe-confined.sh` — and each commit message carries its own
+measured perf numbers, its red-then-green conservatism evidence, and its full
+deviation list. No new dependencies: `grid` gained path dependencies on
+`grid-lang-rs` (step 3) and `blake3` (step 2), both already in the TCB.
+ASSURANCE.md gained C33–C43.
+
+Reviewed 2026-09-01: 14 findings fixed in 5a258a3, 27fef25, 0764f3b,
+2a7c8a7 (F1–F9, F13, F15–F17, F21 and the two decidable halves of F14),
+the rest recorded in docs/TODOS.md. PORCELAIN is 2.10.0, not the 2.1.0
+this document names: every step after 2 bumped it once more.
+
+Deviations from this document, one line each; the reasoning is in the commit
+that made each one.
+
+- **Step 0a (rev survey).** A missing or non-blob answer from the batch
+  child is skipped but the count is not surfaced — 0a declares no wire
+  change and no existing record carries it; `git cat-file --batch` is
+  spelled `--batch -z` so a path holding a newline cannot desync the stream.
+- **Step 0b (declined split).** Python's `MethodCall` resolves by the same
+  rule as `Call` and only its failures count as `method` (an unconditional
+  decline, as Rust's, would have destroyed thousands of proven Python
+  edges); Rust's `external` is discriminated by the tree's own root set plus
+  `std`/`core`/`alloc`, not read out of `Cargo.lock`; the three new wire
+  counters are `Option<u64>` (the generator's own integer mapping); a bare
+  unbound Python builtin name counts as `internal`, not `external`.
+- **Step 0c (retired word).** No deviation — the gap was exactly the one
+  untested arm the plan named (`grid cache <bad-subcommand>`); fixed as
+  scoped, with `cache check` added to the retired-words table as a
+  *compound* (a spelling retired only in context, since `check` is itself a
+  live verb).
+- **Step 1 (coverage traces).** `lcov.rs` became `coverage.rs` (`LcovWake`
+  -> `Mapped`, `lcov::trace_of` -> `coverage::trace_of_lcov`) beyond the
+  plan's one named `wake_of` -> `trace_of` rename, since the module is no
+  longer lcov-only; `grid_trace::ingest` gained per-ingestion memoized
+  symbol resolution, not in the plan, without which the step's own ledger
+  row measured 290ms instead of ~40ms; the new tests live in `porcelain.rs`
+  rather than a new evidence file; no PORCELAIN bump, since the flag adds no
+  record.
+- **Step 2 (`grid test`).** A fifth selection reason, `not-recorded` (a test
+  the walk did not reach with a live trace and no verdict on record — the
+  plan's four reasons do not name it); the changed set is `grid_chart::diff`
+  rather than the membership diff (C29 proves they agree, and the delta path
+  has no fallback failure mode); `uncovered` rides a second, outbound walk
+  from the reached tests, budgeted separately; `--all` and `--no-replay`
+  coincide; a rev base is surveyed and named by its snapshot id before the
+  worktree survey, so the two cannot collide; a selected test the runner
+  never reported on counts as failed and is named in a `warn`; an empty
+  trace is attributed by its command name; runner output is captured then
+  replayed to stderr rather than streamed (ponytail).
+- **Step 3 (`check --compile`).** Target cfg facts come from rustc's own
+  `--print cfg` listing, never parsed from the triple; cfg is joined from
+  out-of-line `mod x;` declarations and `tests/`/`benches/` directories, not
+  only enclosing inline modules (`examples/` stays unmodeled, marked);
+  predicates are stored whitespace-stripped; feature defaults close
+  transitively via `cargo metadata`; a dependent that itself changed is not
+  excused, unlike drift's rule, and one removed at head is skipped as
+  removed rather than uncompiled; `--compile` takes no head rev and `--`
+  without `--compile` is refused; `grid` depends on `grid-lang-rs` directly
+  (a workspace path dependency, no new package); `grid resolve` fills
+  `DefRef.cfg` too; the Rust resolver's pre-existing gap binding
+  `super::x`/`use super::x;` inside an inline test module is recorded as an
+  observation, not fixed here.
+- **Step 4 (`interface`).** No deviations from the plan for this step.
+- **Step 5 (`scope --bodies`).** Hop 0's body header reads `(body, hop 0)`,
+  not the plan's bare `(body)`; the horizon states the exact token estimate
+  rather than a rounded one; `--sigs M` below `--bodies N` is raised to `N`
+  rather than refused; asking for text raises the walk to
+  `max(--depth, N, M)`; `--since <rev>` resolves only against epochs the
+  store already retains and never surveys; `grid_lang_py::sig_text` renders
+  the source's own `def`/`class` header rather than the sig encoding's
+  literal `def` line; `expand` stops at the first empty layer instead of
+  running the full requested depth (byte-identity to the old behavior
+  verified separately, `--depth 9` included); text mode prints the document
+  alone, without `ref`/`edge`/`inv` records.
+- **Step 6 (`suspects --closure`).** Candidates are the head-side (Added)
+  half of the membership diff intersected with the closure, not the plan's
+  Removed half — Removed is base-side and the closure is walked at head, so
+  that intersection is empty by construction for exactly this question; the
+  closing `miss` carries no declined split (`references declined uncounted
+  (no survey ran in this call)`, rather than a re-survey costing more than
+  the 15ms row itself); the `fork` record is porcelain-only, not an added
+  wire field; a straddling pair of traces is read strictly — green is the
+  trace whose recorded snapshot *is* `since`, never one inferred by rev
+  order.
+- **Step 7 (compat, `persisted`).** Base source is one memoized `git show`
+  per changed file, not the rev survey's whole-tree read (ponytail: reading
+  yi's 18,398 blobs to answer about two files is not this step's cost to
+  carry); head is read first and a type that does not derive `Deserialize`
+  at head skips base entirely; an enum is read as its variant list only, so
+  per-variant field rules are deferred (ponytail); a tuple struct's members
+  are skipped, since an index cannot be renamed or aliased; Python compat is
+  recorded as `Absent`, not built, exactly as the plan says.
+- **Step 8 (`interfere`).** The merge base costs two git spawns, not one —
+  the other worktree's head must be named before `merge-base` can be asked
+  about it, and `--base` skips both; neither worktree is surveyed, only the
+  base, on demand, and only in this root, captured after this store's head
+  snapshot id so a freshly surveyed base cannot read back as head;
+  `both-touched` is a `warn` record, not a `drift` one, because a definition
+  both sides moved carries no edge and therefore no evidence grade.
+- **Step 9 (`check` composite).** The drift section is `drift --tests
+  --compat`'s report with its three lists lifted out, so its `unchecked`
+  counters ride along too (`--quick` stays plain `drift` byte for byte); the
+  conservatism fixture makes drift refuse over an unreadable trace store
+  rather than aground, since drift's own fuel needed more callers than a
+  debug survey could produce inside ten minutes; positionals are `[base]
+  [head]`, dropping the pre-existing single-positional `--plan p <head>`
+  reading; `--compile` without `--plan` stays step 3's standalone mode; the
+  `compile` param on `grid.check` is kept for 1.0 callers but no longer
+  gates, only reads a matching record; `--trace` without `--plan` is
+  refused; the certificate's counts are `Option`s — unknown, not zero, with
+  no retained trace; `uncovered` is recomputed on every check rather than
+  persisted (ponytail); `grid orphans --traced --json` emits the new
+  `Orphan` struct only under the flag, the plain form's JSON shape
+  unchanged.
+- **Step 10 (surface).** Two of the plan's nine listed ONTOLOGY words
+  (`selection`, `replay`) had no row — only their past-tense forms
+  (`selected`, `replayed`) did — and are added; `compile record` is answered
+  by the file's existing hyphenated token `compile-record`, consistent with
+  every other multi-word token in the file, not a second space-spelled
+  entry; PORCELAIN.md needed no change, since every prior step had already
+  documented its own record.
+
+Perf ledger, re-measured (Apple M4 Max, release, this repo at roughly
+1400–1700 defs across the steps that measured it; a row states its own
+def/edge count where it matters). Stated, never rounded into holding:
+
+| surface | budget | measured |
+|---|---|---|
+| `grid survey <rev>`, yi | < 1s (from ~10s) | 0.24s (667 tracked files; this repo's own rev survey 0.13s) — holds |
+| `grid survey` with method-call refs and cfg facts | within noise of ~114ms | 78–98ms across the steps that measured it — holds, below the reference |
+| segment size, epoch 4 | +4 B/def + cfg table | +4.2 B/def — holds |
+| coverage ingestion, 4312 defs | < 50ms | 39.0–41.0ms, after memoizing symbol resolution (not in the plan; unmemoized this measured 290ms) — holds |
+| `grid.test.plan` | < 20ms warm | 4–5ms — holds |
+| `grid check --compile` over `cargo check` | < 20ms | 15–18ms — holds |
+| `grid scope --bodies`, 3 hops | < 30ms | 19.7–20.5ms — holds |
+| `grid suspects --closure` | < 15ms | 4.3ms by snapshot id — holds; 15.8ms by rev — **does not hold**, by 0.8ms, all of it one extra `git rev-parse --short` spawn to name the rev |
+| `grid interfere`, both stores warm | < 100ms | 83ms median (65ms with `--base`) — holds |
+| `grid check --quick` | < 50ms | **141ms — does not hold**, by roughly 91ms |
+| `grid check`, full (`--plan`) | < 200ms | **204ms — does not hold**, by 4ms |
+
+The last two rows are the plan's own composite verb, and both misses have one
+cause: a PostToolUse hook must survey the worktree to see the edit it fires
+on, and the worktree survey alone costs ~94ms on this repo — most of the
+`--quick` budget before drift or the compile record are even read. The full
+form adds `drift --tests --compat` (~186ms, of which compat's source reads
+are ~26ms), the diff, the shape join, and the trace-store read on top. Two
+rows from the drift plan stay corrected there, not restored here: `grid
+survey` is ~114ms, not under 50ms, and a watch event is O(tree); this plan
+does not touch either.
+
+Original plan follows, unchanged.
 
 ---
 
@@ -407,6 +553,14 @@ stays `ls-tree`. Two spawns per rev survey, total.
 **Perf.** yi `grid survey HEAD~1`: ~10s → under 1s (the survey itself is
 ~270ms). Grid: no measurable change (92 files).
 
+#### 0c. One retired word the naming sweep missed
+
+`crates/grid/src/main.rs` still prints `usage: grid cache check|record …`
+on a malformed `cache` invocation (the conservatism test exercises the
+good paths and the top-level usage, not this hint). One line; the
+conservatism test gains the malformed-`cache` invocation so it stays
+caught.
+
 #### 0b. The declined count says what it declined
 
 **Problem.** One number for three populations, and Rust method calls are
@@ -655,10 +809,11 @@ chart plus the flags the compile ran with.
 - The changed set is the same `C` as `grid drift` (sig moved or unknown);
   a body-only edit has no uncompiled-caller problem.
 
-**Wire (additive).** `grid.check` (step 9) embeds `CompileReport {
-compiled_with: CompileRecord, uncompiled: Vec<DriftSuspect>, unknown:
-Vec<DriftWarning> }`; `DriftSuspect.reason` carries `uncompiled:<cfg>`;
-`DefRef` gains `cfg: Option<String>`.
+**Wire (additive).** `CheckResult` (step 9) gains `compile:
+Option<CompileReport>` where `CompileReport { compiled_with: CompileRecord,
+uncompiled: Vec<DriftSuspect>, unknown: Vec<DriftWarning> }`;
+`DriftSuspect.reason` carries `uncompiled:<cfg>`; `DefRef` gains
+`cfg: Option<String>`.
 
 **Tests.**
 - Ground truth: `#[cfg(test)] mod tests { fn t() { changed() } }` → one
@@ -852,7 +1007,7 @@ brainstorm's "every derive is a boundary" to what is actually decidable.
   no attribute vocabulary to read yet — recorded, not built.
 
 **Wire (additive).** `CompatFinding { def: DefRef, rule: String, declared:
-bool }` on `CheckReport` (step 9); `InvariantRule` gains the `persisted`
+bool }` on `CheckResult` (step 9); `InvariantRule` gains the `persisted`
 variant.
 
 **Tests.** Ground truth per rule (six fixtures, each the smallest struct
@@ -941,7 +1096,7 @@ grid check [base] [head] [--plan <file>] [--quick] [--why] [--json]
 - `--quick`: drift + compile record only, no trace or verdict-log reads;
   the PostToolUse form, budgeted under 50ms.
 - Composition rule: every section is the corresponding verb's own result
-  (`CheckReport` embeds `DriftReport`, `CompileReport`, `GateVerdict`,
+  (`CheckResult` embeds `DriftReport`, `CompileReport`, `GateVerdict`,
   `Vec<StaleTest>`, `Vec<WeakTest>`, `Vec<CompatFinding>`, …), not a
   re-implementation; a section that **refuses** (aground, unknown
   snapshot, superseded store) refuses the whole check with that reason
@@ -951,9 +1106,24 @@ grid check [base] [head] [--plan <file>] [--quick] [--why] [--json]
   the workspace-level unused-`pub` question rustc cannot ask (it checks
   per crate). Heuristic; `pub` in a published crate stays a maybe.
 
-**Wire (additive).** `grid.check` → `CheckReport`; `CloneFinding`; the
-orphans result gains `traces: Option<u64>` per item (a new struct if the
-item is a bare `DefRef` today — never a repurposed column).
+**Wire.** `grid.check` already exists after the naming plan as the folded
+review pack: `CheckParams { plan: PlanId, head, trace }` →
+`CheckResult { verdict: GateVerdict, why: Option<CheckWhy> }`. Step 9
+widens it in place rather than adding a second method: `CheckParams.plan`
+becomes `Option<PlanId>` and `CheckParams` gains `base: Option<SnapshotOrRev>`
+and `quick: Option<bool>`; `CheckResult.verdict` becomes
+`Option<GateVerdict>` (absent without a plan), and `CheckResult` gains the
+optional sections `drift: Option<DriftReport>`, `compile:
+Option<CompileReport>`, `stale: Option<Vec<StaleTest>>`, `weak:
+Option<Vec<WeakTest>>`, `uncovered: Option<Vec<DefRef>>`, `clones:
+Option<Vec<CloneFinding>>`, `compat: Option<Vec<CompatFinding>>`,
+`refactor: Option<RefactorCertificate>`. Loosening `plan` and `verdict`
+from required to optional is not additive by the letter of the rule; it
+is taken as wire 1.1 while epoch 1 has no consumer (it shipped the same
+day), recorded here as the one exception and the reason. `CloneFinding`
+and `RefactorCertificate` are new structs. The orphans result gains
+`traces: Option<u64>` per item (a new struct if the item is a bare
+`DefRef` today — never a repurposed column).
 
 **Porcelain.** Sections print in gate-first order with the existing
 records (`drift`, `def`, `inv`, `miss`, `warn`, `done`); the version bumps

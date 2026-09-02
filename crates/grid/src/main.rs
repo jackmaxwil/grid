@@ -25,19 +25,25 @@
 mod bisect;
 mod chart_provider;
 mod check;
+mod compat;
+mod compile;
 mod covenant;
+mod coverage;
 mod drift;
 mod edit;
 mod explain;
 mod history;
-mod lcov;
+mod interfere;
 mod plan;
 mod porcelain;
 mod rpc;
+mod runner;
 mod serve;
 mod stale;
 mod standing;
 mod suspects;
+mod testplan;
+mod testrun;
 mod watch;
 mod weak;
 
@@ -54,7 +60,7 @@ mod exit {
 }
 
 const PITCH: &str = "what your code promises vs what it does";
-const WIRE_VERSION: &str = "1.0.0";
+const WIRE_VERSION: &str = "1.1.0";
 const ENGINE_VERSION: &str = concat!("grid ", env!("CARGO_PKG_VERSION"));
 
 /// Teaching output. Machines read stdout only, so every hint goes to stderr,
@@ -82,20 +88,26 @@ fn help() {
          diff [base] [head]           what changed, in defs and edges\n  \
          drift [base] [head]          dependents of changed interfaces; exit 3 on suspects\n  \
          drift --tests                known tests whose recorded verdict no longer applies\n  \
+         drift --compat               changed Deserialize types old bytes cannot read\n  \
          covenant <A> <B> --via <w>   declare a coupling no language establishes\n  \
          watch [base]                 signed drift deltas, one file event per stdin line\n  \
+         interfere <other-worktree>   what another worktree's edits and yours collide over\n  \
          resolve <name|file|f:line>   where it is; a bare file lists its defs\n  \
          uses <name> [--relation r]   proven inbound edges\n  \
          scope <pattern> [--depth N]  context pack around an edit\n  \
-         orphans [--under p]          no proven caller (not the same as dead)\n  \
+         scope <p> --bodies N         the same, with the text and its horizon\n  \
+         orphans [--under p] [--traced]  no proven caller (not the same as dead); --traced adds trace N\n  \
          hotspots [--under p]         complexity x churn, descending\n  \
          roots                        import name -> directory map\n  \
          log <name>                   a definition's history in identity space\n  \
-         suspects <test>              likely culprits, ranked\n  \
+         suspects <test> [--closure <since>]  likely culprits, ranked\n  \
+         test [base] [--trace|--all]  run what the change can reach; replay the rest; exit 3 on red\n  \
          gate <plan> [head]           promise vs delta; exit 3 on hold\n  \
          plan lint <file>             validate a promise file\n  \
          todo <plan>                  the promise as a worklist\n  \
-         check --plan <p> [--why]     gate verdict, and why it says so\n  \
+         check [base] [head] [--quick]  everything the change did that nobody checked; exit 3\n  \
+         check --plan <p> [--why]     the same, plus the gate verdict and why it says so\n  \
+         check --compile [-- args]    wrap cargo check; the callers it did not compile; exit 3\n  \
          cache lookup|record ...      test verdicts keyed by identity closure\n  \
          edit apply <file>            compare-and-swap edits by datum\n  \
          trace ingest|diff ...        runtime traces -> observed edges\n  \
@@ -184,6 +196,8 @@ fn main() -> ExitCode {
         Some((&"check", args)) => check_verb(args, json),
         Some((&"explain", args)) => explain::main(args),
         Some((&"suspects", args)) => suspects(args, json),
+        Some((&"interfere", args)) => interfere_verb(args, json),
+        Some((&"test", args)) => testrun::main(args, json),
         Some((&"trace", args)) => trace(args, json),
         Some((&"serve", args)) => serve::main(args),
         Some((other, _)) => {
@@ -270,7 +284,7 @@ fn gate(args: &[&str], json: bool) -> u8 {
     }
 }
 
-/// `grid cache check <kind> <env-hash> <datum>...` and
+/// `grid cache lookup <kind> <env-hash> <datum>...` and
 /// `grid cache record <kind> <env-hash> <datum>=<pass|fail>...`.
 ///
 /// The CI shape: `lookup` prints `miss` records for what must run, `record`
@@ -373,7 +387,7 @@ fn cache(args: &[&str], json: bool) -> u8 {
             }
         }
         _ => {
-            hint("usage: grid cache check|record <kind> <env-hash> <datum>...");
+            hint("usage: grid cache lookup|record <kind> <env-hash> <datum>...");
             exit::BAD_INPUT
         }
     }
@@ -517,6 +531,7 @@ fn drift_verb(args: &[&str], json: bool) -> u8 {
     let mut floor = None;
     let mut plan = None;
     let mut tests = false;
+    let mut compat = false;
     let mut positional = Vec::new();
     let mut rest = args;
     while let Some((arg, tail)) = rest.split_first() {
@@ -549,6 +564,7 @@ fn drift_verb(args: &[&str], json: bool) -> u8 {
                 rest = tail;
             }
             "--tests" => tests = true,
+            "--compat" => compat = true,
             other if other.starts_with("--") => {
                 hint(&format!("grid: unknown flag `{other}`\n{DRIFT_USAGE}"));
                 return exit::BAD_INPUT;
@@ -566,6 +582,7 @@ fn drift_verb(args: &[&str], json: bool) -> u8 {
         floor,
         plan,
         tests: tests.then_some(true),
+        compat: compat.then_some(true),
     };
     match rpc::drift(&params, root()) {
         Err(
@@ -581,8 +598,13 @@ fn drift_verb(args: &[&str], json: bool) -> u8 {
         Ok(report) => {
             // A stale verdict is proven-grade staleness — the closure key is
             // identity math — so it diverges exactly as a suspect does.
+            // A compat finding gates only where a `persisted` invariant
+            // declared that old bytes exist: that declaration is the human
+            // fact, and without it the finding is heuristic and ranks.
+            let declared_compat = report.compat.iter().flatten().any(|f| f.declared);
             let code = if report.suspects.is_empty()
                 && report.stale_tests.iter().flatten().next().is_none()
+                && !declared_compat
             {
                 exit::OK
             } else {
@@ -609,7 +631,7 @@ fn drift_verb(args: &[&str], json: bool) -> u8 {
 }
 
 const DRIFT_USAGE: &str = "usage: grid drift [<base>] [<head>] \
-     [--floor <proven|observed|modeled|heuristic>] [--plan <file>] [--tests]";
+     [--floor <proven|observed|modeled|heuristic>] [--plan <file>] [--tests] [--compat]";
 
 /// The wire spelling of an evidence grade, for `--floor` arguments. The serde
 /// names are the vocabulary, so the flag cannot drift from the contract.
@@ -986,34 +1008,61 @@ fn miss(name: &str) -> String {
     msg
 }
 
-/// `grid scope <callsign-pattern>... [--depth N]` — the context pack around
-/// an intended edit: what matches, what touches it, what rules reach it.
-/// Bodies are deliberately absent; the agent pulls those itself.
+/// `grid scope <callsign-pattern>... [--depth N] [--bodies N] [--sigs M]
+/// [--budget T] [--since S]` — the context pack around an intended edit: what
+/// matches, what touches it, what rules reach it. Without `--bodies`/`--sigs`
+/// the text is deliberately absent and the agent pulls it itself; with them
+/// the pack carries bodies to one depth and signatures to a further one, under
+/// a token budget spent in whole layers, closed by a horizon.
 fn scope(args: &[&str], json: bool) -> u8 {
+    const USAGE: &str =
+        "usage: grid scope <pattern>... [--depth N] [--bodies N] [--sigs M] [--budget T] [--since <snapshot|rev>]";
     let mut patterns = Vec::new();
-    let mut depth = None;
+    let (mut depth, mut bodies, mut sigs, mut budget) = (None, None, None, None);
+    let mut since = None;
     let mut rest = args;
     while let Some((arg, tail)) = rest.split_first() {
-        if *arg == "--depth" {
+        let number = |slot: &mut Option<u64>| {
             let Some(n) = tail.first().and_then(|n| n.parse::<u64>().ok()) else {
-                hint("usage: grid scope <pattern>... [--depth N]");
-                return exit::BAD_INPUT;
+                return false;
             };
-            depth = Some(n);
-            rest = &tail[1..];
-            continue;
+            *slot = Some(n);
+            true
+        };
+        let taken = match *arg {
+            "--depth" => number(&mut depth),
+            "--bodies" => number(&mut bodies),
+            "--sigs" => number(&mut sigs),
+            "--budget" => number(&mut budget),
+            "--since" => {
+                since = tail.first().map(|s| snapshot_or_rev(s));
+                since.is_some()
+            }
+            _ => {
+                patterns.push(grid_wire::CallsignPattern((*arg).to_string()));
+                rest = tail;
+                continue;
+            }
+        };
+        if !taken {
+            hint(USAGE);
+            return exit::BAD_INPUT;
         }
-        patterns.push(grid_wire::CallsignPattern((*arg).to_string()));
-        rest = tail;
+        rest = &tail[1..];
     }
     if patterns.is_empty() {
-        hint("usage: grid scope <pattern>... [--depth N]");
+        hint(USAGE);
         return exit::BAD_INPUT;
     }
+    let tiers = bodies.is_some() || sigs.is_some();
     let params = grid_wire::methods::ScopeParams {
         callsigns: patterns,
         depth,
         snapshot: None,
+        bodies,
+        sigs,
+        budget,
+        since,
     };
     match rpc::scope(&params, root()) {
         Err(e) => {
@@ -1024,12 +1073,25 @@ fn scope(args: &[&str], json: bool) -> u8 {
             if json {
                 return emit_json(&pack);
             }
-            print!("{}", porcelain::scope(&pack, &namer()));
+            if pack.horizon.is_some() {
+                // Text mode: prose on stdout, closed by its own horizon line.
+                print!("{}", porcelain::scope_document(&pack));
+            } else {
+                print!("{}", porcelain::scope(&pack, &namer()));
+            }
             // The pack's horizon, said out loud. `scope` walks a fixed number
             // of layers and spends no fuel, so it is complete to exactly that
             // depth and to nothing beyond — a reader who cannot tell those
             // apart cannot use a bounded answer.
-            let hops = depth.unwrap_or(DEFAULT_SCOPE_DEPTH);
+            let hops = if tiers {
+                // Asking for text asks for the hops it lives at, so the walk
+                // is at least as deep as the outermost tier.
+                depth
+                    .unwrap_or(DEFAULT_SCOPE_DEPTH)
+                    .max(sigs.unwrap_or(3).max(bodies.unwrap_or(1)))
+            } else {
+                depth.unwrap_or(DEFAULT_SCOPE_DEPTH)
+            };
             hint(&format!(
                 "grid: scope complete through {hops} hop{} — nothing further was walked",
                 if hops == 1 { "" } else { "s" }
@@ -1217,18 +1279,29 @@ fn uses(args: &[&str], json: bool) -> u8 {
     }
 }
 
-/// `grid trace ingest --lcov <report> --test <name>` — coverage as a reach
-/// set: every executed line inside a charted definition becomes one
-/// observation from the named test.
-fn trace_lcov(rest: &[&str], json: bool, root: &std::path::Path) -> u8 {
+/// `grid trace ingest --lcov|--coverage-json <report> --test <name>` —
+/// coverage as a reach set: every executed line inside a charted definition
+/// becomes one observation from the named test.
+///
+/// One report is one test. The per-runner recipes that produce one report
+/// per test are in the README; the orchestration that runs them is
+/// `grid test --trace`, not this handler.
+fn trace_coverage(flag: &str, rest: &[&str], json: bool, root: &std::path::Path) -> u8 {
     let (Some(path), Some(&"--test"), Some(test)) = (rest.get(1), rest.get(2), rest.get(3)) else {
-        hint("usage: grid trace ingest --lcov <report|-> --test <name>");
+        hint(&format!(
+            "usage: grid trace ingest {flag} <report|-> --test <name>"
+        ));
         return exit::BAD_INPUT;
     };
     let Some(report) = read_arg(path) else {
         return exit::BAD_INPUT;
     };
-    let mapped = match lcov::trace_of(root, &report, test) {
+    let mapping = if flag == "--lcov" {
+        coverage::trace_of_lcov(root, &report, test)
+    } else {
+        coverage::trace_of_coverage_json(root, &report, test)
+    };
+    let mapped = match mapping {
         Ok(mapped) => mapped,
         Err(e) => {
             hint(&format!("grid: {e}"));
@@ -1430,69 +1503,113 @@ fn relation_named(name: &str) -> Option<grid_wire::Relation> {
     serde_json::from_value(serde_json::Value::String(name.to_owned())).ok()
 }
 
-/// `grid orphans [--lang <py|rs|ts|js>] [--under <path>]` — definitions
-/// with no proven inbound edge. The header states the evidence honestly:
-/// *no proven
-/// caller* — public API, tests, and macro-reached code all look like this,
-/// and none of them is dead.
+const ORPHANS_USAGE: &str =
+    "usage: grid orphans [--lang <py|rs|ts|js>] [--under <path>] [--traced]";
+
+/// `grid orphans [--lang <py|rs|ts|js>] [--under <path>] [--traced]` —
+/// definitions with no proven inbound edge. The header states the evidence
+/// honestly: *no proven caller* — public API, tests, and macro-reached code
+/// all look like this, and none of them is dead. `--traced` adds how many
+/// retained traces hit each one; `trace 0` is the workspace-level unused
+/// question, and still a maybe.
 fn orphans(args: &[&str], json: bool) -> u8 {
     let mut lang = None;
     let mut under = None;
+    let mut traced = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         if *arg == "--lang" {
             let Some(want) = it.next().and_then(|w| {
                 serde_json::from_value(serde_json::Value::String((*w).to_owned())).ok()
             }) else {
-                hint("usage: grid orphans [--lang <py|rs|ts|js>] [--under <path>]");
+                hint(ORPHANS_USAGE);
                 return exit::BAD_INPUT;
             };
             lang = Some(want);
         }
         if *arg == "--under" {
             let Some(path) = it.next() else {
-                hint("usage: grid orphans [--lang <py|rs|ts|js>] [--under <path>]");
+                hint(ORPHANS_USAGE);
                 return exit::BAD_INPUT;
             };
             under = Some(*path);
         }
+        if *arg == "--traced" {
+            traced = true;
+        }
     }
-    match rpc::orphans(root(), lang, under) {
+    let rows = if traced {
+        rpc::orphans_traced(root(), lang, under).map(|rows| {
+            if json {
+                return emit_json(&rows);
+            }
+            print!("{}", porcelain::orphans(&rows));
+            exit::OK
+        })
+    } else {
+        rpc::orphans(root(), lang, under).map(|rows| {
+            if json {
+                return emit_json(&rows);
+            }
+            print!("{}", porcelain::refs_as(&rows, "orphan"));
+            exit::OK
+        })
+    };
+    match rows {
         Err(e) => {
             hint(&format!("grid: {e}"));
             exit::BAD_INPUT
         }
-        Ok(rows) => {
-            if json {
-                return emit_json(&rows);
+        Ok(code) => {
+            if !json {
+                hint("grid: no proven caller — not the same as dead (public API, tests, macro-reached code all match)");
             }
-            hint("grid: no proven caller — not the same as dead (public API, tests, macro-reached code all match)");
-            print!("{}", porcelain::refs_as(&rows, "orphan"));
-            exit::OK
+            code
         }
     }
 }
 
-const CHECK_USAGE: &str = "usage: grid check --plan <plan> [<head-rev>] [--why] [--trace <id>]";
+const CHECK_USAGE: &str = "usage: grid check [<base>] [<head>] [--plan <plan>] [--quick] [--why] [--trace <id>] [--compile [-- <cargo check args>]]\n       grid check --compile [-- <cargo check args>]";
 
-/// `grid check --plan <plan> [<head-rev|snap:id>] [--why] [--trace <id>]` —
-/// is this change ok: the gate verdict, and under `--why` the reasoning —
-/// a path per fulfilling promise, the surplus it did not promise, and what
-/// changed without being run.
+/// `grid check [<base>] [<head>] [--plan <plan>] [--quick] [--why]` —
+/// everything the change did that nobody checked: drift suspects, the
+/// compile record's uncompiled callers, adherence when a plan is named,
+/// stale verdicts, covenant fires and declared compat findings gate (exit
+/// 3); weak tests, uncovered definitions, clone-of and undeclared compat
+/// findings rank. When nothing gates, one `done  refactor` record states the
+/// three facts a refactor claim rests on. `--why` adds, under a plan, a path
+/// per fulfilling promise and what changed without being run. `--quick` is
+/// drift plus the compile record and nothing that reads a trace or the
+/// verdict log — the `PostToolUse` form.
 ///
-/// The verdict is the gate's, so the exit code is the gate's too: hold is 3,
-/// divergence. A reviewer and CI reading the same answer cannot disagree
-/// about whether the promise was kept.
+/// A section that refuses refuses the whole check with its reason: exit 1
+/// when grid could not stand behind an answer (aground, an unreadable
+/// store), 2 when the input was wrong. Never a report with a section quietly
+/// missing.
 fn check_verb(args: &[&str], json: bool) -> u8 {
     let mut plan = None;
-    let mut head = None;
+    let mut positional: Vec<&str> = Vec::new();
     let mut trace = None;
     let mut why = false;
+    let mut quick = false;
+    let mut compile = None;
     let mut rest = args;
     while let Some((arg, tail)) = rest.split_first() {
         rest = tail;
         match *arg {
             "--why" => why = true,
+            "--quick" => quick = true,
+            "--compile" => compile = Some(Vec::new()),
+            "--" => {
+                let Some(cargo_args) = compile.as_mut() else {
+                    hint(&format!(
+                        "grid: `--` carries cargo check args and needs --compile\n{CHECK_USAGE}"
+                    ));
+                    return exit::BAD_INPUT;
+                };
+                cargo_args.extend(rest.iter().map(|a| (*a).to_owned()));
+                break;
+            }
             "--trace" | "--plan" => {
                 let Some((value, tail)) = rest.split_first() else {
                     hint(CHECK_USAGE);
@@ -1509,89 +1626,369 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
                 hint(&format!("grid: unknown flag `{other}`\n{CHECK_USAGE}"));
                 return exit::BAD_INPUT;
             }
-            other if head.is_none() => head = Some(snapshot_or_rev(other)),
+            other if positional.len() < 2 => positional.push(other),
             other => {
-                hint(&format!("grid: unexpected argument `{other}`"));
+                hint(&format!(
+                    "grid: unexpected argument `{other}`\n{CHECK_USAGE}"
+                ));
                 return exit::BAD_INPUT;
             }
         }
     }
-    let Some(plan) = plan else {
-        hint(CHECK_USAGE);
+    if trace.is_some() && plan.is_none() {
+        hint(&format!(
+            "grid: --trace names the run a plan's coverage is read from and needs --plan\n{CHECK_USAGE}"
+        ));
         return exit::BAD_INPUT;
-    };
+    }
+    // `--compile` wraps the compile and writes the record first; with a
+    // plan the check then reads it, without one the record's own report is
+    // the whole answer — the mode use case 3 runs, unchanged.
+    let mut compiled = None;
+    if let Some(cargo_args) = compile {
+        if !positional.is_empty() {
+            hint(&format!(
+                "grid: --compile checks the worktree against {COMPILE_BASE}; endpoints do not apply\n{CHECK_USAGE}"
+            ));
+            return exit::BAD_INPUT;
+        }
+        match compile_wrap(&cargo_args) {
+            Ok(record) => compiled = Some(record),
+            Err(code) => return code,
+        }
+    }
+    if let (None, Some(record)) = (&plan, compiled.as_ref()) {
+        return compile_only(record, quick, json);
+    }
     let params = grid_wire::methods::CheckParams {
         plan,
-        head: head.unwrap_or_else(|| snapshot_or_rev("HEAD")),
+        base: positional.first().map(|b| snapshot_or_rev(b)),
+        head: positional
+            .get(1)
+            .map_or_else(|| snapshot_or_rev("HEAD"), |h| snapshot_or_rev(h)),
         trace,
+        compile: compiled.is_some().then_some(true),
+        quick: quick.then_some(true),
     };
     match check::answer(&params, root()) {
+        // Grid could not stand behind a section: a walk over fuel, a store
+        // that would not open. Internal, and never a report without it.
+        Err(
+            e @ (check::Error::Refused(_)
+            | check::Error::Drift(
+                drift::Error::BudgetRejected(_) | drift::Error::Trace(_) | drift::Error::Stale(_),
+            )),
+        ) => {
+            hint(&format!("grid: {e}"));
+            exit::INTERNAL
+        }
         Err(e) => {
             hint(&format!("grid: {e}"));
             exit::BAD_INPUT
         }
-        Ok(pack) => {
-            let code = if pack.verdict.gate == grid_wire::GateVerdictGate::Hold {
-                exit::DIVERGENCE
-            } else {
+        Ok(pack) => check_emit(&pack, why, json),
+    }
+}
+
+/// Print a check's answer and compute its exit: 3 exactly when a gating
+/// section fired, the same predicate that withholds the refactor certificate.
+fn check_emit(pack: &grid_wire::CheckResult, why: bool, json: bool) -> u8 {
+    let code = if check::gated(pack) {
+        exit::DIVERGENCE
+    } else {
+        exit::OK
+    };
+    if json {
+        // A serialization failure is internal (1) and outranks the
+        // verdict, exactly as `grid gate` treats it.
+        return match emit_json(pack) {
+            exit::OK => code,
+            failure => failure,
+        };
+    }
+    print!("{}", check::porcelain(pack, &namer(), why));
+    if code == exit::DIVERGENCE {
+        hint("grid: something this change did was not checked — the records above say what; `grid explain <word>` says why it gates");
+    }
+    code
+}
+
+/// The base a bare `grid check --compile` measures the worktree against:
+/// `grid drift`'s default, so the changed set is the one drift would name.
+const COMPILE_BASE: &str = "HEAD~1";
+
+/// Run the compile, survey both endpoints, write the record. `Err` is the
+/// exit code to leave with: cargo's own when the compile failed (grid then
+/// prints nothing on stdout), `0` with a hint when there is no compile to
+/// wrap, `1` when the survey or the record write failed.
+fn compile_wrap(cargo_args: &[String]) -> Result<grid_wire::CompileRecord, u8> {
+    if !root().join("Cargo.toml").exists() {
+        hint("grid: nothing to compile — no Cargo.toml in this tree, and a Python tree has no compile to wrap");
+        return Err(exit::OK);
+    }
+    let started = std::time::Instant::now();
+    let mut chart = rpc::Chart::new(root());
+    let head = chart
+        .survey_run(&grid_wire::methods::SurveyRunParams {
+            git_rev: None,
+            worktree: None,
+        })
+        .and_then(|(snapshot, _)| {
+            // Retained, not made live: the worktree just surveyed stays what
+            // every later verb answers about.
+            chart.ensure(&snapshot_or_rev(COMPILE_BASE))?;
+            Ok(snapshot.snapshot_id)
+        });
+    let snapshot = match head {
+        Ok(id) => id,
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            return Err(exit::INTERNAL);
+        }
+    };
+    let surveyed = started.elapsed();
+    let compiling = std::time::Instant::now();
+    let wrapped = match compile::wrap(root(), cargo_args, snapshot) {
+        Ok(w) => w,
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            return Err(exit::INTERNAL);
+        }
+    };
+    match wrapped {
+        compile::Wrapped::Failed(code) => Err(code),
+        compile::Wrapped::Compiled(record) => {
+            hint(&format!(
+                "grid: recorded {} — survey {}ms, cargo check and record {}ms",
+                compile::FILE,
+                surveyed.as_millis(),
+                compiling.elapsed().as_millis()
+            ));
+            Ok(record)
+        }
+    }
+}
+
+/// `--compile` with no `--plan`: the compile report is the whole answer, and
+/// a `--quick` beside it has nothing to apply to — said, not swallowed.
+fn compile_only(record: &grid_wire::CompileRecord, quick: bool, json: bool) -> u8 {
+    if quick {
+        hint("grid: --quick applies to the composite check; with --compile and no --plan the compile report is the whole answer, so --quick is ignored");
+    }
+    compile_report(record, json)
+}
+
+/// The compile report on its own: drift's default endpoints, the worktree
+/// against [`COMPILE_BASE`]. Exit 3 when the compile provably skipped a
+/// proven dependent of a changed interface.
+fn compile_report(record: &grid_wire::CompileRecord, json: bool) -> u8 {
+    let started = std::time::Instant::now();
+    // Head is the snapshot the record names — the one just surveyed — so
+    // resolving it costs no git spawn; base is the rev it is measured from.
+    let head = grid_wire::SnapshotOrRev::Snapshot {
+        snapshot: record.snapshot.clone(),
+    };
+    let report = compile::report(root(), &snapshot_or_rev(COMPILE_BASE), &head, record);
+    match report {
+        Err(e @ drift::Error::BudgetRejected(_)) => {
+            hint(&format!("grid: {e}"));
+            exit::INTERNAL
+        }
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            exit::BAD_INPUT
+        }
+        Ok(report) => {
+            hint(&format!(
+                "grid: compile check {}ms over cargo check",
+                started.elapsed().as_millis()
+            ));
+            let code = if report.uncompiled.is_empty() {
                 exit::OK
+            } else {
+                exit::DIVERGENCE
             };
             if json {
-                // A serialization failure is internal (1) and outranks the
-                // verdict, exactly as `grid gate` treats it.
-                return match emit_json(&pack) {
+                return match emit_json(&report) {
                     exit::OK => code,
                     failure => failure,
                 };
             }
-            // Without `--why` the answer is the verdict alone — the same
-            // records `grid gate` prints, from the same computation.
-            if why {
-                print!("{}", check::porcelain(&pack, &namer()));
-            } else {
-                print!("{}", porcelain::verdict(&pack.verdict, &namer()));
+            print!("{}", porcelain::compile(&report));
+            if code == exit::DIVERGENCE {
+                hint("grid: these proven callers sit under a cfg the compile excluded — re-run with `-- --tests` or the feature, or fix them");
             }
             code
         }
     }
 }
 
-/// `grid suspects <test> [<trace>] [<base>]` — rank changed definitions seen
-/// in retained spectra for the named test.
-fn suspects(args: &[&str], json: bool) -> u8 {
-    let Some(test) = args.first() else {
-        hint("usage: grid suspects <test> [<trace>] [<base>]");
-        return exit::BAD_INPUT;
-    };
-    if args.len() > 3 {
-        hint("usage: grid suspects <test> [<trace>] [<base>]");
-        return exit::BAD_INPUT;
+const SUSPECTS_USAGE: &str =
+    "usage: grid suspects <test> [<trace>] [<base>] [--closure <snapshot|rev>]";
+
+const INTERFERE_USAGE: &str = "usage: grid interfere <other-root> [--base <rev>]";
+
+/// `grid interfere <other-root> [--base <rev>]` — the semantic overlap
+/// between two worktrees of one repository.
+///
+/// Exit 3 when a finding gates, 0 when there is none, and 2 whenever either
+/// store could not be read — silence about a chart grid could not open would
+/// read as "no interference", which is the opposite claim.
+fn interfere_verb(args: &[&str], json: bool) -> u8 {
+    let mut base = None;
+    let mut positional = Vec::new();
+    let mut rest = args;
+    while let Some((arg, tail)) = rest.split_first() {
+        rest = tail;
+        match *arg {
+            "--base" => {
+                let (Some(rev), Some(tail)) = (rest.first(), rest.get(1..)) else {
+                    hint(INTERFERE_USAGE);
+                    return exit::BAD_INPUT;
+                };
+                base = Some((*rev).to_owned());
+                rest = tail;
+            }
+            other if other.starts_with("--") => {
+                hint(&format!("grid: unknown flag `{other}`\n{INTERFERE_USAGE}"));
+                return exit::BAD_INPUT;
+            }
+            other => positional.push(other),
+        }
     }
-    let params = grid_wire::methods::SuspectsParams {
-        test: (*test).to_owned(),
-        trace: args
-            .get(1)
-            .map(|trace| grid_wire::TraceId((*trace).to_owned())),
-        base: args.get(2).map(|base| snapshot_or_rev(base)),
+    let ([other], true) = (positional.as_slice(), positional.len() == 1) else {
+        hint(INTERFERE_USAGE);
+        return exit::BAD_INPUT;
     };
-    match suspects::rank(&params, root()) {
+    let params = grid_wire::methods::InterfereParams {
+        other_root: (*other).to_owned(),
+        base: base.map(grid_wire::GitRev),
+    };
+    match rpc::interfere(&params, root()) {
         Err(error) => {
             hint(&format!("grid: {error}"));
             match error {
-                suspects::Error::UnknownTrace(_) => exit::STALE,
-                suspects::Error::InsufficientHistory(_) => exit::BAD_INPUT,
-                suspects::Error::Chart(_) => exit::INTERNAL,
+                interfere::Error::Drift(_) => exit::INTERNAL,
+                interfere::Error::Unreadable(_) | interfere::Error::Git(_) => exit::BAD_INPUT,
             }
         }
-        Ok(result) => {
+        Ok(report) => {
+            let code = if report.suspects.is_empty() {
+                exit::OK
+            } else {
+                exit::DIVERGENCE
+            };
             if json {
-                return emit_json(&result);
+                return match emit_json(&report) {
+                    exit::OK => code,
+                    failure => failure,
+                };
             }
-            for item in result.ranked {
-                println!("hit     {} {:.6} {}", item.datum.0, item.score, item.via);
+            print!("{}", porcelain::interfere(&report));
+            if code == exit::DIVERGENCE {
+                hint(
+                    "grid: the other worktree edited something these depend on — \
+                     rebase or talk before either of you merges",
+                );
             }
+            code
+        }
+    }
+}
+
+/// `grid suspects <test> [<trace>] [<base>] [--closure <since>]` — rank
+/// changed definitions for the named test, in one of two evidence modes.
+///
+/// Without `--closure`, plain Ochiai over retained spectra, which refuses
+/// without history. With it, the definitions the test's closure at head can
+/// reach whose bodies moved since that snapshot, ranked by hop distance —
+/// heuristic, so exit `0` on any answer, and no history required.
+fn suspects(args: &[&str], json: bool) -> u8 {
+    let mut closure = None;
+    let mut positional = Vec::new();
+    let mut rest = args;
+    while let Some((arg, tail)) = rest.split_first() {
+        rest = tail;
+        match *arg {
+            "--closure" => {
+                let (Some(spec), Some(tail)) = (rest.first(), rest.get(1..)) else {
+                    hint(SUSPECTS_USAGE);
+                    return exit::BAD_INPUT;
+                };
+                closure = Some(snapshot_or_rev(spec));
+                rest = tail;
+            }
+            other if other.starts_with("--") => {
+                hint(&format!("grid: unknown flag `{other}`\n{SUSPECTS_USAGE}"));
+                return exit::BAD_INPUT;
+            }
+            other => positional.push(other),
+        }
+    }
+    let (Some(test), true) = (positional.first(), positional.len() <= 3) else {
+        hint(SUSPECTS_USAGE);
+        return exit::BAD_INPUT;
+    };
+    let params = grid_wire::methods::SuspectsParams {
+        test: (*test).to_owned(),
+        trace: positional
+            .get(1)
+            .map(|trace| grid_wire::TraceId((*trace).to_owned())),
+        base: positional.get(2).map(|base| snapshot_or_rev(base)),
+        closure_since: closure.clone(),
+    };
+    match closure {
+        Some(since) => suspects_closure(&params, &since, json),
+        None => match suspects::rank(&params, root()) {
+            Err(error) => suspects_refused(&error),
+            Ok(result) => {
+                if json {
+                    return emit_json(&result);
+                }
+                print!("{}", porcelain::suspects(&result));
+                exit::OK
+            }
+        },
+    }
+}
+
+/// The closure evidence mode's output: the ranking, the fork when two
+/// retained traces straddle `since`, and the closing `miss` that says how
+/// much of the closure the chart could not follow.
+fn suspects_closure(
+    params: &grid_wire::methods::SuspectsParams,
+    since: &grid_wire::SnapshotOrRev,
+    json: bool,
+) -> u8 {
+    match suspects::rank_closure(params, since, root()) {
+        Err(error) => suspects_refused(&error),
+        Ok(found) => {
+            if json {
+                return emit_json(&found.suspects);
+            }
+            print!("{}", porcelain::suspects(&found.suspects));
+            if let Some(diff) = &found.fork {
+                print!("{}", porcelain::fork(diff));
+            }
+            // Unknown, never zero: the declined split is a property of a
+            // survey *run* and no survey ran here — this verb answers from
+            // the published snapshot, which is what keeps it inside its
+            // millisecond budget.
+            println!("miss    ?  references declined uncounted (no survey ran in this call)");
             exit::OK
         }
+    }
+}
+
+/// One refusal table for both modes.
+fn suspects_refused(error: &suspects::Error) -> u8 {
+    hint(&format!("grid: {error}"));
+    match error {
+        suspects::Error::UnknownTrace(_) => exit::STALE,
+        suspects::Error::InsufficientHistory(_)
+        | suspects::Error::UnknownTest(_)
+        | suspects::Error::UnknownSince(_) => exit::BAD_INPUT,
+        suspects::Error::ClosureRejected(_) | suspects::Error::Chart(_) => exit::INTERNAL,
     }
 }
 
@@ -1604,7 +2001,9 @@ fn suspects(args: &[&str], json: bool) -> u8 {
 fn trace(args: &[&str], json: bool) -> u8 {
     let root = std::path::Path::new(".");
     match args.split_first() {
-        Some((&"ingest", rest)) if rest.first() == Some(&"--lcov") => trace_lcov(rest, json, root),
+        Some((&"ingest", rest @ [flag @ ("--lcov" | "--coverage-json"), ..])) => {
+            trace_coverage(flag, rest, json, root)
+        }
         Some((&"ingest", rest)) => {
             let Some(path) = rest.first() else {
                 hint("usage: grid trace ingest <trace.json|->");

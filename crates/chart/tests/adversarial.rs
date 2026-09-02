@@ -220,6 +220,65 @@ fn invalid_utf8_callsign_is_refused() {
     assert_eq!(err(image), ChartError::BadUtf8);
 }
 
+/// The epoch-4 cfg column: a def's index must name a table entry, the
+/// table's offsets must be a monotone CSR, and the bytes must be UTF-8.
+#[test]
+fn cfg_index_past_the_table_is_refused() {
+    let mut image = sample();
+    let at = section_offset_field(Section::DefCfgs);
+    let off = usize::try_from(u64::from_le_bytes(image[at..at + 8].try_into().unwrap())).unwrap();
+    // The sample's table holds only entry 0 (no def is conditioned), so
+    // index 1 is one past the end — the classic off-by-one read.
+    poke_u32(&mut image, off, 1);
+    assert_eq!(err(image), ChartError::BadCfgIndex);
+}
+
+#[test]
+fn cfg_table_running_backwards_is_refused() {
+    let mut image = sample();
+    let at = section_offset_field(Section::CfgOffsets);
+    let off = usize::try_from(u64::from_le_bytes(image[at..at + 8].try_into().unwrap())).unwrap();
+    poke_u32(&mut image, off, 7);
+    assert_eq!(err(image), ChartError::BadCsr(Section::CfgOffsets));
+}
+
+#[test]
+fn cfg_table_with_no_empty_entry_is_refused() {
+    let mut image = sample();
+    let at = section_offset_field(Section::CfgOffsets);
+    // Zero-length offsets: no entry 0, so every def's index 0 would dangle.
+    poke_u64(&mut image, at + 8, 0);
+    assert!(matches!(
+        err(image),
+        ChartError::BadSectionSize(Section::CfgOffsets) | ChartError::OverlappingSections
+    ));
+}
+
+#[test]
+fn invalid_utf8_cfg_is_refused() {
+    let defs = vec![Def {
+        datum: DatumId([1; 32]),
+        callsign: "a".into(),
+        lang: None,
+        facts: Some(grid_chart::DefFacts {
+            path: "a.rs".into(),
+            line: 1,
+            line_end: 1,
+            span: (0, 1),
+            shape: [0; 32],
+            complexity: 1,
+            sig: [0; 32],
+            cfg: "test".into(),
+        }),
+    }];
+    let mut image = build(&defs, &[]).unwrap();
+    let at = section_offset_field(Section::CfgBytes);
+    let off = usize::try_from(u64::from_le_bytes(image[at..at + 8].try_into().unwrap())).unwrap();
+    image[off] = 0xff;
+    reseal(&mut image);
+    assert_eq!(err(image), ChartError::BadUtf8);
+}
+
 #[test]
 fn accessors_are_total_on_wild_ordinals() {
     let seg = Segment::parse(sample()).unwrap();
@@ -229,6 +288,7 @@ fn accessors_are_total_on_wild_ordinals() {
         let _ = seg.datum(ord);
         let _ = seg.callsign(ord);
         let _ = seg.lang(ord);
+        let _ = seg.cfg(ord);
         assert!(seg.out_edges(ord).all(|n| n.other.0 < seg.def_count()));
         assert!(seg.in_edges(ord).all(|n| n.other.0 < seg.def_count()));
     }

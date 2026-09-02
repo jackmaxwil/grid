@@ -98,10 +98,25 @@ fn self_calls_are_kept_apart_and_stripped() {
 }
 
 #[test]
-fn a_method_call_on_a_typed_receiver_produces_nothing() {
-    // Needs types; types are modeled, and this frontend emits no guesses.
+fn a_method_call_is_recorded_as_one_and_never_as_a_call() {
+    // Binding it needs types; types are modeled, and this frontend emits no
+    // guesses. It is recorded all the same, under its own kind, so the
+    // resolver can decline it *and count it* — an invisible call and a
+    // declined one are the same hole, and only one of them can be reported.
     let r = refs("fn f(x: Foo) { x.frob(); }");
-    assert!(r.is_empty());
+    assert_eq!(r, [("f".into(), RefKind::MethodCall, "x.frob".into())]);
+}
+
+#[test]
+fn a_method_call_on_an_expression_keeps_the_method_and_no_receiver() {
+    // `Foo::new()` is not a name, so there is no receiver path to record —
+    // but the call still happened, and a reference with no receiver still
+    // says one method call was declined here.
+    let r = refs("fn f() { Foo::new().m(); }");
+    assert!(
+        r.contains(&("f".into(), RefKind::MethodCall, "m".into())),
+        "{r:?}"
+    );
 }
 
 #[test]

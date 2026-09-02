@@ -23,6 +23,7 @@ fn def(callsign: &str, fill: u8) -> Def {
             shape: [fill; 32],
             complexity: 1,
             sig: [fill; 32],
+            cfg: String::new(),
         }),
     }
 }
@@ -96,6 +97,7 @@ fn trace(id: &str, hops: &[(&str, &str)]) -> Trace {
         git_rev: grid_wire::GitRev("rev".into()),
         command: None,
         started_at: None,
+        snapshot: None,
         observations: hops
             .iter()
             .map(|(from, to)| TraceObservation {

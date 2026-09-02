@@ -106,6 +106,12 @@ pub struct Definition {
     /// Cyclomatic complexity: 1 + branch points. A property of the
     /// normalized AST, like the datum.
     pub complexity: u16,
+    /// The conjunction of every `#[cfg(...)]` predicate on the definition
+    /// and on each enclosing module, as written (`all(...)`-joined when
+    /// nested; a `cfg_attr(...)` is recorded as its own predicate text).
+    /// Empty when nothing conditions it. A frontend with no such notion
+    /// leaves it empty.
+    pub cfg: String,
 }
 
 /// How a name was reached for. The kind decides the edge relation once the
@@ -124,6 +130,13 @@ pub enum RefKind {
     /// class, which the reference's `from` callsign carries, so it is kept
     /// apart from a plain [`RefKind::Call`].
     SelfCall,
+    /// `x.m(...)` — a call whose callee is reached through a receiver the
+    /// frontend has no type for. The path is the receiver's own dotted path
+    /// (empty when the receiver is an expression, not a name) followed by the
+    /// method name. Kept apart from [`RefKind::Call`] because resolving it
+    /// would take types, and a survey emits none: it is counted, never
+    /// guessed.
+    MethodCall,
     /// `Foo { x: 1 }` — a struct literal writes the type's fields. The wire
     /// edge carries no field name, so the target is the type itself; field
     /// *reads* need receiver types and are never emitted.
@@ -179,4 +192,26 @@ pub struct FileRefs {
     /// `(mod name, declared file path)` from `#[path = "..."] mod name;`.
     /// The path is as written — relative to the declaring file's directory.
     pub path_mods: Vec<(String, String)>,
+    /// Module declarations that carry a `#[cfg]`: `(module name relative
+    /// to this file, predicate text)`. An out-of-line module's own file
+    /// cannot see the attribute on its declaration, so the survey joins it
+    /// back on by module path.
+    pub mod_cfgs: Vec<(String, String)>,
+}
+
+/// The conjunction of cfg predicates as one predicate: nothing for none,
+/// the predicate itself for one, `all(a,b,…)` for more. Empty parts are
+/// skipped, so joining an unconditioned scope costs nothing.
+#[must_use]
+pub fn cfg_join<S: AsRef<str>>(parts: &[S]) -> String {
+    let live: Vec<&str> = parts
+        .iter()
+        .map(AsRef::as_ref)
+        .filter(|p| !p.is_empty())
+        .collect();
+    match live.as_slice() {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        many => format!("all({})", many.join(",")),
+    }
 }

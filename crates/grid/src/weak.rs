@@ -205,6 +205,7 @@ fn def_ref<B: AsRef<[u8]>>(segments: &[Segment<B>], datum: DatumId) -> DefRef {
         callsign: named.as_ref().map(|(c, _)| Callsign(c.clone())),
         lang: None,
         signature: None,
+        cfg: None,
         materialization: named.and_then(|(_, loc)| loc).map(|loc| {
             grid_wire::DefRefMaterialization {
                 file: loc.path.to_owned(),

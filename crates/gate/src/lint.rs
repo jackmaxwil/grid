@@ -6,7 +6,7 @@
 
 use grid_wire::{
     EdgeRule, Invariant, InvariantRule, LintFinding, LintResult, Plan, PlanDefPromise,
-    PlanEdgePromise, PlanEdgePromiseAction,
+    PlanDefPromiseAction, PlanEdgePromise, PlanEdgePromiseAction,
 };
 
 use crate::pattern;
@@ -74,6 +74,20 @@ pub fn lint(plan: &Plan) -> LintResult {
             errors.push(LintFinding {
                 promise: render_def(p),
                 reason,
+            });
+        }
+        // `interface` distinguishes a sig move from a body-only one; an add
+        // or remove has no prior sig to hold or move against, so the claim
+        // has nothing to mean.
+        if p.interface.is_some()
+            && matches!(
+                p.action,
+                PlanDefPromiseAction::Add | PlanDefPromiseAction::Remove
+            )
+        {
+            errors.push(LintFinding {
+                promise: render_def(p),
+                reason: "interface only applies to a modify or move promise".into(),
             });
         }
     }

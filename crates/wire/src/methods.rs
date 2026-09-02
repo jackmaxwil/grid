@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     Anchor, CacheCheckRequest, CacheResultEntry, CallsignPattern, CarriedAnchor, Datum, DefRef,
-    Diff, DriftReport, EditResult, EditSpec, Estimate, GateVerdict, GitRev, Grade, LintResult,
-    Locator, Plan, PlanId, ScopePack, Snapshot, SnapshotId, SnapshotOrRev, Suspects, TodoList,
-    Trace, TraceDiff, TraceId, WalkQuery, WalkResult,
+    Diff, DriftReport, EditResult, EditSpec, Estimate, GateVerdict, GitRev, Grade, InterfereReport,
+    LintResult, Locator, Plan, PlanId, ScopePack, Snapshot, SnapshotId, SnapshotOrRev, Suspects,
+    TestId, TestPlan, TodoList, Trace, TraceDiff, TraceId, WalkQuery, WalkResult,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -123,6 +123,8 @@ pub struct CacheRecordParams {
 pub struct CacheRecordResult {
     pub recorded: u64,
     pub rejected: Vec<CacheRecordResultRejectedItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nondeterministic: Option<Vec<CacheRecordResultNondeterministicItem>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +144,22 @@ pub struct CacheRecordResultRejectedItem {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CacheRecordResultNondeterministicItemPrevious {
+    #[serde(rename = "pass")]
+    Pass,
+    #[serde(rename = "fail")]
+    Fail,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CacheRecordResultNondeterministicItem {
+    pub datum: Datum,
+    pub previous: CacheRecordResultNondeterministicItemPrevious,
+    pub previous_at: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScopeParams {
@@ -150,6 +168,14 @@ pub struct ScopeParams {
     pub depth: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<SnapshotOrRev>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bodies: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sigs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<SnapshotOrRev>,
 }
 
 pub type ScopeResult = ScopePack;
@@ -193,10 +219,17 @@ pub type TodoResult = TodoList;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CheckParams {
-    pub plan: PlanId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<PlanId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<SnapshotOrRev>,
     pub head: SnapshotOrRev,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace: Option<TraceId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compile: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quick: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -216,6 +249,8 @@ pub struct SuspectsParams {
     pub trace: Option<TraceId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<SnapshotOrRev>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closure_since: Option<SnapshotOrRev>,
 }
 
 pub type SuspectsResult = Suspects;
@@ -239,6 +274,31 @@ pub struct DriftParams {
     pub plan: Option<Plan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tests: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compat: Option<bool>,
 }
 
 pub type DriftResult = DriftReport;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestPlanParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<SnapshotOrRev>,
+    pub env_hash: String,
+    pub tests: Vec<TestId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay: Option<bool>,
+}
+
+pub type TestPlanResult = TestPlan;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InterfereParams {
+    pub other_root: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<GitRev>,
+}
+
+pub type InterfereResult = InterfereReport;

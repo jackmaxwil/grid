@@ -154,6 +154,7 @@ mod tests {
             git_rev: grid_wire::GitRev("rev".into()),
             command: command.map(str::to_owned),
             started_at: None,
+            snapshot: None,
             observations: Vec::new(),
         };
         let store = crate::rpc::trace_dir(dir.path())

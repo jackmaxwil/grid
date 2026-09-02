@@ -5,6 +5,8 @@
 //! `grep '^edge  miss'` is the explanation and `awk` is the parser. Nothing
 //! here writes to stderr: hints are the caller's business.
 
+use std::fmt::Write as _;
+
 use grid_gate::lint::{relation_name, render_edge};
 use grid_wire::methods::{CacheRecordResult, TraceIngestResult};
 use grid_wire::{
@@ -13,7 +15,7 @@ use grid_wire::{
 };
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "2.0.0";
+pub const VERSION: &str = "2.10.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -154,8 +156,13 @@ pub fn verdict(v: &GateVerdict, name: &NameOf) -> String {
             ],
         );
     }
+    let held_for_interface = v.interface_unaccounted.as_deref().unwrap_or_default();
     for d in &v.defs_unaccounted {
-        record(&mut out, "def", &[def_glyph(d.action), &d.callsign.0]);
+        let mut columns = vec![def_glyph(d.action), d.callsign.0.as_str()];
+        if held_for_interface.contains(d) {
+            columns.push("unaccounted: interface");
+        }
+        record(&mut out, "def", &columns);
     }
     for t in &v.tests {
         let outcome = format!("{}={}", expected_name(t.expected), actual_name(t.actual));
@@ -249,8 +256,22 @@ fn short(datum: &grid_wire::Datum) -> String {
 #[must_use]
 pub fn snapshot(s: &grid_wire::Snapshot, run: Option<(u64, std::time::Duration)>) -> String {
     let mut out = String::new();
-    // Displayed identity is the rev, never the raw content id (CLI plan §2).
-    let id = format!("@{}", s.git_rev.0);
+    // Displayed identity is the rev, never the raw content id (CLI plan §2) —
+    // plus the diff hash's prefix when the tree was dirty, so `@abc1234` and
+    // `@abc1234+9f0e1d2c` read as what they are: the tree at the rev, and a
+    // worktree checked out from it that differs.
+    let id = match s.worktree_diff_hash.as_deref() {
+        Some(hash) => format!(
+            "@{}+{}",
+            s.git_rev.0,
+            hash.strip_prefix("b3:")
+                .unwrap_or(hash)
+                .chars()
+                .take(8)
+                .collect::<String>()
+        ),
+        None => format!("@{}", s.git_rev.0),
+    };
     // The full stats block is `defs N  edges N  reread N  <duration>`. The
     // last two describe the run rather than the snapshot, so they appear only
     // when a run just happened — reporting a snapshot read back from the
@@ -265,6 +286,28 @@ pub fn snapshot(s: &grid_wire::Snapshot, run: Option<(u64, std::time::Duration)>
         None => format!("defs {}  edges {}", s.stats.defs, s.stats.edges),
     };
     record(&mut out, "snapshot", &[&id, &stats]);
+    // A survey that says how much it charted without saying how much it
+    // declined is the same dishonest silence `grid drift` closes with a
+    // `miss`: same tag, same meaning, one record.
+    if let Some(d) = &s.declined {
+        let total = d
+            .external
+            .saturating_add(d.method)
+            .saturating_add(d.internal);
+        if total > 0 {
+            record(
+                &mut out,
+                "miss",
+                &[
+                    &total.to_string(),
+                    &format!(
+                        "references declined (external {}, method {}, internal {})",
+                        d.external, d.method, d.internal
+                    ),
+                ],
+            );
+        }
+    }
     out
 }
 
@@ -335,36 +378,208 @@ pub fn drift(report: &grid_wire::DriftReport) -> String {
         let refs: Vec<&str> = columns.iter().map(String::as_str).collect();
         record(&mut out, "drift", &refs);
     }
-    for stale in report.stale_tests.iter().flatten() {
-        // A stale verdict is a `miss` in the cache's own sense: the datum
-        // must be run, not looked up. The first column is the test name
-        // rather than a datum handle because a test is addressed by name
-        // everywhere else in the engine.
+    out.push_str(&stale(report.stale_tests.as_deref().unwrap_or_default()));
+    out.push_str(&weak(report.weak.as_deref().unwrap_or_default()));
+    out.push_str(&warnings(report.warnings.as_deref().unwrap_or_default()));
+    out.push_str(&compat(report.compat.as_deref().unwrap_or_default()));
+    out.push_str(&drift_unchecked(&report.unchecked));
+    out
+}
+
+/// Stale verdicts: a `miss` in the cache's own sense — the datum must be
+/// run, not looked up. The first column is the test name rather than a
+/// datum handle because a test is addressed by name everywhere else in the
+/// engine.
+#[must_use]
+pub fn stale(tests: &[grid_wire::StaleTest]) -> String {
+    let mut out = String::new();
+    for stale in tests {
         let reason = match stale.reason {
             grid_wire::StaleTestReason::ClosureChanged => "closure-changed",
             grid_wire::StaleTestReason::ClosureRejected => "closure-rejected",
         };
         record(&mut out, "miss", &[&stale.test, reason]);
     }
-    for weak in report.weak.iter().flatten() {
-        // `warn`, not `drift`: this is reported rather than refused, and it
-        // never moves the exit code. A test that proved nothing is a
-        // ranking, and grid ranks — it does not gate on a heuristic.
-        let named = weak
-            .def
-            .callsign
-            .as_ref()
-            .map_or_else(|| format!("@{}", short(&weak.def.datum)), |c| c.0.clone());
+    out
+}
+
+/// Weak tests: `warn`, not `drift` — reported rather than refused, and it
+/// never moves the exit code. A test that proved nothing is a ranking, and
+/// grid ranks; it does not gate on a heuristic.
+#[must_use]
+pub fn weak(tests: &[grid_wire::WeakTest]) -> String {
+    let mut out = String::new();
+    for weak in tests {
         record(
             &mut out,
             "warn",
-            &[&weak.test, &format!("weak-for {named}")],
+            &[&weak.test, &format!("weak-for {}", named(&weak.def))],
         );
     }
-    for warning in report.warnings.iter().flatten() {
+    out
+}
+
+/// One `warn` per reported-not-refused finding.
+#[must_use]
+pub fn warnings(rows: &[grid_wire::DriftWarning]) -> String {
+    let mut out = String::new();
+    for warning in rows {
         record(&mut out, "warn", &[&warning.subject, &warning.message]);
     }
+    out
+}
+
+/// The definition's name, or its `@prefix` when the chart cannot name it.
+fn named(def: &grid_wire::DefRef) -> String {
+    def.callsign
+        .as_ref()
+        .map_or_else(|| format!("@{}", short(&def.datum)), |c| c.0.clone())
+}
+
+/// `grid check`'s ranked tail and certificate, in the order the plan lists
+/// them: `warn <def>  uncovered`, `warn <new>  clone-of <existing>`, the
+/// check's own warnings, then one `done  refactor  …` when no gate fired.
+/// Everything here ranks; the certificate states three facts and never the
+/// phrase "behavior-preserving".
+#[must_use]
+pub fn check_tail(answer: &grid_wire::CheckResult) -> String {
+    let mut out = String::new();
+    for def in answer.uncovered.iter().flatten() {
+        record(&mut out, "warn", &[&named(def), "uncovered"]);
+    }
+    for clone in answer.clones.iter().flatten() {
+        record(
+            &mut out,
+            "warn",
+            &[
+                &named(&clone.def),
+                &format!("clone-of {}", named(&clone.existing)),
+            ],
+        );
+    }
+    out.push_str(&warnings(answer.warnings.as_deref().unwrap_or_default()));
+    if let Some(cert) = answer.refactor.as_ref() {
+        let interfaces = match cert.interfaces_moved {
+            0 => "interfaces held".to_owned(),
+            n => format!("{n} interfaces moved"),
+        };
+        let coverage = match (cert.replayed_pass, cert.uncovered) {
+            (Some(replayed), Some(uncovered)) => {
+                format!(
+                    "{replayed} covering tests replayed pass · {uncovered} changed defs uncovered"
+                )
+            }
+            // No retained trace: neither count is zero, both are unknown.
+            _ => "no retained traces".to_owned(),
+        };
+        record(
+            &mut out,
+            "done",
+            &["refactor", &format!("{interfaces} · {coverage}")],
+        );
+    }
+    out
+}
+
+/// `orphan` rows with the trailing `trace N` column (`grid orphans
+/// --traced`): how many retained traces hit the definition. Zero is the
+/// workspace-level unused-`pub` question; still a maybe, never a verdict.
+#[must_use]
+pub fn orphans(rows: &[grid_wire::Orphan]) -> String {
+    let mut out = String::new();
+    for row in rows {
+        let d = &row.def;
+        let callsign = d.callsign.as_ref().map_or("", |c| c.0.as_str());
+        let at = d
+            .materialization
+            .as_ref()
+            .map(|m| format!("{}:{}", m.file, m.line))
+            .unwrap_or_default();
+        let traces = row
+            .traces
+            .map_or_else(String::new, |n| format!("trace {n}"));
+        record(
+            &mut out,
+            "orphan",
+            &[callsign, &short(&d.datum), &at, &traces],
+        );
+    }
+    out
+}
+
+/// Deserialize compatibility findings.
+///
+/// A declared one is an `inv violated` record, because a `persisted`
+/// invariant is what turns "this shape moved" into "bytes on disk cannot be
+/// read": modeled evidence, and a gate. An undeclared one is a `warn` —
+/// heuristic, ranked, and it never moves the exit code.
+#[must_use]
+pub fn compat(findings: &[grid_wire::CompatFinding]) -> String {
+    let mut out = String::new();
+    for finding in findings {
+        let named = finding.def.callsign.as_ref().map_or_else(
+            || format!("@{}", short(&finding.def.datum)),
+            |c| c.0.clone(),
+        );
+        if finding.declared {
+            record(
+                &mut out,
+                "inv",
+                &["violated", &format!("persisted:{named}"), &finding.rule],
+            );
+        } else {
+            record(
+                &mut out,
+                "warn",
+                &[&named, &format!("compat: {}", finding.rule)],
+            );
+        }
+    }
+    out
+}
+
+/// `grid interfere`: what two worktrees collide over.
+///
+/// A definition both sides moved is a `warn <callsign>  both-touched` — git's
+/// merge will find that one too, and a `DefRef` carries no edge, so it has no
+/// grade to put in a `drift` record's evidence column and does not gate. The
+/// findings that only grid can see are `drift` records with reason
+/// `interfere:<other-root>`, carrying the grade of the edge that found them.
+#[must_use]
+pub fn interfere(report: &grid_wire::InterfereReport) -> String {
+    let mut out = String::new();
+    for def in &report.both_touched {
+        let named = def
+            .callsign
+            .as_ref()
+            .map_or_else(|| format!("@{}", short(&def.datum)), |c| c.0.clone());
+        record(&mut out, "warn", &[&named, "both-touched"]);
+    }
+    for suspect in &report.suspects {
+        let columns = drift_columns(suspect);
+        let refs: Vec<&str> = columns.iter().map(String::as_str).collect();
+        record(&mut out, "drift", &refs);
+    }
     out.push_str(&drift_unchecked(&report.unchecked));
+    out
+}
+
+/// The compile report (`grid check --compile`): a `drift` record per proven
+/// dependent the recorded compile did not see, reason `uncompiled:<cfg>`,
+/// then a `warn` per dependent whose cfg nobody can decide. Same columns as
+/// `grid drift` — a caller the compiler skipped is a dependent left behind,
+/// found by a different question.
+#[must_use]
+pub fn compile(report: &grid_wire::CompileReport) -> String {
+    let mut out = String::new();
+    for s in &report.uncompiled {
+        let columns = drift_columns(s);
+        let refs: Vec<&str> = columns.iter().map(String::as_str).collect();
+        record(&mut out, "drift", &refs);
+    }
+    for warning in &report.unknown {
+        record(&mut out, "warn", &[&warning.subject, &warning.message]);
+    }
     out
 }
 
@@ -454,7 +669,24 @@ fn drift_unchecked(unchecked: &grid_wire::DriftUnchecked) -> String {
         Some(n) => record(
             &mut out,
             "miss",
-            &[&n.to_string(), "unresolved references unchecked"],
+            &[
+                &n.to_string(),
+                &match (
+                    unchecked.unresolved_external,
+                    unchecked.unresolved_method,
+                    unchecked.unresolved_internal,
+                ) {
+                    // The three populations mean opposite things for the
+                    // claim drift makes, so a bare total under-reports what
+                    // the reader needs to weigh.
+                    (Some(external), Some(method), Some(internal)) => {
+                        let split =
+                            format!("external {external}, method {method}, internal {internal}");
+                        format!("unresolved references unchecked ({split})")
+                    }
+                    _ => "unresolved references unchecked".to_owned(),
+                },
+            ],
         ),
         None => record(
             &mut out,
@@ -478,6 +710,14 @@ fn drift_unchecked(unchecked: &grid_wire::DriftUnchecked) -> String {
             &mut out,
             "miss",
             &[&count, "weak-checks skipped (stale coverage)"],
+        );
+    }
+    if unchecked.compat_unchecked.is_some_and(|n| n > 0) {
+        let count = unchecked.compat_unchecked.unwrap_or_default().to_string();
+        record(
+            &mut out,
+            "miss",
+            &[&count, "compat unchecked (derive not visible)"],
         );
     }
     if unchecked.budget_rejected > 0 {
@@ -611,6 +851,114 @@ pub fn cache_record(result: &CacheRecordResult) -> String {
     for item in &result.rejected {
         record(&mut out, "warn", &[&item.datum.0, &item.reason]);
     }
+    for item in result.nondeterministic.iter().flatten() {
+        record(
+            &mut out,
+            "warn",
+            &[&item.datum.0, &nondeterministic(item, result_verdict(item))],
+        );
+    }
+    out
+}
+
+/// The verdict a nondeterministic record just stored is the opposite of the
+/// one it found, by definition of the finding.
+fn result_verdict(
+    item: &grid_wire::methods::CacheRecordResultNondeterministicItem,
+) -> &'static str {
+    use grid_wire::methods::CacheRecordResultNondeterministicItemPrevious as P;
+    match item.previous {
+        P::Pass => "fail",
+        P::Fail => "pass",
+    }
+}
+
+/// The `nondeterministic` message for `grid test`'s `warn` record: the same
+/// words as the cache verb's, so the two cannot drift apart.
+#[must_use]
+pub fn nondeterministic_message(
+    item: &grid_wire::methods::CacheRecordResultNondeterministicItem,
+) -> String {
+    nondeterministic(item, result_verdict(item))
+}
+
+/// The `nondeterministic` message: the claim is exactly "not the charted
+/// code" — same closure key, same environment, two answers. The word is
+/// never *flake*: a race is code, and grid does not know which.
+fn nondeterministic(
+    item: &grid_wire::methods::CacheRecordResultNondeterministicItem,
+    now: &str,
+) -> String {
+    use grid_wire::methods::CacheRecordResultNondeterministicItemPrevious as P;
+    let previous = match item.previous {
+        P::Pass => "pass",
+        P::Fail => "fail",
+    };
+    format!(
+        "nondeterministic  same closure key, same env: {previous} {}, {now} now",
+        item.previous_at
+    )
+}
+
+/// Render a `grid test` run: `hit` per replayed verdict, `miss` per selected
+/// test with the reason it must run, `test` per outcome, `warn` per finding,
+/// and the closing `done  tests R/N ran · H replayed · F failed`.
+///
+/// The first column of `hit` and `miss` is the test id here rather than a
+/// datum handle: a test is addressed by the runner's name everywhere in this
+/// verb, and the datum rides in `--json`.
+#[must_use]
+pub fn test_run(run: &grid_wire::TestRun) -> String {
+    let mut out = String::new();
+    for hit in &run.plan.replayed {
+        let verdict = match hit.verdict {
+            CacheHitVerdict::Pass => "pass",
+            CacheHitVerdict::Fail => "fail",
+        };
+        let test = hit
+            .test
+            .as_ref()
+            .map_or(hit.datum.0.as_str(), |t| t.0.as_str());
+        record(&mut out, "hit", &[test, verdict, &hit.recorded_at]);
+    }
+    for sel in &run.plan.selected {
+        let why = match sel.why {
+            grid_wire::TestSelectionWhy::Reached => "closure-changed",
+            grid_wire::TestSelectionWhy::NoTrace => "no-trace",
+            grid_wire::TestSelectionWhy::Unresolved => "unresolved",
+            grid_wire::TestSelectionWhy::Aground => "aground",
+            grid_wire::TestSelectionWhy::NotRecorded => "not-recorded",
+        };
+        record(&mut out, "miss", &[&sel.test.0, why]);
+    }
+    for outcome in &run.ran {
+        // A test is expected to pass; the column says what it did.
+        let (verdict, actual) = match outcome.verdict {
+            grid_wire::TestOutcomeVerdict::Pass => ("ok", "pass"),
+            grid_wire::TestOutcomeVerdict::Fail => ("fail", "fail"),
+        };
+        record(
+            &mut out,
+            "test",
+            &[&role(verdict), &outcome.test.0, &format!("pass={actual}")],
+        );
+    }
+    for warning in &run.warnings {
+        record(&mut out, "warn", &[&warning.subject, &warning.message]);
+    }
+    let total = run.plan.selected.len() + run.plan.replayed.len();
+    // Failed is the exit code's own count: run failures plus replayed
+    // `fail` verdicts, so the line and the exit cannot disagree.
+    record(
+        &mut out,
+        "done",
+        &[&format!(
+            "tests {}/{total} ran · {} replayed · {} failed",
+            run.ran.len(),
+            run.plan.replayed.len(),
+            crate::testrun::failed(run)
+        )],
+    );
     out
 }
 
@@ -663,6 +1011,73 @@ pub fn scope(pack: &grid_wire::ScopePack, name: &NameOf) -> String {
     edge_records(&mut out, &edges, name);
     for inv in &pack.invariants {
         record(&mut out, "inv", &["standing", &inv.id]);
+    }
+    out
+}
+
+/// Render a scope pack that carries text: a document, not records. Headers
+/// name what each block is and how far out it sits (`## <callsign>
+/// <file:line>  (body, hop k)`, `## sig <callsign>  <file:line>  (hop k)`),
+/// and one `# horizon:` line closes it with the depth each tier is complete
+/// to and the token estimate. PORCELAIN.md's text-mode paragraph: the prose
+/// is the answer here and `--json` is the record form.
+///
+/// The horizon line is unconditional. A pack that packed nothing still says
+/// so — a bounded answer whose bound is missing is worse than no answer.
+#[must_use]
+pub fn scope_document(pack: &grid_wire::ScopePack) -> String {
+    let mut out = String::new();
+    let at = |t: &grid_wire::PackText| {
+        t.def
+            .materialization
+            .as_ref()
+            .map_or_else(|| "-".to_owned(), |m| format!("{}:{}", m.file, m.line))
+    };
+    let name = |t: &grid_wire::PackText| {
+        t.def
+            .callsign
+            .as_ref()
+            .map_or_else(|| t.def.datum.0.clone(), |c| c.0.clone())
+    };
+    for text in pack.bodies.iter().flatten() {
+        let _ = writeln!(
+            out,
+            "## {}  {}  (body, hop {})",
+            name(text),
+            at(text),
+            text.hop
+        );
+        out.push_str(&text.text);
+        out.push('\n');
+    }
+    for text in pack.sigs.iter().flatten() {
+        let _ = writeln!(
+            out,
+            "## sig  {}  {}  (hop {})",
+            name(text),
+            at(text),
+            text.hop
+        );
+        out.push_str(&text.text);
+        if !text.text.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    if let Some(h) = &pack.horizon {
+        let hops = |n: Option<u64>| match n {
+            None => "none".to_owned(),
+            Some(1) => "1 hop".to_owned(),
+            Some(n) => format!("{n} hops"),
+        };
+        let _ = writeln!(
+            out,
+            "# horizon: bodies complete through {}, sigs through {}, ≈{} tokens (bytes/4)",
+            hops(h.bodies_complete_within),
+            h.sigs_complete_within
+                .map_or_else(|| "none".to_owned(), |n| n.to_string()),
+            h.approx_tokens
+        );
     }
     out
 }
@@ -777,11 +1192,10 @@ pub fn trace_ingest(result: &TraceIngestResult, total: u64) -> String {
     }
     out
 }
-/// `fork` / `edge` records for a trace diff: where the traces parted, then
-/// what each does that the other never did. Handles are datum-short because a
-/// trace is addressed by content, like a cache verdict.
+/// The `fork` record of a trace diff: where two runs of the same test parted.
+/// Empty when they never did.
 #[must_use]
-pub fn trace_diff(diff: &grid_wire::TraceDiff) -> String {
+pub fn fork(diff: &grid_wire::TraceDiff) -> String {
     let mut out = String::new();
     if let Some(fork) = &diff.first_divergence {
         let callee =
@@ -796,6 +1210,32 @@ pub fn trace_diff(diff: &grid_wire::TraceDiff) -> String {
             ],
         );
     }
+    out
+}
+
+/// Ranked `hit` records for `grid suspects`, in either evidence mode.
+///
+/// The second column is the evidence: an Ochiai score, or the word `closure`
+/// when the row was ranked by hop distance instead. The third says why it
+/// ranked.
+#[must_use]
+pub fn suspects(result: &grid_wire::Suspects) -> String {
+    let mut out = String::new();
+    for item in &result.ranked {
+        let mode = item
+            .hops
+            .map_or_else(|| format!("{:.6}", item.score), |_| "closure".to_owned());
+        record(&mut out, "hit", &[&item.datum.0, &mode, &item.via]);
+    }
+    out
+}
+
+/// `fork` / `edge` records for a trace diff: where the traces parted, then
+/// what each does that the other never did. Handles are datum-short because a
+/// trace is addressed by content, like a cache verdict.
+#[must_use]
+pub fn trace_diff(diff: &grid_wire::TraceDiff) -> String {
+    let mut out = fork(diff);
     let arrow = |e: &grid_wire::Edge| {
         format!(
             "{} -{}-> {}",

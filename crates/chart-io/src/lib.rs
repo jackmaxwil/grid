@@ -233,6 +233,36 @@ impl Store {
         worktree_diff_hash: Option<[u8; 32]>,
         images: &[Vec<u8>],
     ) -> Result<SnapshotId, StoreError> {
+        self.write(git_rev, worktree_diff_hash, images, true)
+    }
+
+    /// Retain a snapshot without making it live.
+    ///
+    /// What a rev survey run *on demand* wants: the store must hold the tree
+    /// at that rev so a gate or a drift can read it by id, and nothing else
+    /// about the store may change — the live epoch stays the tree the last
+    /// `grid survey` charted, so every read verb keeps answering about it.
+    /// Same validation, same content-addressed files, same membership fold;
+    /// only the live manifest and the in-memory epoch are left alone.
+    ///
+    /// # Errors
+    /// [`StoreError`] on I/O failure or an image that does not validate.
+    pub fn publish_retained(
+        &mut self,
+        git_rev: &str,
+        worktree_diff_hash: Option<[u8; 32]>,
+        images: &[Vec<u8>],
+    ) -> Result<SnapshotId, StoreError> {
+        self.write(git_rev, worktree_diff_hash, images, false)
+    }
+
+    fn write(
+        &mut self,
+        git_rev: &str,
+        worktree_diff_hash: Option<[u8; 32]>,
+        images: &[Vec<u8>],
+        live: bool,
+    ) -> Result<SnapshotId, StoreError> {
         let mut segments = Vec::with_capacity(images.len());
         for (i, image) in images.iter().enumerate() {
             // Validate first: the store never contains bytes we would refuse
@@ -267,16 +297,18 @@ impl Store {
         // The live manifest is content too: republishing an identical state
         // must rewrite nothing (D5), and the unconditional rewrite here was
         // measured as the whole fsync cost of an unchanged `grid survey`.
-        let live = self.dir.join(MANIFEST);
-        if !fs::read(&live).is_ok_and(|current| current == bytes) {
-            write_atomic(&self.dir, &live, &bytes, MANIFEST_TMP)?;
+        let live_path = self.dir.join(MANIFEST);
+        if live && !fs::read(&live_path).is_ok_and(|current| current == bytes) {
+            write_atomic(&self.dir, &live_path, &bytes, MANIFEST_TMP)?;
         }
         let epoch = load_epoch(&self.dir, manifest)?;
         let id = epoch.snapshot_id().clone();
         // Membership is derived: extending it is best effort, because losing
         // it costs a rebuild and never costs the snapshot that just landed.
         let _derived = self.extend_membership(&epoch);
-        self.epoch.store(Arc::new(epoch));
+        if live {
+            self.epoch.store(Arc::new(epoch));
+        }
         Ok(id)
     }
 
@@ -408,16 +440,48 @@ impl Store {
         Ok(Arc::new(load_epoch(&self.dir, Manifest::parse(&bytes)?)?))
     }
 
-    /// The most recent retained snapshot surveyed at `rev`, if any.
+    /// The most recent retained snapshot of the tree *at* `rev`, if any.
     ///
     /// CI holds a rev, not a snapshot id, so this is the lookup the gate
     /// actually performs. Retained manifests record the rev they were
     /// surveyed at; scanning them is bounded by the number of published
     /// snapshots, and the live epoch is checked by the caller first.
     ///
+    /// A dirty worktree survey carries the rev it was checked out from as
+    /// provenance, not as identity — it is labelled `rev` and is not the tree
+    /// at `rev` — so it never answers here. Answering with one would hand a
+    /// gate, a drift or an interference check the wrong base and let every
+    /// one of them say "nothing changed" about a change that happened.
+    ///
     /// # Errors
     /// [`StoreError`] if the store directory cannot be read.
     pub fn epoch_for_rev(&self, rev: &str) -> Result<Option<Arc<Epoch>>, StoreError> {
+        self.manifest_for_rev(rev)?
+            .map(|m| load_epoch(&self.dir, m).map(Arc::new))
+            .transpose()
+    }
+
+    /// The id of the most recent retained snapshot surveyed at `rev`, without
+    /// mapping its segments.
+    ///
+    /// A snapshot id is a hash of the manifest, so answering "which snapshot
+    /// is that rev" never needs the chart itself. Every caller that only
+    /// wants the coordinate — membership queries, which read a separate
+    /// image — takes this instead of loading an epoch it will not walk.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store directory cannot be read.
+    pub fn snapshot_for_rev(&self, rev: &str) -> Result<Option<SnapshotId>, StoreError> {
+        Ok(self.manifest_for_rev(rev)?.map(|m| m.snapshot_id()))
+    }
+
+    /// The most recent retained manifest of the tree at `rev` — surveyed at
+    /// it, or a clean worktree checked out at it; never a dirty one.
+    ///
+    /// Retained manifests record the rev they were surveyed at; scanning them
+    /// is bounded by the number of published snapshots, and the live epoch is
+    /// checked by the caller first.
+    fn manifest_for_rev(&self, rev: &str) -> Result<Option<Manifest>, StoreError> {
         let mut best: Option<(std::time::SystemTime, Manifest)> = None;
         for entry in fs::read_dir(&self.dir)? {
             let entry = entry?;
@@ -434,7 +498,7 @@ impl Store {
             let Ok(manifest) = Manifest::parse(&bytes) else {
                 continue;
             };
-            if manifest.git_rev != rev {
+            if manifest.git_rev != rev || manifest.worktree_diff_hash.is_some() {
                 continue;
             }
             let at = entry.metadata()?.modified()?;
@@ -442,8 +506,7 @@ impl Store {
                 best = Some((at, manifest));
             }
         }
-        best.map(|(_, m)| load_epoch(&self.dir, m).map(Arc::new))
-            .transpose()
+        Ok(best.map(|(_, m)| m))
     }
 }
 

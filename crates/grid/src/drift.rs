@@ -70,7 +70,7 @@ const DEPENDENCY_RELATIONS: [Relation; 4] = [
 /// *rejected*, never truncated: a truncated walk is indistinguishable from a
 /// smaller one, and drift would then report fewer suspects and look cleaner
 /// for it.
-const FUEL: u32 = grid_cache::FUEL;
+pub(crate) const FUEL: u32 = grid_cache::FUEL;
 
 /// The relation a covenant suspect carries. A covenant is a declared
 /// coupling across a serialization boundary — the serde struct and the dict
@@ -223,13 +223,46 @@ pub struct Query<'a> {
     /// none, which is not the same as one whose declaration file is
     /// unreadable — that is the caller's error to raise.
     pub covenants: &'a [Covenant],
-    /// The head survey's count of references it declined to bind, or `None`
-    /// when nobody surveyed head in this run — unknown, never zero.
-    pub declined_refs: Option<u64>,
+    /// The head survey's count of references it declined to bind, split by
+    /// why, or `None` when nobody surveyed head in this run — unknown, never
+    /// zero.
+    pub declined: Option<Declined>,
     /// Per-changed-definition inbound-walk budget. A real parameter, not a
     /// constant, because the honest thing to do when it runs out is only
     /// testable if a test can make it run out.
     pub fuel: u32,
+    /// The repo's standing invariants when the caller asked for the
+    /// Deserialize compatibility pass, `None` when it did not. `Some(&[])` is
+    /// a repo that declared nothing persisted, which still checks — the
+    /// findings are just heuristic.
+    pub compat: Option<&'a [grid_wire::Invariant]>,
+}
+
+/// What a survey declined to bind, split by why it declined.
+///
+/// One number for three populations was the honesty gap: a path into `std`
+/// costs a claim about this repo nothing, a call through an untyped receiver
+/// is a hole no static rule closes, and a name the tree could have held is a
+/// hole in exactly what drift claims. The total is the sum, so the split can
+/// never disagree with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Declined {
+    /// Names that were never this tree's to hold.
+    pub external: u64,
+    /// Calls through a receiver whose type would have to be known.
+    pub method: u64,
+    /// Names this tree could have held and the resolver could not bind.
+    pub internal: u64,
+}
+
+impl Declined {
+    /// Every declined reference, however it was declined.
+    #[must_use]
+    pub fn total(self) -> u64 {
+        self.external
+            .saturating_add(self.method)
+            .saturating_add(self.internal)
+    }
 }
 
 impl<'a> Query<'a> {
@@ -244,8 +277,9 @@ impl<'a> Query<'a> {
             floor: Grade::Observed,
             plan: None,
             covenants: &[],
-            declined_refs: None,
+            declined: None,
             fuel: FUEL,
+            compat: None,
         }
     }
 }
@@ -262,8 +296,9 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
         floor,
         plan,
         covenants,
-        declined_refs,
+        declined,
         fuel: budget,
+        compat,
     } = *query;
     let chart = ChartDelta::open(root)?;
     let (base_epoch, head_epoch) = (chart.epoch_of(base)?, chart.epoch_of(head)?);
@@ -316,21 +351,47 @@ pub fn compute(root: &std::path::Path, query: &Query) -> Result<DriftReport, Err
         &mut suspects,
     );
 
+    // Deserialize compatibility over the same changed set. Last, because it
+    // reads source rather than the chart and must not be able to cost the
+    // suspect walk anything.
+    let compat = compat.map(|invariants| {
+        crate::compat::check(
+            root,
+            &changed,
+            base_epoch.segments(),
+            head_epoch.segments(),
+            &base_epoch.manifest().git_rev,
+            // A dirty worktree snapshot read its bytes from the working tree,
+            // which is where they still are; anything else is the tree at a
+            // rev the object store can serve.
+            match head_epoch.manifest().worktree_diff_hash {
+                Some(_) => None,
+                None => Some(head_epoch.manifest().git_rev.as_str()),
+            },
+            invariants,
+        )
+    });
+
     Ok(DriftReport {
         base: SnapshotId(base_epoch.snapshot_id().as_str().to_owned()),
         head: SnapshotId(head_epoch.snapshot_id().as_str().to_owned()),
         suspects: suspects.into_values().collect(),
         unchecked: DriftUnchecked {
-            unresolved_refs: declined_refs,
+            unresolved_refs: declined.map(Declined::total),
+            unresolved_external: declined.map(|d| d.external),
+            unresolved_method: declined.map(|d| d.method),
+            unresolved_internal: declined.map(|d| d.internal),
             budget_rejected: u64::from(budget_rejected),
             unattributed_entries: None,
             weak_skipped: None,
+            compat_unchecked: compat.as_ref().map(|found| found.unchecked),
         },
         warnings: (!warnings.is_empty()).then_some(warnings),
         // Filled in by the caller when the report was asked for tests: both
         // are different questions over different stores.
         stale_tests: None,
         weak: None,
+        compat: compat.map(|found| found.findings),
     })
 }
 
@@ -372,6 +433,7 @@ fn fire_covenants<B: AsRef<[u8]>>(
                     callsign: Some(Callsign(hit.moved.clone())),
                     lang: None,
                     signature: None,
+                    cfg: None,
                     materialization: None,
                 },
                 |d| def_ref(chart, d, Some(&hit.moved)),
@@ -551,17 +613,17 @@ pub(crate) fn fold_rows(
 
 /// One inbound dependency found for a changed definition, whatever proved it.
 pub(crate) struct Inbound {
-    datum: DatumId,
+    pub(crate) datum: DatumId,
     /// The name base knows this dependent by, or `None` when base does not
     /// intern it at all — which happens exactly on a decayed trace, where
     /// the caller was edited between the trace and base. Reported by datum
     /// handle rather than dropped: "something that was observed calling this
     /// has since been rewritten" is a real, weak answer, and dropping it
     /// would be the silence the report shape exists to prevent.
-    callsign: Option<String>,
-    relation: Relation,
-    grade: Grade,
-    reason: Option<String>,
+    pub(crate) callsign: Option<String>,
+    pub(crate) relation: Relation,
+    pub(crate) grade: Grade,
+    pub(crate) reason: Option<String>,
 }
 
 impl Inbound {
@@ -617,7 +679,7 @@ fn name_at<B: AsRef<[u8]>>(segments: &[Segment<B>], datum: DatumId) -> Option<St
 /// A `DefRef` with the location the live chart knows, when it knows one. The
 /// row is meant to be pasteable into an editor, so `file:line` matters more
 /// here than anywhere else in the report.
-fn def_ref(chart: &ChartDelta, datum: DatumId, callsign: Option<&str>) -> DefRef {
+pub(crate) fn def_ref(chart: &ChartDelta, datum: DatumId, callsign: Option<&str>) -> DefRef {
     let wire = wire_datum(datum);
     let materialization = chart.locate(&wire);
     DefRef {
@@ -625,6 +687,7 @@ fn def_ref(chart: &ChartDelta, datum: DatumId, callsign: Option<&str>) -> DefRef
         callsign: callsign.map(|c| Callsign(c.to_owned())),
         lang: None,
         signature: None,
+        cfg: None,
         materialization,
     }
 }
@@ -651,6 +714,7 @@ mod tests {
                 shape: [datum; 32],
                 complexity: 1,
                 sig: [sig; 32],
+                cfg: String::new(),
             }),
         }
     }

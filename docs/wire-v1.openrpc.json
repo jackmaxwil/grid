@@ -2,8 +2,8 @@
   "openrpc": "1.2.6",
   "info": {
     "title": "Grid wire contract",
-    "version": "1.0.0",
-    "description": "JSON-RPC 2.0 contract for the grid daemon (crates/wire is the Rust source of truth; this document is the normative external vocabulary). Conventions: (1) Promise-space vs actual-space — a Plan (promised delta) references code by CallsignPattern because unwritten code has no Datum yet; a Diff (actual delta) is datum-space with callsign annotations; the gate verdict unifies the two. This is wire epoch 1: the one declared break, taken before any consumer existed (docs/plans/2026-09-01-naming.md); epoch 0 is served by nothing. (2) Grade ranking, strongest first: proven (compiler-grade static) > observed (happened in a trace at least once) > modeled (registry/schema unification) > heuristic (name/shape match). Filters use at_or_above semantics. (3) Fuel exhaustion is not an error: a walk that runs out of fuel returns status 'aground' with its frontier, and the caller may resume. (4) Determinism: for a given snapshot_id, pure query methods return identical results across calls and daemon restarts, with two carve-outs: the stats object is excluded from the comparison surface, and walks that set fuel.max_ms are excluded entirely, since wall-clock exhaustion varies run to run. The C2 property test compares responses with stats stripped and max_ms unset; callers wanting cacheable results budget by max_hops/max_nodes only. (5) Versioning: this document is semver'd; breaking changes bump major; the daemon reports its wire version via grid.version and refuses clients that pin an incompatible major."
+    "version": "1.1.0",
+    "description": "JSON-RPC 2.0 contract for the grid daemon (crates/wire is the Rust source of truth; this document is the normative external vocabulary). Conventions: (1) Promise-space vs actual-space — a Plan (promised delta) references code by CallsignPattern because unwritten code has no Datum yet; a Diff (actual delta) is datum-space with callsign annotations; the gate verdict unifies the two. This is wire epoch 1: the one declared break, taken before any consumer existed (docs/plans/2026-09-01-naming.md); epoch 0 is served by nothing. Wire 1.1 (docs/plans/2026-09-01-agent-loop.md step 9) loosened grid.check's plan param and CheckResult.verdict from required to optional — the one recorded non-additive change inside epoch 1, taken the same day epoch 1 shipped and before any consumer pinned it; everything else in 1.1 is additive. (2) Grade ranking, strongest first: proven (compiler-grade static) > observed (happened in a trace at least once) > modeled (registry/schema unification) > heuristic (name/shape match). Filters use at_or_above semantics. (3) Fuel exhaustion is not an error: a walk that runs out of fuel returns status 'aground' with its frontier, and the caller may resume. (4) Determinism: for a given snapshot_id, pure query methods return identical results across calls and daemon restarts, with two carve-outs: the stats object is excluded from the comparison surface, and walks that set fuel.max_ms are excluded entirely, since wall-clock exhaustion varies run to run. The C2 property test compares responses with stats stripped and max_ms unset; callers wanting cacheable results budget by max_hops/max_nodes only. (5) Versioning: this document is semver'd; breaking changes bump major; the daemon reports its wire version via grid.version and refuses clients that pin an incompatible major."
   },
   "x-transport": {
     "socket": "unix domain socket",
@@ -14,7 +14,7 @@
   },
   "x-porcelain": {
     "doc": "packages/grid/docs/PORCELAIN.md",
-    "version": "2.0.0",
+    "version": "2.10.0",
     "description": "Normative grammar for human-facing stdout records. --json emits wire results verbatim; the porcelain version is reported by grid.version."
   },
   "methods": [
@@ -27,7 +27,7 @@
         {
           "name": "current versions",
           "params": [],
-          "result": { "name": "version", "value": { "wire": "1.0.0", "engine": "grid 0.1.0", "porcelain": "2.0.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
+          "result": { "name": "version", "value": { "wire": "1.1.0", "engine": "grid 0.1.0", "porcelain": "2.10.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
         }
       ],
       "result": {
@@ -276,6 +276,20 @@
                 "additionalProperties": false
               },
               "description": "Entries grid refused to store, e.g. closure unresolved or fuel-exhausted at key-freeze time. Rejection is the record-side face of one-directional soundness."
+            },
+            "nondeterministic": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["datum", "previous", "previous_at"],
+                "properties": {
+                  "datum": { "$ref": "#/components/schemas/Datum" },
+                  "previous": { "type": "string", "enum": ["pass", "fail"], "description": "The verdict the same key already held." },
+                  "previous_at": { "type": "string", "format": "date-time" }
+                },
+                "additionalProperties": false
+              },
+              "description": "Entries whose key already held the opposite verdict: same closure, same environment, a different answer. The closure proves the charted code did not change, so the claim is exactly \"not the charted code\" — a race is code, and grid does not say flake. Detected from the last entry at record time; the new verdict is stored regardless."
             }
           },
           "additionalProperties": false
@@ -285,12 +299,16 @@
     },
     {
       "name": "grid.scope",
-      "summary": "Context pack for a planned edit: signatures and handles (not bodies), edges in and out, in-scope invariants, open anchors, churn. Token cost proportional to blast radius.",
+      "summary": "Context pack for a planned edit: signatures and handles (not bodies), edges in and out, in-scope invariants, open anchors, churn. With bodies or sigs, the text itself as well \u2014 in whole hop layers under a token budget, closed by a horizon naming the depth each tier is complete to. Token cost proportional to blast radius.",
       "paramStructure": "by-name",
       "params": [
         { "name": "callsigns", "required": true, "schema": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/CallsignPattern" } } },
         { "name": "depth", "required": false, "schema": { "type": "integer", "minimum": 1, "default": 1 } },
-        { "name": "snapshot", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } }
+        { "name": "snapshot", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } },
+        { "name": "bodies", "required": false, "schema": { "type": "integer", "minimum": 0, "default": 1, "description": "Pack body text for hops 0..=bodies. Naming either this or sigs turns the text tiers on, and the walk runs at least max(bodies, sigs) hops." } },
+        { "name": "sigs", "required": false, "schema": { "type": "integer", "minimum": 0, "default": 3, "description": "Pack sig text for hops (bodies+1)..=sigs. Raised to bodies when smaller: a body already carries its own sig." } },
+        { "name": "budget", "required": false, "schema": { "type": "integer", "minimum": 0, "description": "Approximate token ceiling (bytes/4). Spent in whole hop layers, farthest first: a layer that does not fit is dropped whole and the horizon stops at the previous one; a body layer that does not fit is demoted to its sigs before it is dropped. Never a partial layer, because a certificate over a partial layer is the lie complete_within exists to prevent." } },
+        { "name": "since", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotOrRev", "description": "Keep only definitions whose datum or sig moved since this snapshot \u2014 the delta map a returning agent reads instead of the repo. Resolved against epochs the store already retains; grid.scope never surveys." } }
       ],
       "examples": [
         {
@@ -373,14 +391,26 @@
     },
     {
       "name": "grid.check",
-      "summary": "Is this change ok, in one call: the gate verdict, and why — per-promise fulfilling paths, surplus with provenance, changed-but-unexecuted coverage, open anchors.",
+      "summary": "Everything the change did that nobody checked, in one call: drift suspects, the compile record's uncompiled callers, adherence to a plan when one is named, stale verdicts, covenant fires and declared compat findings gate; weak tests, uncovered definitions, clone-of and undeclared compat findings rank. Every section is the corresponding verb's own result, and a section that refuses refuses the whole check.",
       "paramStructure": "by-name",
       "params": [
-        { "name": "plan", "required": true, "schema": { "$ref": "#/components/schemas/PlanId" } },
+        { "name": "plan", "required": false, "schema": { "$ref": "#/components/schemas/PlanId" }, "description": "A plan to check adherence against. With one, CheckResult.verdict is grid.gate.check's verdict and CheckResult.why carries the fulfilling paths; without one, neither is present. Optional since wire 1.1." },
+        { "name": "base", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" }, "description": "The snapshot the change is measured from. Defaults to the plan's base when a plan is named, else HEAD~1 — grid.drift's default." },
         { "name": "head", "required": true, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } },
-        { "name": "trace", "required": false, "schema": { "$ref": "#/components/schemas/TraceId" } }
+        { "name": "trace", "required": false, "schema": { "$ref": "#/components/schemas/TraceId" } },
+        { "name": "compile", "required": false, "schema": { "type": "boolean" }, "description": "Ignored. Kept for 1.0 callers; the compile record is read whenever it exists, whatever this says. When .grid/compile.json is absent, or its snapshot is not the head the check surveyed, the compile section is absent and CheckResult.warnings says so." },
+        { "name": "quick", "required": false, "schema": { "type": "boolean" }, "description": "Drift at the proven floor plus the compile record, nothing else: no trace store, verdict log or source read. The PostToolUse form." }
       ],
       "examples": [
+        {
+          "name": "check the worktree, quickly",
+          "params": [
+            { "name": "base", "value": { "git_rev": "HEAD~1" } },
+            { "name": "head", "value": { "git_rev": "HEAD" } },
+            { "name": "quick", "value": true }
+          ],
+          "result": { "name": "check", "value": { "drift": { "base": "snap:b3:a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4", "head": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1", "suspects": [], "unchecked": { "unresolved_refs": 3, "budget_rejected": 0 } }, "warnings": [{ "subject": "-", "message": "no compile record since @77e177e1" }] } }
+        },
         {
           "name": "check PR 381 against its plan",
           "params": [
@@ -417,12 +447,13 @@
     },
     {
       "name": "grid.suspects",
-      "summary": "Fault localization: the failing test's observed closure intersected with the recent delta, ranked. Requires trace retention and a populated verdict cache for history-aware scoring.",
+      "summary": "Fault localization, in two evidence modes. Without closure_since: the failing test's observed closure intersected with the recent delta, ranked by Ochiai — requires trace retention and a populated verdict cache. With closure_since: the definitions in the test's static closure at head whose bodies moved since that snapshot, ranked by hop distance — no run history required, and heuristic, because a candidate is a definition that changed and is reachable, not a proven cause.",
       "paramStructure": "by-name",
       "params": [
         { "name": "test", "required": true, "schema": { "type": "string", "minLength": 1 } },
         { "name": "trace", "required": false, "schema": { "$ref": "#/components/schemas/TraceId" } },
-        { "name": "base", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } }
+        { "name": "base", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } },
+        { "name": "closure_since", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotOrRev", "description": "Select the closure evidence mode and name the snapshot bodies are compared against. Candidates are the test's transitive closure at head intersected with the base-side half of the membership diff since this snapshot. A snapshot the retained chain never held is a typed refusal, never an empty ranking; a closure that runs past its fuel refuses the whole answer rather than serving a shorter one." } }
       ],
       "examples": [
         {
@@ -466,7 +497,8 @@
         { "name": "head", "required": true, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } },
         { "name": "floor", "required": false, "schema": { "$ref": "#/components/schemas/Grade" } },
         { "name": "plan", "required": false, "schema": { "$ref": "#/components/schemas/Plan" } },
-        { "name": "tests", "required": false, "schema": { "type": "boolean", "description": "Also enumerate every known test and report the ones whose recorded verdict no longer applies." } }
+        { "name": "tests", "required": false, "schema": { "type": "boolean", "description": "Also enumerate every known test and report the ones whose recorded verdict no longer applies." } },
+        { "name": "compat", "required": false, "schema": { "type": "boolean", "description": "Also check every changed type deriving Deserialize against the rules old bytes care about. Heuristic unless a standing `persisted` invariant names the type, in which case the finding gates at modeled." } }
       ],
       "examples": [
         {
@@ -497,6 +529,83 @@
       ],
       "result": { "name": "drift", "schema": { "$ref": "#/components/schemas/DriftReport" } },
       "errors": [{ "$ref": "#/components/errors/UnknownSnapshot" }]
+    },
+    {
+      "name": "grid.test.plan",
+      "summary": "Test selection as data, no running: which of the runner's tests a change can reach, which recorded verdicts still apply, and which changed definitions no test reaches. The CLI spawns the runner and records verdicts through grid.cache.record; the daemon only answers the plan.",
+      "paramStructure": "by-name",
+      "params": [
+        { "name": "base", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" }, "description": "Absent means the last snapshot a `grid test` recorded against, else HEAD." },
+        { "name": "env_hash", "required": true, "schema": { "type": "string", "minLength": 1, "description": "The environment the run would happen in; a replayed verdict must have been recorded under the same one." } },
+        { "name": "tests", "required": true, "schema": { "type": "array", "items": { "$ref": "#/components/schemas/TestId" }, "description": "The runner's own inventory. Grid never guesses what a test is." } },
+        { "name": "replay", "required": false, "schema": { "type": "boolean", "description": "Absent or true: an unselected test's verdict is looked up and replayed. False: nothing is looked up, and every unselected test is selected as not_recorded." } }
+      ],
+      "examples": [
+        {
+          "name": "select tests for an uncommitted edit",
+          "params": [
+            { "name": "base", "value": { "git_rev": "bc21972" } },
+            { "name": "env_hash", "value": "env:b3:77aa77aa" },
+            { "name": "tests", "value": ["cortana::reaper tests::sweep_returns_receipt", "tests/test_tag_contract.py::test_retry_window", "tests/test_tag_contract.py::test_new_and_untraced"] }
+          ],
+          "result": {
+            "name": "plan",
+            "value": {
+              "base": "snap:b3:a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4",
+              "head": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1",
+              "selected": [
+                { "test": "cortana::reaper tests::sweep_returns_receipt", "datum": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "why": "reached" },
+                { "test": "tests/test_tag_contract.py::test_new_and_untraced", "why": "unresolved" }
+              ],
+              "replayed": [
+                { "test": "tests/test_tag_contract.py::test_retry_window", "datum": "b3:4da74da74da74da74da74da74da74da74da74da74da74da74da74da74da74da7", "verdict": "pass", "recorded_at": "2026-08-07T18:05:40Z", "trace_id": "trace:01J4XC8K4E0S5T7V9W1B3D5F6G" }
+              ],
+              "uncovered": [
+                { "datum": "b3:5c195c195c195c195c195c195c195c195c195c195c195c195c195c195c195c19", "callsign": "cortana.reaper.TagContract.retry" }
+              ],
+              "unchecked": { "unresolved_refs": 3, "budget_rejected": 0 }
+            }
+          }
+        }
+      ],
+      "result": { "name": "plan", "schema": { "$ref": "#/components/schemas/TestPlan" } },
+      "errors": [{ "$ref": "#/components/errors/UnknownSnapshot" }]
+    },
+    {
+      "name": "grid.interfere",
+      "summary": "Semantic overlap between two worktrees of one repository, against their common base: the definitions both edited, and each side's drift suspects that land in the other's edits. What git's merge cannot see — a moved signature here, a caller of it there, no file in common. The other root's store is opened read-only and never written; a store that cannot be read, is superseded, or does not hold the base is a refusal, never an answer of 'no interference'.",
+      "paramStructure": "by-name",
+      "params": [
+        { "name": "other_root", "required": true, "schema": { "type": "string", "minLength": 1, "description": "Filesystem path to the other worktree's root. Its store is at <other_root>/.grid and is only ever read." } },
+        { "name": "base", "required": false, "schema": { "$ref": "#/components/schemas/GitRev", "description": "The revision both sides are compared against. Defaults to the merge base of the two worktrees' heads." } }
+      ],
+      "examples": [
+        {
+          "name": "a moved signature here, a new caller of it there",
+          "params": [{ "name": "other_root", "value": "../wt-b" }],
+          "result": {
+            "name": "interfere",
+            "value": {
+              "base": "bc21972",
+              "mine": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1",
+              "theirs": "snap:b3:a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4a2c4",
+              "both_touched": [],
+              "suspects": [
+                {
+                  "dependent": { "datum": "b3:e03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03fe03f", "callsign": "yi_console.replay" },
+                  "changed": { "datum": "b3:9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c", "callsign": "yi_tui.drive.key_event" },
+                  "relation": "calls",
+                  "grade": "proven",
+                  "reason": "interfere:../wt-b"
+                }
+              ],
+              "unchecked": { "budget_rejected": 0 }
+            }
+          }
+        }
+      ],
+      "result": { "name": "interfere", "schema": { "$ref": "#/components/schemas/InterfereReport" } },
+      "errors": [{ "$ref": "#/components/errors/UnknownSnapshot" }, { "$ref": "#/components/errors/NoSnapshot" }]
     }
   ],
   "components": {
@@ -585,6 +694,7 @@
           "callsign": { "$ref": "#/components/schemas/Callsign" },
           "lang": { "$ref": "#/components/schemas/Lang" },
           "signature": { "type": "string", "description": "One-line declaration as surveyed, e.g. 'def validate(self, tags: list[Tag]) -> Receipt'. Lets grid.scope return signatures without bodies." },
+          "cfg": { "type": "string", "description": "The conjunction of every #[cfg(...)] predicate conditioning the definition — on the item, on each enclosing module, and on the cargo target directory — as written minus whitespace, all(...)-joined when nested; a cfg_attr(...) is recorded whole. Empty when nothing conditions it. Absent when the snapshot predates segment epoch 4 or the frontend has no such notion (Python)." },
           "materialization": {
             "type": "object",
             "required": ["file", "line"],
@@ -662,6 +772,17 @@
               "langs": { "type": "array", "items": { "$ref": "#/components/schemas/Lang" } }
             },
             "additionalProperties": false
+          },
+          "declined": {
+            "type": "object",
+            "description": "What the survey declined to bind, split by why. Absent from a snapshot nobody re-surveyed in this run, so an unknown count is never reported as zero. The three add up to the survey's declined total.",
+            "required": ["external", "method", "internal"],
+            "properties": {
+              "external": { "type": "integer", "minimum": 0, "description": "Names that were never this tree's to hold — std/core/alloc or another crate in Rust, a top-level module the tree does not root in Python." },
+              "method": { "type": "integer", "minimum": 0, "description": "Calls through a receiver whose type would have to be known. Counted, never resolved." },
+              "internal": { "type": "integer", "minimum": 0, "description": "Names this tree could have held and the resolver could not bind: glob-supplied, ambiguous, an unresolved re-export. The hole." }
+            },
+            "additionalProperties": false
           }
         },
         "additionalProperties": false
@@ -716,7 +837,8 @@
         "required": ["action", "callsign"],
         "properties": {
           "action": { "type": "string", "enum": ["add", "remove", "modify", "move"] },
-          "callsign": { "$ref": "#/components/schemas/CallsignPattern" }
+          "callsign": { "$ref": "#/components/schemas/CallsignPattern" },
+          "interface": { "type": "boolean", "description": "A promise's claim about whether callers can see the change, checked against DefChange.sig_changed on a modify or move promise (rejected on add/remove by plan.lint, exit 2). true: made good only by a sig_changed of true or absent (unknown is treated as moved, conservative). false: made good only by sig_changed == false; a sig move under this promise is unaccounted with reason 'interface'. Absent: today's behavior, either makes it good." }
         },
         "additionalProperties": false
       },
@@ -772,7 +894,8 @@
           "rule": {
             "oneOf": [
               { "type": "object", "required": ["forbid_edge"], "properties": { "forbid_edge": { "$ref": "#/components/schemas/EdgeRule" } }, "additionalProperties": false },
-              { "type": "object", "required": ["require_edge"], "properties": { "require_edge": { "$ref": "#/components/schemas/EdgeRule" } }, "additionalProperties": false }
+              { "type": "object", "required": ["require_edge"], "properties": { "require_edge": { "$ref": "#/components/schemas/EdgeRule" } }, "additionalProperties": false },
+              { "type": "object", "required": ["persisted"], "properties": { "persisted": { "$ref": "#/components/schemas/CallsignPattern", "description": "Types matching this pattern have bytes on disk written by an older version of themselves. The human fact a static check cannot establish, and the one that promotes a Deserialize compatibility finding from a warning to a gate at modeled." } }, "additionalProperties": false }
             ]
           }
         },
@@ -830,7 +953,8 @@
           "defs_unaccounted": { "type": "array", "items": { "$ref": "#/components/schemas/DefChange" }, "description": "Definitions changed by the diff but covered by no def promise." },
           "tests": { "type": "array", "items": { "$ref": "#/components/schemas/TestComparison" } },
           "invariant_violations": { "type": "array", "items": { "$ref": "#/components/schemas/InvariantViolation" } },
-          "reasons": { "type": "array", "items": { "type": "string" }, "description": "Human-readable one-liners, one per contributing hold cause; empty on pass." }
+          "reasons": { "type": "array", "items": { "type": "string" }, "description": "Human-readable one-liners, one per contributing hold cause; empty on pass." },
+          "interface_unaccounted": { "type": "array", "items": { "$ref": "#/components/schemas/DefChange" }, "description": "The subset of defs_unaccounted whose sig moved (sig_changed true or absent) and which matches no def promise permitting that move (interface true or absent) — held for reason 'interface'. Always a subset of defs_unaccounted; a member of both lists is held once, not twice." }
         },
         "additionalProperties": false,
         "description": "Cross-plan error. Surplus is computed after tolerate filtering. gate is 'hold' iff missing, surplus, defs_unaccounted, a failed TestComparison, or an invariant violation is non-empty; 'pass' otherwise. The verdict itemizes divergence — it never says only 'hold'."
@@ -942,6 +1066,7 @@
           "git_rev": { "$ref": "#/components/schemas/GitRev" },
           "command": { "type": "string", "description": "The test command that produced this trace." },
           "started_at": { "type": "string", "format": "date-time" },
+          "snapshot": { "$ref": "#/components/schemas/SnapshotId", "description": "The chart snapshot this trace's observations were mapped against, set by the coverage ingestion paths (--lcov, --coverage-json). It pins the chart a later reader must grade the trace against without resolving git_rev through git, which a shallow clone or a rewritten history can no longer answer. Absent on a trace a runner emitted directly, where git_rev is all there is." },
           "observations": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/TraceObservation" } }
         },
         "additionalProperties": false,
@@ -966,7 +1091,8 @@
           "datum": { "$ref": "#/components/schemas/Datum" },
           "verdict": { "type": "string", "enum": ["pass", "fail"], "description": "The stored result. fail-hits are the valuable case: skip re-running a known-red verification." },
           "recorded_at": { "type": "string", "format": "date-time" },
-          "trace_id": { "type": "string", "pattern": "^trace:[0-9A-HJKMNP-TV-Z]{26}$", "description": "Present when the recorded run also produced a trace." }
+          "trace_id": { "type": "string", "pattern": "^trace:[0-9A-HJKMNP-TV-Z]{26}$", "description": "Present when the recorded run also produced a trace." },
+          "test": { "$ref": "#/components/schemas/TestId", "description": "Present when the hit was looked up for a named test (grid.test.plan): the test whose verdict this is." }
         },
         "additionalProperties": false
       },
@@ -1022,7 +1148,30 @@
               "additionalProperties": false
             },
             "description": "Edit-frequency signal: edit count per definition in scope."
-          }
+          },
+          "bodies": { "type": "array", "items": { "$ref": "#/components/schemas/PackText" }, "description": "Body text for every definition within horizon.bodies_complete_within hops, ordered by hop then callsign. Absent unless the request asked for bodies or sigs." },
+          "sigs": { "type": "array", "items": { "$ref": "#/components/schemas/PackText" }, "description": "Sig text for every definition past the body tier and within horizon.sigs_complete_within hops, ordered by hop then callsign. Absent unless the request asked for bodies or sigs." },
+          "horizon": { "$ref": "#/components/schemas/PackHorizon", "description": "The depth each tier is complete to. Present exactly when bodies and sigs are: text without a horizon is a bounded answer nobody can bound." }
+        },
+        "additionalProperties": false
+      },
+      "PackText": {
+        "type": "object",
+        "required": ["def", "hop", "text"],
+        "properties": {
+          "def": { "$ref": "#/components/schemas/DefRef" },
+          "hop": { "type": "integer", "minimum": 0, "description": "Hops from the nearest root of the pack's walk; 0 is a definition a pattern named." },
+          "text": { "type": "string", "description": "The definition's source lines for a body, the frontend's rendered signature for a sig. Read from the worktree when the pack is built, so a file edited since the survey packs what the file says now." }
+        },
+        "additionalProperties": false
+      },
+      "PackHorizon": {
+        "type": "object",
+        "required": ["approx_tokens"],
+        "properties": {
+          "bodies_complete_within": { "type": "integer", "minimum": 0, "description": "Every definition within this many hops has its body in the pack. Absent when no body layer fit the budget \u2014 not even the roots' \u2014 so the pack certifies no body depth at all." },
+          "sigs_complete_within": { "type": "integer", "minimum": 0, "description": "Every definition within this many hops has at least its sig in the pack. Absent when not even the roots' sigs fit." },
+          "approx_tokens": { "type": "integer", "minimum": 0, "description": "Approximate token count of the packed text: bytes/4. Grid runs no tokenizer, so this is an estimate and every rendering states it as one." }
         },
         "additionalProperties": false
       },
@@ -1113,13 +1262,81 @@
       },
       "CheckResult": {
         "type": "object",
-        "required": ["verdict"],
+        "required": [],
         "properties": {
-          "verdict": { "$ref": "#/components/schemas/GateVerdict" },
-          "why": { "$ref": "#/components/schemas/CheckWhy" }
+          "verdict": { "$ref": "#/components/schemas/GateVerdict", "description": "grid.gate.check's own verdict, present when a plan was named. Optional since wire 1.1. Gates: hold is exit 3." },
+          "why": { "$ref": "#/components/schemas/CheckWhy" },
+          "drift": { "$ref": "#/components/schemas/DriftReport", "description": "grid.drift's own report over base and head, byte for byte, with its stale_tests, weak and compat lists lifted into the sections below (its unchecked counters stay). Suspects gate: exit 3. Absent only when the check refused before drift answered — never a check with drift silently missing." },
+          "compile": { "$ref": "#/components/schemas/CompileReport", "description": "Present when .grid/compile.json exists and names the head snapshot this check surveyed: the proven dependents of the changed set the recorded compile did not see. Uncompiled gates: exit 3. Absent, with a warning, when there is no record or it predates the last survey." },
+          "stale": { "type": "array", "items": { "$ref": "#/components/schemas/StaleTest" }, "description": "grid.drift --tests's stale_tests. Proven-grade: gates, exit 3. Absent under quick." },
+          "weak": { "type": "array", "items": { "$ref": "#/components/schemas/WeakTest" }, "description": "grid.drift --tests's weak. Heuristic: ranks, never moves the exit. Absent under quick or when no membership image exists." },
+          "uncovered": { "type": "array", "items": { "$ref": "#/components/schemas/DefRef" }, "description": "Changed definitions no traced test reaches — grid.test.plan's uncovered, recomputed over the retained traces as the inventory. Heuristic. Absent under quick or when no trace is retained." },
+          "clones": { "type": "array", "items": { "$ref": "#/components/schemas/CloneFinding" }, "description": "Definitions added since base whose name-erased shape equals an existing definition's, exact match only. Heuristic. Absent under quick." },
+          "compat": { "type": "array", "items": { "$ref": "#/components/schemas/CompatFinding" }, "description": "grid.drift --compat's compat findings. A declared one (a persisted invariant) gates at modeled, exit 3; an undeclared one ranks. Absent under quick." },
+          "refactor": { "$ref": "#/components/schemas/RefactorCertificate", "description": "Present when no gate fired and the check was not quick: the three facts a refactor claim rests on." },
+          "warnings": { "type": "array", "items": { "$ref": "#/components/schemas/DriftWarning" }, "description": "Reported rather than refused by the check itself: today, the compile record being absent or older than the last survey (subject '-', message 'no compile record since @<head prefix>'), which gates nothing on the compile section." }
         },
         "additionalProperties": false,
-        "description": "Is this change ok: the gate verdict, and the reasoning behind it. The verdict is grid.gate.check's own, so a reviewer and CI cannot disagree about whether the promise was kept."
+        "description": "Everything the change did that nobody checked. Every section is the corresponding verb's own result — DriftReport, CompileReport, GateVerdict, StaleTest, WeakTest, CompatFinding — never a re-implementation; the exit is the maximum over the gating sections; a section that refuses (aground, unknown snapshot, superseded store) refuses the whole check with that reason."
+      },
+      "CloneFinding": {
+        "type": "object",
+        "required": ["def", "existing"],
+        "properties": {
+          "def": { "$ref": "#/components/schemas/DefRef", "description": "The definition added since base." },
+          "existing": { "$ref": "#/components/schemas/DefRef", "description": "A definition head holds that was not added since base and whose name-erased shape is byte-identical to the new one's." }
+        },
+        "additionalProperties": false,
+        "description": "A definition added since base whose shape — the name-erased canonical hash — equals an existing definition's. Exact match only; near-duplicates are not claimed. Heuristic: warn <new>  clone-of <existing>, ranked, never a gate."
+      },
+      "RefactorCertificate": {
+        "type": "object",
+        "required": ["interfaces_moved"],
+        "properties": {
+          "interfaces_moved": { "type": "integer", "minimum": 0, "description": "Changed definitions whose interface identity moved or is unknown — grid.drift's changed set. Zero prints as 'interfaces held'." },
+          "replayed_pass": { "type": "integer", "minimum": 0, "description": "Tests a retained trace shows covering the change whose verdict at head's closure key is a recorded pass. Absent when no trace is retained." },
+          "uncovered": { "type": "integer", "minimum": 0, "description": "Changed definitions no traced test reaches — the length of CheckResult.uncovered. Absent when no trace is retained." }
+        },
+        "additionalProperties": false,
+        "description": "One done record over the check's own data when no gate fired: interfaces held or moved, covering tests replayed pass, changed definitions uncovered. It certifies those three facts and nothing more — the phrase behavior-preserving appears nowhere."
+      },
+      "Orphan": {
+        "type": "object",
+        "required": ["def"],
+        "properties": {
+          "def": { "$ref": "#/components/schemas/DefRef" },
+          "traces": { "type": "integer", "minimum": 0, "description": "How many retained traces hit the definition, as caller or callee. Present under grid orphans --traced; zero is the workspace-level unused-pub question rustc cannot ask, and still a maybe for pub in a published crate." }
+        },
+        "additionalProperties": false,
+        "description": "A definition with no proven inbound edge (grid orphans), with the retained-trace count beside it under --traced. A new struct rather than a column on DefRef: an orphan is a claim about edges, and DefRef makes none."
+      },
+      "CompileRecord": {
+        "type": "object",
+        "required": ["snapshot", "features", "all_features", "no_default_features", "tests", "target", "host", "cfgs", "recorded_at"],
+        "properties": {
+          "snapshot": { "$ref": "#/components/schemas/SnapshotId", "description": "The head snapshot the compile ran over." },
+          "features": { "type": "array", "items": { "type": "string" }, "description": "Every feature the compile enabled: those named on the command line plus each workspace package's defaults, closed over the [features] table, unless --no-default-features." },
+          "all_features": { "type": "boolean", "description": "--all-features was given, so every feature = \"…\" predicate held." },
+          "no_default_features": { "type": "boolean" },
+          "tests": { "type": "boolean", "description": "--tests or --all-targets was given, so cfg(test) items and tests/ targets were compiled." },
+          "target": { "type": "string", "description": "The --target triple, else the host triple." },
+          "host": { "type": "string", "description": "The host triple from rustc -vV; empty when rustc could not be asked." },
+          "cfgs": { "type": "array", "items": { "type": "string" }, "description": "The target's cfg set exactly as rustc --print cfg reports it (unix, target_os=\"macos\", …). Empty when rustc could not be asked, and then every target_* predicate is unknown rather than false." },
+          "recorded_at": { "type": "string", "description": "RFC 3339 UTC." }
+        },
+        "additionalProperties": false,
+        "description": "The compile record: what one cargo check was asked for, written to .grid/compile.json by grid check --compile so a later check can re-evaluate cfg predicates against it."
+      },
+      "CompileReport": {
+        "type": "object",
+        "required": ["compiled_with", "uncompiled", "unknown"],
+        "properties": {
+          "compiled_with": { "$ref": "#/components/schemas/CompileRecord" },
+          "uncompiled": { "type": "array", "items": { "$ref": "#/components/schemas/DriftSuspect" }, "description": "Proven dependents of a changed interface whose cfg the record decidably excluded — the compile never saw them. Each carries reason uncompiled:<cfg>. Gates: exit 3." },
+          "unknown": { "type": "array", "items": { "$ref": "#/components/schemas/DriftWarning" }, "description": "Dependents whose cfg the evaluator could not decide (cfg_attr, a custom key, a target fact the record lacks) or whose snapshot predates the cfg column. Reported, never gated: an unproven exclusion does not hold." }
+        },
+        "additionalProperties": false,
+        "description": "What a compile did not compile: for every changed interface, the proven dependents sitting under a cfg the recorded cargo check excluded, and the ones nobody can decide."
       },
       "CheckWhy": {
         "type": "object",
@@ -1176,7 +1393,8 @@
               "properties": {
                 "datum": { "$ref": "#/components/schemas/Datum" },
                 "score": { "type": "number", "minimum": 0, "maximum": 1 },
-                "via": { "type": "string", "description": "Why this ranked: the intersection that implicated it." }
+                "via": { "type": "string", "description": "Why this ranked: the intersection that implicated it." },
+                "hops": { "type": "integer", "minimum": 0, "description": "Hop distance from the test to this definition in the closure walked at head. Present only in closure mode (closure_since), where the ranking IS the hop distance and score is its monotone rendering, 1/(1+hops); absent under Ochiai scoring, which ranks by spectra rather than by distance." }
               },
               "additionalProperties": false
             }
@@ -1249,14 +1467,29 @@
         },
         "additionalProperties": false
       },
+      "CompatFinding": {
+        "type": "object",
+        "required": ["def", "rule", "declared"],
+        "properties": {
+          "def": { "$ref": "#/components/schemas/DefRef", "description": "The type whose deserializing shape moved, as head holds it." },
+          "rule": { "type": "string", "description": "Which rule old bytes trip on: 'required field added', 'field renamed without alias', 'type changed', 'variant removed', 'field removed under deny_unknown_fields', or 'representation changed'." },
+          "declared": { "type": "boolean", "description": "True when a standing `persisted` invariant matches this type — a human said old bytes exist, which is what makes the finding modeled evidence and a gate. False is heuristic: reported, ranked, and never moves the exit code." }
+        },
+        "additionalProperties": false,
+        "description": "A changed type deriving Deserialize whose new shape cannot read what the old one wrote. Within one repository the compiler moves both ends of a serde boundary together; this is the case it cannot see."
+      },
       "DriftUnchecked": {
         "type": "object",
         "required": ["budget_rejected"],
         "properties": {
           "unresolved_refs": { "type": "integer", "minimum": 0, "description": "References the head survey declined to bind, so no edge exists for them and no dependent could be found through them. Absent means head was a published snapshot nobody re-surveyed in this run, so the count is unknown — never reported as zero." },
+          "unresolved_external": { "type": "integer", "minimum": 0, "description": "Of unresolved_refs: names that were never this tree's to hold — std/core/alloc or another crate in Rust, a top-level module the tree does not root in Python. They cost a claim about this repo nothing. Absent whenever unresolved_refs is." },
+          "unresolved_method": { "type": "integer", "minimum": 0, "description": "Of unresolved_refs: calls through a receiver whose type would have to be known. Never resolved and never guessed, because types are modeled and a survey emits none. Absent whenever unresolved_refs is." },
+          "unresolved_internal": { "type": "integer", "minimum": 0, "description": "Of unresolved_refs: names this tree could have held and the resolver could not bind — glob-supplied, ambiguous, an unresolved re-export. The population that is an actual hole in what drift claims. Absent whenever unresolved_refs is." },
           "budget_rejected": { "type": "integer", "minimum": 0, "description": "Definitions whose inbound walk ran past its budget. The walk is rejected whole, never truncated: a truncated walk is indistinguishable from a smaller one." },
           "unattributed_entries": { "type": "integer", "minimum": 0, "description": "Recorded verdicts no retained trace claims, so no test owns them and no test-staleness check covered them. Present when the report was asked for tests." },
-          "weak_skipped": { "type": "integer", "minimum": 0, "description": "Weak-test checks declined because their coverage came from a decayed trace. A heuristic built on a demoted heuristic is noise, so grid declines it and says how often." }
+          "weak_skipped": { "type": "integer", "minimum": 0, "description": "Weak-test checks declined because their coverage came from a decayed trace. A heuristic built on a demoted heuristic is noise, so grid declines it and says how often." },
+          "compat_unchecked": { "type": "integer", "minimum": 0, "description": "Changed types whose Deserialize derive the source does not spell out — behind a cfg_attr, produced by a macro, or carrying a serde attribute this reader cannot parse — plus any whose source at either snapshot could not be read. Skipped and counted, never declared compatible. Present when the report was asked for compat." }
         },
         "additionalProperties": false,
         "description": "What drift could not check. A drift report claiming no suspects where it could not see callers is dishonest silence, so the counts ride with every answer."
@@ -1271,9 +1504,24 @@
           "unchecked": { "$ref": "#/components/schemas/DriftUnchecked" },
           "warnings": { "type": "array", "items": { "$ref": "#/components/schemas/DriftWarning" }, "description": "Reported rather than refused: a declared covenant whose pattern matches nothing at drift time, and anything else drift wants a human to see without holding on it." },
           "stale_tests": { "type": "array", "items": { "$ref": "#/components/schemas/StaleTest" }, "description": "Present when the report was asked for tests: every known test whose recorded verdict no longer applies." },
-          "weak": { "type": "array", "items": { "$ref": "#/components/schemas/WeakTest" }, "description": "Present when the report was asked for tests: tests that covered a changed definition, stayed green, and were never touched. Ranked, never gated." }
+          "weak": { "type": "array", "items": { "$ref": "#/components/schemas/WeakTest" }, "description": "Present when the report was asked for tests: tests that covered a changed definition, stayed green, and were never touched. Ranked, never gated." },
+          "compat": { "type": "array", "items": { "$ref": "#/components/schemas/CompatFinding" }, "description": "Present when the report was asked for compat: changed types deriving Deserialize whose new shape cannot read old bytes. Step 9's `grid check` embeds the same findings; drift carries them so the check is exercisable now." }
         },
         "additionalProperties": false
+      },
+      "InterfereReport": {
+        "type": "object",
+        "required": ["base", "mine", "theirs", "both_touched", "suspects", "unchecked"],
+        "properties": {
+          "base": { "$ref": "#/components/schemas/GitRev", "description": "The revision both worktrees are measured from: the merge base of their heads, or the one the caller named." },
+          "mine": { "$ref": "#/components/schemas/SnapshotId", "description": "The live snapshot of the store this call ran in." },
+          "theirs": { "$ref": "#/components/schemas/SnapshotId", "description": "The live snapshot of the other root's store, as its last survey left it. Grid never surveys the other root, so this is as fresh as that survey and no fresher." },
+          "both_touched": { "type": "array", "items": { "$ref": "#/components/schemas/DefRef" }, "description": "Definitions whose datum moved on both sides since base, named as base held them. A textual conflict git will also find, listed for completeness; it does not gate." },
+          "suspects": { "type": "array", "items": { "$ref": "#/components/schemas/DriftSuspect" }, "description": "One side's drift suspects that land in the other side's edits: reason 'interfere:<other-root>'. The semantic overlap a merge cannot see, carrying the grade of the edge that found it." },
+          "unchecked": { "$ref": "#/components/schemas/DriftUnchecked", "description": "What neither side could check, summed over the two drift walks." }
+        },
+        "additionalProperties": false,
+        "description": "Two worktrees of one repository, compared against their common base."
       },
       "BisectResult": {
         "type": "object",
@@ -1284,6 +1532,58 @@
           "cache_hits": { "type": "integer", "minimum": 0 }
         },
         "additionalProperties": false
+      },
+      "TestId": {
+        "type": "string",
+        "minLength": 1,
+        "description": "A test as the runner names it, never as grid guesses it: nextest's `<binary-id> <name>` (`pkg::bin/x mod::tests::t`), pytest's node id (`tests/test_x.py::TestY::test_z`). Grid maps it to a callsign by the frontend's spelling and resolves it by the grid.resolve rule; a test the chart cannot resolve is always run."
+      },
+      "TestSelection": {
+        "type": "object",
+        "required": ["test", "why"],
+        "properties": {
+          "test": { "$ref": "#/components/schemas/TestId" },
+          "datum": { "$ref": "#/components/schemas/Datum", "description": "The test's definition at head. Absent when the test is unresolved." },
+          "why": { "type": "string", "enum": ["reached", "no_trace", "unresolved", "aground", "not_recorded"], "description": "reached: the inbound walk from the changed set reached the test's definition (or the test itself changed). no_trace: no retained trace still describes code base holds, so the static closure alone may not excuse a skip. unresolved: the chart cannot name the test, so nothing can be said about it. aground: the walk ran out of fuel, so every test is selected. not_recorded: unreached and traced, but no verdict for this closure in this environment is on record to replay." }
+        },
+        "additionalProperties": false,
+        "description": "One test the runner must run, and the reason. Every reason is a refusal to skip."
+      },
+      "TestPlan": {
+        "type": "object",
+        "required": ["base", "head", "selected", "replayed", "uncovered", "unchecked"],
+        "properties": {
+          "base": { "$ref": "#/components/schemas/SnapshotId" },
+          "head": { "$ref": "#/components/schemas/SnapshotId", "description": "The worktree survey the plan was computed against." },
+          "selected": { "type": "array", "items": { "$ref": "#/components/schemas/TestSelection" }, "description": "The run set: selected ∪ replayed = the inventory, disjoint." },
+          "replayed": { "type": "array", "items": { "$ref": "#/components/schemas/CacheHit" }, "description": "Unselected tests whose recorded verdict, keyed by the closure at head and the given environment, is on record. Each hit names its test." },
+          "uncovered": { "type": "array", "items": { "$ref": "#/components/schemas/DefRef" }, "description": "Changed definitions the walk connected to no test. Heuristic: the chart is known incomplete, so this ranks and never gates." },
+          "unchecked": { "$ref": "#/components/schemas/DriftUnchecked" }
+        },
+        "additionalProperties": false,
+        "description": "Selection as data: one inbound walk from the datum-level changed set over every grade, fuel grid_cache::FUEL. A walk that runs aground selects every test rather than a shorter list; a test with no live trace is selected regardless of the walk."
+      },
+      "TestOutcome": {
+        "type": "object",
+        "required": ["test", "verdict"],
+        "properties": {
+          "test": { "$ref": "#/components/schemas/TestId" },
+          "verdict": { "type": "string", "enum": ["pass", "fail"] },
+          "trace_id": { "type": "string", "description": "Present when the run was traced and the trace was ingested." }
+        },
+        "additionalProperties": false
+      },
+      "TestRun": {
+        "type": "object",
+        "required": ["env_hash", "plan", "ran", "warnings"],
+        "properties": {
+          "env_hash": { "type": "string", "description": "blake3 over toolchain version, lockfile bytes, runner args, target triple, and whether the run was traced — stated so a verdict can be re-keyed later." },
+          "plan": { "$ref": "#/components/schemas/TestPlan" },
+          "ran": { "type": "array", "items": { "$ref": "#/components/schemas/TestOutcome" }, "description": "What the runner said about each selected test it reported on." },
+          "warnings": { "type": "array", "items": { "$ref": "#/components/schemas/DriftWarning" }, "description": "nondeterministic and uncovered findings. Reported, never gated." }
+        },
+        "additionalProperties": false,
+        "description": "What `grid test --json` emits. No method answers it: the run is the CLI's, the way a survey's git spawn is; the plan inside it is grid.test.plan's answer verbatim."
       }
     },
     "errors": {

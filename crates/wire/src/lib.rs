@@ -91,6 +91,8 @@ pub struct DefRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cfg: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub materialization: Option<DefRefMaterialization>,
 }
 
@@ -172,6 +174,8 @@ pub struct Snapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_diff_hash: Option<String>,
     pub stats: SnapshotStats,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declined: Option<SnapshotDeclined>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -181,6 +185,14 @@ pub struct SnapshotStats {
     pub edges: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub langs: Option<Vec<Lang>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotDeclined {
+    pub external: u64,
+    pub method: u64,
+    pub internal: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -250,6 +262,8 @@ pub struct Diff {
 pub struct PlanDefPromise {
     pub action: PlanDefPromiseAction,
     pub callsign: CallsignPattern,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -334,6 +348,7 @@ pub struct Invariant {
 pub enum InvariantRule {
     ForbidEdge { forbid_edge: EdgeRule },
     RequireEdge { require_edge: EdgeRule },
+    Persisted { persisted: CallsignPattern },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -407,6 +422,8 @@ pub struct GateVerdict {
     pub invariant_violations: Vec<InvariantViolation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasons: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface_unaccounted: Option<Vec<DefChange>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -558,6 +575,8 @@ pub struct Trace {
     pub command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<SnapshotId>,
     pub observations: Vec<TraceObservation>,
 }
 
@@ -589,6 +608,8 @@ pub struct CacheHit {
     pub recorded_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test: Option<TestId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -640,6 +661,12 @@ pub struct ScopePack {
     pub invariants: Vec<Invariant>,
     pub anchors: Vec<Anchor>,
     pub churn: Vec<ScopePackChurnItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bodies: Option<Vec<PackText>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sigs: Option<Vec<PackText>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horizon: Option<PackHorizon>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -647,6 +674,24 @@ pub struct ScopePack {
 pub struct ScopePackChurnItem {
     pub datum: Datum,
     pub edits: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackText {
+    pub def: DefRef,
+    pub hop: u64,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackHorizon {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bodies_complete_within: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sigs_complete_within: Option<u64>,
+    pub approx_tokens: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -719,9 +764,75 @@ pub struct TodoListFraction {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CheckResult {
-    pub verdict: GateVerdict,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<GateVerdict>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<CheckWhy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift: Option<DriftReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compile: Option<CompileReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale: Option<Vec<StaleTest>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weak: Option<Vec<WeakTest>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncovered: Option<Vec<DefRef>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clones: Option<Vec<CloneFinding>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compat: Option<Vec<CompatFinding>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refactor: Option<RefactorCertificate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<DriftWarning>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloneFinding {
+    pub def: DefRef,
+    pub existing: DefRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RefactorCertificate {
+    pub interfaces_moved: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replayed_pass: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncovered: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Orphan {
+    pub def: DefRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traces: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompileRecord {
+    pub snapshot: SnapshotId,
+    pub features: Vec<String>,
+    pub all_features: bool,
+    pub no_default_features: bool,
+    pub tests: bool,
+    pub target: String,
+    pub host: String,
+    pub cfgs: Vec<String>,
+    pub recorded_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompileReport {
+    pub compiled_with: CompileRecord,
+    pub uncompiled: Vec<DriftSuspect>,
+    pub unknown: Vec<DriftWarning>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -771,6 +882,8 @@ pub struct SuspectsRankedItem {
     pub datum: Datum,
     pub score: f64,
     pub via: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hops: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -836,14 +949,30 @@ pub struct DriftSuspect {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CompatFinding {
+    pub def: DefRef,
+    pub rule: String,
+    pub declared: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriftUnchecked {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unresolved_refs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unresolved_external: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unresolved_method: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unresolved_internal: Option<u64>,
     pub budget_rejected: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unattributed_entries: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weak_skipped: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compat_unchecked: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -859,6 +988,19 @@ pub struct DriftReport {
     pub stale_tests: Option<Vec<StaleTest>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weak: Option<Vec<WeakTest>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compat: Option<Vec<CompatFinding>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InterfereReport {
+    pub base: GitRev,
+    pub mine: SnapshotId,
+    pub theirs: SnapshotId,
+    pub both_touched: Vec<DefRef>,
+    pub suspects: Vec<DriftSuspect>,
+    pub unchecked: DriftUnchecked,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -868,4 +1010,68 @@ pub struct BisectResult {
     pub culprit: Option<Datum>,
     pub steps: u64,
     pub cache_hits: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TestId(pub String);
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestSelection {
+    pub test: TestId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub datum: Option<Datum>,
+    pub why: TestSelectionWhy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TestSelectionWhy {
+    #[serde(rename = "reached")]
+    Reached,
+    #[serde(rename = "no_trace")]
+    NoTrace,
+    #[serde(rename = "unresolved")]
+    Unresolved,
+    #[serde(rename = "aground")]
+    Aground,
+    #[serde(rename = "not_recorded")]
+    NotRecorded,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestPlan {
+    pub base: SnapshotId,
+    pub head: SnapshotId,
+    pub selected: Vec<TestSelection>,
+    pub replayed: Vec<CacheHit>,
+    pub uncovered: Vec<DefRef>,
+    pub unchecked: DriftUnchecked,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestOutcome {
+    pub test: TestId,
+    pub verdict: TestOutcomeVerdict,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TestOutcomeVerdict {
+    #[serde(rename = "pass")]
+    Pass,
+    #[serde(rename = "fail")]
+    Fail,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestRun {
+    pub env_hash: String,
+    pub plan: TestPlan,
+    pub ran: Vec<TestOutcome>,
+    pub warnings: Vec<DriftWarning>,
 }

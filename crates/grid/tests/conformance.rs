@@ -282,7 +282,7 @@ fn a_bad_request_is_an_error_response_not_a_crash() {
     // The daemon is still serving after all of that.
     assert_eq!(
         daemon.call("grid.version", &json!({}))["result"]["wire"],
-        "1.0.0"
+        "1.1.0"
     );
 }
 
@@ -381,6 +381,56 @@ fn wave_ten_methods_reject_bad_params_and_absent_history() {
             .as_str()
             .is_some_and(|message| message.contains("insufficient history")),
         "got {bisect}"
+    );
+}
+
+/// C10 for the closure evidence mode: the same params the CLI builds, over
+/// the real socket, answering with `hops` on every row — and refusing a
+/// snapshot the chain never held rather than ranking nothing.
+#[test]
+fn suspects_closure_answers_over_the_socket_with_hops() {
+    let dir = repo();
+    std::fs::write(
+        dir.path().join("a.py"),
+        "def culprit():\n    return 1\n\ndef the_test():\n    return culprit()\n",
+    )
+    .expect("write");
+    let daemon = Daemon::start(dir.path());
+    let since = daemon.call("grid.survey.run", &json!({}))["result"]["snapshot_id"].clone();
+    std::fs::write(
+        dir.path().join("a.py"),
+        "def culprit():\n    return 2\n\ndef the_test():\n    return culprit()\n",
+    )
+    .expect("write");
+    daemon.call("grid.survey.run", &json!({}));
+
+    let response = daemon.call(
+        "grid.suspects",
+        &json!({"test": "a.the_test", "closure_since": {"snapshot": since}}),
+    );
+    assert!(response.get("error").is_none(), "got {response}");
+    let ranked = response["result"]["ranked"]
+        .as_array()
+        .expect("ranked array");
+    assert_eq!(
+        ranked.len(),
+        1,
+        "one reachable definition moved: {response}"
+    );
+    assert_eq!(ranked[0]["hops"], 1, "and it is one hop away: {response}");
+
+    let unheld = daemon.call(
+        "grid.suspects",
+        &json!({
+            "test": "a.the_test",
+            "closure_since": {
+                "snapshot": "snap:b3:0000000000000000000000000000000000000000000000000000000000000000"
+            }
+        }),
+    );
+    assert_eq!(
+        unheld["error"]["code"], -32003,
+        "a snapshot the chain never held is a typed refusal: {unheld}"
     );
 }
 
@@ -645,6 +695,40 @@ fn the_contract_example_shape_is_served() {
     assert!(result["misses"].is_array());
 }
 
+/// C10 for the newest method: `grid.interfere` answers over the real socket,
+/// and a root whose store it cannot read is the contract's error rather than
+/// a result saying the two worktrees do not interfere.
+#[test]
+fn interfere_is_served_over_the_socket_and_refuses_an_unreadable_root() {
+    let dir = repo();
+    let daemon = Daemon::start(dir.path());
+    daemon.call("grid.survey.run", &json!({}));
+
+    // A directory with no chart in it, named against an explicit base so the
+    // refusal under test is the store's and not the merge base's.
+    let unsurveyed = tempfile::tempdir().expect("tempdir");
+    let response = daemon.call(
+        "grid.interfere",
+        &json!({
+            "other_root": unsurveyed.path().to_str().expect("path"),
+            "base": "HEAD"
+        }),
+    );
+    assert_eq!(
+        response["error"]["code"], -32003,
+        "a root with no chart is a refusal, never an empty answer: {response}"
+    );
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("grid survey")),
+        "and it names the command that fixes it: {response}"
+    );
+
+    let bad = daemon.call("grid.interfere", &json!({"nope": true}));
+    assert_eq!(bad["error"]["code"], -32602, "got {bad}");
+}
+
 /// Write a plan file into the repo's store and return its id.
 fn write_plan(dir: &Path, id: &str, plan: &Value) -> String {
     let plans = dir.join(".grid/plans");
@@ -715,6 +799,65 @@ fn scope_example_shape_is_served_over_the_socket() {
     assert_eq!(pack.defs.len(), 2, "helper and extra: {pack:?}");
     // The pack saw the caller reaching in: one inbound proven edge each.
     assert_eq!(pack.in_edges.len(), 1, "sweep reaches helper: {pack:?}");
+}
+
+/// The tiered pack is served over the socket with the contract's shape: text
+/// tiers keyed by hop and a horizon that bounds them. The fields are additive,
+/// so a request that names neither `bodies` nor `sigs` gets the pack it always
+/// got and none of them (C39).
+#[test]
+fn scope_serves_tiers_and_a_horizon_over_the_socket() {
+    let dir = repo_with_an_unused_import();
+    let daemon = Daemon::start(dir.path());
+    daemon.call("grid.survey.run", &json!({}));
+
+    let plain = daemon.call("grid.scope", &json!({ "callsigns": ["pkg.util.**"] }));
+    assert!(plain["result"].get("bodies").is_none(), "{plain}");
+    assert!(plain["result"].get("horizon").is_none(), "{plain}");
+
+    let response = daemon.call(
+        "grid.scope",
+        &json!({ "callsigns": ["pkg.util.helper"], "bodies": 1, "sigs": 2 }),
+    );
+    assert!(response.get("error").is_none(), "scope errored: {response}");
+    let pack: grid_wire::ScopePack =
+        serde_json::from_value(response["result"].clone()).expect("a wire ScopePack");
+    let bodies = pack.bodies.expect("bodies");
+    assert!(
+        bodies.iter().any(|t| t.hop == 0
+            && t.def
+                .callsign
+                .as_ref()
+                .is_some_and(|c| c.0 == "pkg.util.helper")
+            && t.text.contains("return 1")),
+        "the root's body is the source the worktree holds: {bodies:?}"
+    );
+    assert!(
+        bodies.iter().all(|t| t.hop <= 1),
+        "nothing past the body tier: {bodies:?}"
+    );
+    let sigs = pack.sigs.expect("sigs");
+    assert!(
+        sigs.iter()
+            .all(|t| t.hop == 2 && !t.text.contains("return")),
+        "the sig tier is headers only, at the hops past the bodies: {sigs:?}"
+    );
+    let horizon = pack.horizon.expect("horizon");
+    assert_eq!(horizon.bodies_complete_within, Some(1));
+    assert_eq!(horizon.sigs_complete_within, Some(2));
+
+    // A budget under the roots' own body drops the body layer whole and says
+    // so: sigs at hop 0, no bodies, and a horizon that admits it.
+    let starved = daemon.call(
+        "grid.scope",
+        &json!({ "callsigns": ["pkg.util.helper"], "bodies": 1, "sigs": 2, "budget": 4 }),
+    );
+    let pack: grid_wire::ScopePack =
+        serde_json::from_value(starved["result"].clone()).expect("a wire ScopePack");
+    assert!(pack.bodies.is_some_and(|b| b.is_empty()), "no partial body");
+    let horizon = pack.horizon.expect("horizon");
+    assert_eq!(horizon.bodies_complete_within, None, "bodies: none");
+    assert_eq!(horizon.sigs_complete_within, Some(0), "sigs: 0");
 }
 
 #[test]
@@ -1051,6 +1194,111 @@ fn check_answers_with_a_check_result_the_contract_accepts() {
     );
 }
 
+/// Agent-loop step 3: the compile record is the CLI's to write and the
+/// daemon's to read. `compile: true` with no record is an absent section,
+/// not an empty one; with a record it is a `CompileReport` the contract
+/// accepts, and `DefRef.cfg` rides on every dependent it names.
+#[test]
+fn check_reads_the_compile_record_over_the_socket() {
+    let dir = repo_with_an_unused_import();
+    let daemon = Daemon::start(dir.path());
+    let base = daemon.call("grid.survey.run", &json!({}))["result"]["snapshot_id"].clone();
+    let plan = write_plan(
+        dir.path(),
+        "compile",
+        &json!({
+            "plan_id": "plan:compile/v1",
+            "base": {"snapshot": base},
+            "delta": {"defs": [], "edges": []}
+        }),
+    );
+    let response = daemon.call(
+        "grid.check",
+        &json!({"plan": plan, "head": {"snapshot": base}, "compile": true}),
+    );
+    assert!(response.get("error").is_none(), "check errored: {response}");
+    let answer: grid_wire::CheckResult =
+        serde_json::from_value(response["result"].clone()).expect("a wire CheckResult");
+    assert!(answer.compile.is_none(), "no record, no section");
+
+    // A record, written the way `grid check --compile` writes it.
+    std::fs::write(
+        dir.path().join(".grid/compile.json"),
+        serde_json::to_vec(&json!({
+            "snapshot": base, "features": ["default"], "all_features": false,
+            "no_default_features": false, "tests": false, "target": "x", "host": "x",
+            "cfgs": ["unix"], "recorded_at": "1970-01-01T00:00:00Z"
+        }))
+        .expect("record"),
+    )
+    .expect("write record");
+    let response = daemon.call(
+        "grid.check",
+        &json!({"plan": plan, "head": {"snapshot": base}, "compile": true}),
+    );
+    assert!(response.get("error").is_none(), "check errored: {response}");
+    let answer: grid_wire::CheckResult =
+        serde_json::from_value(response["result"].clone()).expect("a wire CheckResult");
+    let compile = answer.compile.expect("the record was read");
+    assert_eq!(compile.compiled_with.cfgs, ["unix"]);
+    // base == head: nothing changed, so nothing was left uncompiled.
+    assert!(compile.uncompiled.is_empty());
+    assert!(compile.unknown.is_empty());
+}
+
+/// Agent-loop step 9: the plan-less form over the socket. No plan means no
+/// verdict and no why; the drift section is `grid.drift`'s own report over
+/// the same endpoints, and `quick` carries drift and nothing that reads a
+/// trace or the verdict log.
+#[test]
+fn check_without_a_plan_answers_the_composite_over_the_socket() {
+    let dir = repo();
+    let daemon = Daemon::start(dir.path());
+    let params = json!({"base": {"git_rev": "HEAD~1"}, "head": {"git_rev": "HEAD"}});
+    let response = daemon.call("grid.check", &params);
+    assert!(response.get("error").is_none(), "check errored: {response}");
+    let answer: grid_wire::CheckResult =
+        serde_json::from_value(response["result"].clone()).expect("a wire CheckResult");
+    assert!(answer.verdict.is_none(), "no plan, no verdict");
+    assert!(answer.why.is_none(), "no plan, no why");
+    let drift = answer.drift.expect("the drift section is always present");
+    let standalone = daemon.call("grid.drift", &params)["result"].clone();
+    assert_eq!(
+        serde_json::to_value(&drift).expect("drift")["suspects"],
+        standalone["suspects"],
+        "the drift section is grid.drift's own"
+    );
+    assert!(
+        answer.stale.is_some() && answer.clones.is_some(),
+        "the full form reads the log and the shape column: {}",
+        response["result"]
+    );
+    assert!(
+        answer
+            .warnings
+            .is_some_and(|w| w[0].message.starts_with("no compile record since")),
+        "no record is said out loud"
+    );
+
+    let quick = daemon.call(
+        "grid.check",
+        &json!({"base": {"git_rev": "HEAD~1"}, "head": {"git_rev": "HEAD"}, "quick": true}),
+    );
+    assert!(quick.get("error").is_none(), "quick errored: {quick}");
+    let answer: grid_wire::CheckResult =
+        serde_json::from_value(quick["result"].clone()).expect("a wire CheckResult");
+    assert!(answer.drift.is_some());
+    assert!(
+        answer.stale.is_none()
+            && answer.weak.is_none()
+            && answer.clones.is_none()
+            && answer.uncovered.is_none()
+            && answer.refactor.is_none(),
+        "quick reads no trace or verdict log: {}",
+        quick["result"]
+    );
+}
+
 /// A trace the log does not hold is the contract's unknown-trace error, not an
 /// answer computed as if coverage had been asked for and found empty.
 #[test]
@@ -1105,7 +1353,16 @@ mod conservatism {
         "bind",
         "binds",
     ];
-    const RETIRED_COMPOUNDS: &[&str] = &["made-good", "made_good", "madegood"];
+    /// Retired spellings that are only retired *in context*: `check` is a
+    /// live verb, but `cache check` is the verb `cache lookup` replaced, and
+    /// a usage line is exactly where such a phrase survives a rename sweep.
+    const RETIRED_COMPOUNDS: &[&str] = &[
+        "made-good",
+        "made_good",
+        "madegood",
+        "cache check",
+        "cache check|record",
+    ];
 
     /// Every retired word in `text`, as it was spelled there.
     fn retired_words(text: &str) -> Vec<String> {
@@ -1166,12 +1423,16 @@ mod conservatism {
             &["todo"],
             &["cache"],
             &["cache", "lookup"],
+            // Malformed: the arm that prints the subcommand list, which is
+            // the one the naming sweep missed.
+            &["cache", "nosuchsubcommand"],
             &["edit"],
             &["explain"],
             &["covenant"],
             &["plan"],
             &["plan", "lint"],
             &["check"],
+            &["test", "--nope"],
             &["trace"],
             &["trace", "ingest"],
             &["trace", "diff"],
@@ -1186,6 +1447,9 @@ mod conservatism {
             &["resolve", "sweep"],
             &["uses", "helper"],
             &["scope", "pkg.util.**"],
+            // Text mode: the headers and the horizon line are grid's own
+            // words even though the blocks between them are the repo's.
+            &["scope", "pkg.util.helper", "--bodies", "1", "--sigs", "2"],
             &["orphans"],
             &["hotspots"],
             &["roots"],
@@ -1218,6 +1482,74 @@ mod conservatism {
                 .join("\n")
         );
     }
+}
+
+/// `grid.test.plan` is answered over the socket (C10), with the contract's
+/// shape: the inventory is the caller's, the reasons are the plan's. A test
+/// the chart resolves but no trace watched is `no_trace`; one the chart
+/// cannot name is `unresolved`; and the refusal counts ride with the answer.
+#[test]
+fn test_plan_is_served_over_the_socket_with_its_reasons() {
+    let dir = repo();
+    let daemon = Daemon::start(dir.path());
+    let response = daemon.call(
+        "grid.test.plan",
+        &json!({
+            "base": {"git_rev": "HEAD"},
+            "env_hash": "env:b3:77aa77aa",
+            "tests": ["a.py::a", "nowhere.py::test_nothing"]
+        }),
+    );
+    assert!(response.get("error").is_none(), "plan errored: {response}");
+    let plan = &response["result"];
+    for key in [
+        "base",
+        "head",
+        "selected",
+        "replayed",
+        "uncovered",
+        "unchecked",
+    ] {
+        assert!(plan.get(key).is_some(), "TestPlan missing {key}: {plan}");
+    }
+    let selected: Vec<(String, String)> = plan["selected"]
+        .as_array()
+        .expect("selected")
+        .iter()
+        .map(|s| {
+            (
+                s["test"].as_str().expect("test").to_owned(),
+                s["why"].as_str().expect("why").to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        selected,
+        [
+            ("a.py::a".to_owned(), "no_trace".to_owned()),
+            (
+                "nowhere.py::test_nothing".to_owned(),
+                "unresolved".to_owned()
+            ),
+        ]
+    );
+    assert!(
+        plan["selected"][0].get("datum").is_some(),
+        "a resolved test names its datum: {plan}"
+    );
+    assert!(
+        plan["selected"][1].get("datum").is_none(),
+        "an unresolved test has none: {plan}"
+    );
+    assert_eq!(plan["replayed"].as_array().expect("replayed").len(), 0);
+    assert!(
+        plan["unchecked"].get("budget_rejected").is_some(),
+        "unchecked must state what was not walked: {plan}"
+    );
+    // Wire-typed: the daemon's bytes are the contract's TestPlan.
+    let typed: grid_wire::TestPlan =
+        serde_json::from_value(plan.clone()).expect("the answer is a TestPlan");
+    assert_eq!(typed.selected.len(), 2);
 }
 
 /// A retired method name is unknown, never quietly mapped to its successor.

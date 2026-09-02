@@ -302,6 +302,13 @@ impl Visitor for Scan {
                 {
                     self.push(RefKind::SelfCall, rest.to_vec());
                 }
+                // `a.b(...)` is an attribute call: it may be a function in an
+                // imported module, which the resolver binds, or a method on a
+                // value, which needs a type it does not have. Extraction
+                // cannot tell them apart, so it records the shape and lets
+                // the resolver's own rules decide — a declined one is then
+                // counted as a method call rather than as an unknown name.
+                _ if path.len() > 1 => self.push(RefKind::MethodCall, path),
                 _ => self.push(RefKind::Call, path),
             }
         }

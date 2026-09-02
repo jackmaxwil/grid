@@ -23,7 +23,44 @@ pub fn definitions(source: &str) -> Result<Vec<Definition>, ParseError> {
 
 pub(crate) fn definitions_of(file: &syn::File, source: &str) -> Vec<Definition> {
     let mut out = Vec::new();
-    walk(&file.items, source, "", &mut out);
+    walk(&file.items, source, "", &cfgs_of(&file.attrs), &mut out);
+    out
+}
+
+/// The `#[cfg(...)]` predicates on one node, as written minus whitespace —
+/// whitespace, because the predicate rides in a porcelain column that is
+/// split on runs of spaces. A `cfg_attr(...)` conditions compilation only
+/// when the attributes it may expand to include a `cfg(...)`; such a one is
+/// recorded whole, as its own predicate text, and the evaluator reads it as
+/// unknown — the honest answer for an attribute that may or may not have
+/// conditioned anything. A `cfg_attr` that expands to a `derive`, an
+/// `allow`, or a `doc` conditions nothing and is not a predicate at all;
+/// recording it made every proven caller on a serde-using crate a `cfg
+/// unknown` warning, which buried the records that gate.
+pub(crate) fn cfgs_of(attrs: &[syn::Attribute]) -> Vec<String> {
+    attrs
+        .iter()
+        .filter_map(|attr| {
+            let text = if attr.path().is_ident("cfg") {
+                attr.meta.require_list().ok()?.tokens.to_string()
+            } else if attr.path().is_ident("cfg_attr") {
+                let text = attr.meta.to_token_stream().to_string();
+                if !text.contains("cfg (") && !text.contains("cfg(") {
+                    return None;
+                }
+                text
+            } else {
+                return None;
+            };
+            Some(text.chars().filter(|c| !c.is_whitespace()).collect())
+        })
+        .collect()
+}
+
+/// The enclosing predicates plus this node's own, innermost last.
+fn scoped(cfg: &[String], attrs: &[syn::Attribute]) -> Vec<String> {
+    let mut out = cfg.to_vec();
+    out.extend(cfgs_of(attrs));
     out
 }
 
@@ -51,6 +88,8 @@ struct Facts<'a> {
     shaped: &'a dyn ToTokens,
     interface: proc_macro2::TokenStream,
     complexity: u16,
+    /// Every predicate conditioning this definition, outermost first.
+    cfg: Vec<String>,
 }
 
 fn push<T: ToTokens + Spanned>(node: &T, facts: Facts, source: &str, out: &mut Vec<Definition>) {
@@ -65,6 +104,7 @@ fn push<T: ToTokens + Spanned>(node: &T, facts: Facts, source: &str, out: &mut V
         span,
         shape: Datum::of_canonical_bytes(&canon::canonical_bytes(&facts.shaped)),
         complexity: facts.complexity,
+        cfg: grid_datum::cfg_join(&facts.cfg),
     });
 }
 
@@ -115,13 +155,14 @@ fn complexity_of(block: &syn::Block) -> u16 {
     cx.0
 }
 
-fn walk(items: &[Item], source: &str, prefix: &str, out: &mut Vec<Definition>) {
+fn walk(items: &[Item], source: &str, prefix: &str, cfg: &[String], out: &mut Vec<Definition>) {
     for item in items {
         match item {
             Item::Fn(f) => {
                 let callsign = join(prefix, &f.sig.ident.to_string());
                 let mut shaped = f.clone();
                 shaped.sig.ident = anon();
+                let cfg = scoped(cfg, &f.attrs);
                 push(
                     f,
                     Facts {
@@ -130,11 +171,12 @@ fn walk(items: &[Item], source: &str, prefix: &str, out: &mut Vec<Definition>) {
                         shaped: &shaped,
                         interface: sig::of_fn(&f.vis, &f.sig),
                         complexity: complexity_of(&f.block),
+                        cfg: cfg.clone(),
                     },
                     source,
                     out,
                 );
-                walk_stmts(&f.block.stmts, source, &callsign, out);
+                walk_stmts(&f.block.stmts, source, &callsign, &cfg, out);
             }
             Item::Struct(s) => {
                 let mut shaped = s.clone();
@@ -147,6 +189,7 @@ fn walk(items: &[Item], source: &str, prefix: &str, out: &mut Vec<Definition>) {
                         shaped: &shaped,
                         interface: sig::of_type(s, sig::keep_struct),
                         complexity: 1,
+                        cfg: scoped(cfg, &s.attrs),
                     },
                     source,
                     out,
@@ -163,6 +206,7 @@ fn walk(items: &[Item], source: &str, prefix: &str, out: &mut Vec<Definition>) {
                         shaped: &shaped,
                         interface: sig::of_type(e, sig::keep_enum),
                         complexity: 1,
+                        cfg: scoped(cfg, &e.attrs),
                     },
                     source,
                     out,
@@ -179,16 +223,23 @@ fn walk(items: &[Item], source: &str, prefix: &str, out: &mut Vec<Definition>) {
                         shaped: &shaped,
                         interface: sig::of_type(u, sig::keep_union),
                         complexity: 1,
+                        cfg: scoped(cfg, &u.attrs),
                     },
                     source,
                     out,
                 );
             }
-            Item::Trait(t) => walk_trait(t, source, prefix, out),
-            Item::Impl(i) => walk_impl(i, source, prefix, out),
+            Item::Trait(t) => walk_trait(t, source, prefix, cfg, out),
+            Item::Impl(i) => walk_impl(i, source, prefix, cfg, out),
             Item::Mod(m) => {
                 if let Some((_, items)) = &m.content {
-                    walk(items, source, &join(prefix, &m.ident.to_string()), out);
+                    walk(
+                        items,
+                        source,
+                        &join(prefix, &m.ident.to_string()),
+                        &scoped(cfg, &m.attrs),
+                        out,
+                    );
                 }
             }
             _ => {}
@@ -200,10 +251,17 @@ fn walk(items: &[Item], source: &str, prefix: &str, out: &mut Vec<Definition>) {
 /// behavior to identify, so only defaults become definitions — but every
 /// method's signature is part of the *trait's* sig, which `sig::of_trait`
 /// owns.
-fn walk_trait(t: &syn::ItemTrait, source: &str, prefix: &str, out: &mut Vec<Definition>) {
+fn walk_trait(
+    t: &syn::ItemTrait,
+    source: &str,
+    prefix: &str,
+    cfg: &[String],
+    out: &mut Vec<Definition>,
+) {
     let callsign = join(prefix, &t.ident.to_string());
     let mut shaped = t.clone();
     shaped.ident = anon();
+    let cfg = scoped(cfg, &t.attrs);
     push(
         t,
         Facts {
@@ -212,6 +270,7 @@ fn walk_trait(t: &syn::ItemTrait, source: &str, prefix: &str, out: &mut Vec<Defi
             shaped: &shaped,
             interface: sig::of_trait(t),
             complexity: 1,
+            cfg: cfg.clone(),
         },
         source,
         out,
@@ -222,6 +281,7 @@ fn walk_trait(t: &syn::ItemTrait, source: &str, prefix: &str, out: &mut Vec<Defi
         let mc = format!("{callsign}.{}", m.sig.ident);
         let mut shaped = m.clone();
         shaped.sig.ident = anon();
+        let cfg = scoped(&cfg, &m.attrs);
         push(
             m,
             Facts {
@@ -232,16 +292,23 @@ fn walk_trait(t: &syn::ItemTrait, source: &str, prefix: &str, out: &mut Vec<Defi
                 // public as the trait.
                 interface: sig::of_fn(&syn::Visibility::Inherited, &m.sig),
                 complexity: complexity_of(block),
+                cfg: cfg.clone(),
             },
             source,
             out,
         );
-        walk_stmts(&block.stmts, source, &mc, out);
+        walk_stmts(&block.stmts, source, &mc, &cfg, out);
     }
 }
 
 /// An impl block's methods, under `Type` or `Type@Trait`.
-fn walk_impl(i: &syn::ItemImpl, source: &str, prefix: &str, out: &mut Vec<Definition>) {
+fn walk_impl(
+    i: &syn::ItemImpl,
+    source: &str,
+    prefix: &str,
+    cfg: &[String],
+    out: &mut Vec<Definition>,
+) {
     let Some(ty) = type_callsign(&i.self_ty) else {
         return;
     };
@@ -250,11 +317,13 @@ fn walk_impl(i: &syn::ItemImpl, source: &str, prefix: &str, out: &mut Vec<Defini
         None => ty,
     };
     let receiver = join(prefix, &receiver);
+    let cfg = scoped(cfg, &i.attrs);
     for ii in &i.items {
         let ImplItem::Fn(m) = ii else { continue };
         let mc = format!("{receiver}.{}", m.sig.ident);
         let mut shaped = m.clone();
         shaped.sig.ident = anon();
+        let cfg = scoped(&cfg, &m.attrs);
         push(
             m,
             Facts {
@@ -263,20 +332,27 @@ fn walk_impl(i: &syn::ItemImpl, source: &str, prefix: &str, out: &mut Vec<Defini
                 shaped: &shaped,
                 interface: sig::of_fn(&m.vis, &m.sig),
                 complexity: complexity_of(&m.block),
+                cfg: cfg.clone(),
             },
             source,
             out,
         );
-        walk_stmts(&m.block.stmts, source, &mc, out);
+        walk_stmts(&m.block.stmts, source, &mc, &cfg, out);
     }
 }
 
 /// Items nested directly in a body. Deeper nesting (an item inside an `if`
 /// arm) is not descended into — the same depth rule lang-py holds.
-fn walk_stmts(stmts: &[Stmt], source: &str, prefix: &str, out: &mut Vec<Definition>) {
+fn walk_stmts(
+    stmts: &[Stmt],
+    source: &str,
+    prefix: &str,
+    cfg: &[String],
+    out: &mut Vec<Definition>,
+) {
     for stmt in stmts {
         if let Stmt::Item(item) = stmt {
-            walk(std::slice::from_ref(item), source, prefix, out);
+            walk(std::slice::from_ref(item), source, prefix, cfg, out);
         }
     }
 }

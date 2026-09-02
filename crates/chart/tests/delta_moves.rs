@@ -33,6 +33,7 @@ fn shaped(name: &str, datum_fill: u8, shape_fill: u8) -> Def {
             shape: [shape_fill; 32],
             complexity: 1,
             sig: [shape_fill; 32],
+            cfg: String::new(),
         }),
     }
 }

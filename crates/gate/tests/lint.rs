@@ -155,6 +155,36 @@ fn a_vacuous_track_warns_but_is_usable() {
     assert!(result.warnings[0].reason.contains("passes vacuously"));
 }
 
+/// `interface` distinguishes a sig move from a body-only one; an add or
+/// remove has no prior sig to hold or move against, so the claim is bad
+/// input, not a divergence — caught at plan time, exit 2.
+#[test]
+fn interface_on_an_add_or_remove_promise_is_rejected() {
+    let mut t = plan(vec![], vec![]);
+    t.delta.defs = vec![PlanDefPromise {
+        action: PlanDefPromiseAction::Add,
+        callsign: CallsignPattern("cortana.reaper.TagContract.validate".into()),
+        interface: Some(true),
+    }];
+    let errors = lint(&t).errors;
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0]
+        .reason
+        .contains("interface only applies to a modify or move promise"));
+
+    // A modify promise is exactly what `interface` is for.
+    t.delta.defs[0].action = PlanDefPromiseAction::Modify;
+    assert!(lint(&t).errors.is_empty());
+
+    // So is a move.
+    t.delta.defs[0].action = PlanDefPromiseAction::Move;
+    assert!(lint(&t).errors.is_empty());
+
+    // And remove is rejected the same as add.
+    t.delta.defs[0].action = PlanDefPromiseAction::Remove;
+    assert_eq!(lint(&t).errors.len(), 1);
+}
+
 #[test]
 fn duplicate_invariant_ids_warn() {
     let t = plan(

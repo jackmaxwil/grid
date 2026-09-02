@@ -22,8 +22,9 @@
 use std::fmt::Write as _;
 
 use rustpython_parser::ast::fold::Foldable;
-use rustpython_parser::ast::{self, Arg, ArgWithDefault, Stmt};
+use rustpython_parser::ast::{self, Arg, ArgWithDefault, Ranged, Stmt};
 use rustpython_parser::text_size::TextRange;
+use rustpython_parser::Parse;
 
 use crate::canon::Renamer;
 
@@ -202,4 +203,46 @@ fn class(out: &mut String, c: &ast::StmtClassDef<TextRange>) {
             _ => {}
         }
     }
+}
+
+/// The header of one definition's *own* source: the `def`/`class` line (and
+/// the continuation lines a multi-line signature spans), up to the colon that
+/// opens the body — decorators included when the parser puts them inside the
+/// statement's range.
+///
+/// Pure — same text in, same text out — and the input is the definition's
+/// source as the worktree holds it, which is what `grid scope --sigs` packs.
+/// Python's interface is names, annotations and defaults (see this module's
+/// rule), and the header is exactly where the source spells them; a statement
+/// that is not a definition answers `None` rather than guessing.
+#[must_use]
+pub fn sig_text(source: &str) -> Option<String> {
+    // A method's source arrives indented off its class. Python rejects a
+    // leading indent at module level, so the first line's indent comes off
+    // every line before the parse; the body's relative indent survives.
+    let source = dedent(source);
+    let module = ast::ModModule::parse(&source, "<sig>").ok()?;
+    let stmt = module.body.first()?;
+    let body = match stmt {
+        Stmt::FunctionDef(f) => &f.body,
+        Stmt::AsyncFunctionDef(f) => &f.body,
+        Stmt::ClassDef(c) => &c.body,
+        _ => return None,
+    };
+    let start = usize::from(stmt.range().start());
+    let end = usize::from(body.first()?.range().start());
+    Some(source.get(start..end)?.trim_end().to_owned())
+}
+
+/// Strip the first line's leading whitespace from every line that carries it.
+fn dedent(source: &str) -> String {
+    let indent = source.len() - source.trim_start_matches([' ', '\t']).len();
+    let Some(prefix) = source.get(..indent).filter(|p| !p.is_empty()) else {
+        return source.to_owned();
+    };
+    source
+        .lines()
+        .map(|line| line.strip_prefix(prefix).unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n")
 }

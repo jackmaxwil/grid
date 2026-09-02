@@ -1,0 +1,668 @@
+//! `grid check` end to end: the composite is its components, byte for byte,
+//! and it never answers with a section quietly missing.
+//!
+//! Every fixture is a real repository surveyed by the real frontends, so
+//! every section here is the one the standalone verb would print.
+use std::fmt::Write as _;
+use std::path::Path;
+use std::process::{Command, Output};
+
+fn git(dir: &Path, args: &[&str]) {
+    let ok = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "grid")
+        .env("GIT_AUTHOR_EMAIL", "grid@example.invalid")
+        .env("GIT_COMMITTER_NAME", "grid")
+        .env("GIT_COMMITTER_EMAIL", "grid@example.invalid")
+        .output()
+        .expect("run git")
+        .status
+        .success();
+    assert!(ok, "git {args:?} failed");
+}
+
+fn write(dir: &Path, files: &[(&str, &str)]) {
+    for (path, text) in files {
+        let full = dir.join(path);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        std::fs::write(full, text).expect("write");
+    }
+}
+
+fn commit(dir: &Path, message: &str) {
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "--allow-empty", "-m", message]);
+}
+
+fn grid(dir: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_grid"))
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("run grid")
+}
+
+fn stdout(out: &Output) -> String {
+    String::from_utf8(out.stdout.clone()).expect("stdout is utf-8")
+}
+
+fn stderr(out: &Output) -> String {
+    String::from_utf8(out.stderr.clone()).expect("stderr is utf-8")
+}
+
+fn code(out: &Output) -> i32 {
+    out.status.code().expect("exit code")
+}
+
+fn json(out: &Output) -> serde_json::Value {
+    serde_json::from_str(&stdout(out)).unwrap_or_else(|e| panic!("--json: {e}\n{}", stdout(out)))
+}
+
+/// Records of one tag: `(first column, the rest joined)`.
+fn records(out: &Output, tag: &str) -> Vec<(String, String)> {
+    stdout(out)
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>())
+        .filter(|c| c.first() == Some(&tag))
+        .filter_map(|c| Some((c.get(1)?.to_string(), c[2..].join(" "))))
+        .collect()
+}
+
+fn ingest_trace(dir: &Path, id: &str, from: &str, to: &str) {
+    let trace = serde_json::json!({
+        "trace_id": id,
+        "git_rev": "HEAD",
+        "command": from,
+        "observations": [{ "caller": { "symbol": from }, "callee": { "symbol": to } }]
+    });
+    std::fs::write(dir.join("trace.json"), trace.to_string()).expect("write trace");
+    let out = grid(dir, &["trace", "ingest", "trace.json"]);
+    assert_eq!(code(&out), 0, "ingest failed: {}", stderr(&out));
+    assert!(
+        stdout(&out).contains("1/1"),
+        "the hop must resolve: {}",
+        stdout(&out)
+    );
+    std::fs::remove_file(dir.join("trace.json")).expect("rm trace");
+}
+
+fn record_pass(dir: &Path, env: &str, datum: &str, trace: &str) {
+    let out = grid(
+        dir,
+        &[
+            "cache",
+            "record",
+            "test",
+            env,
+            &format!("{datum}=pass"),
+            "--trace",
+            trace,
+        ],
+    );
+    assert_eq!(code(&out), 0, "record failed: {}", stderr(&out));
+    assert!(stdout(&out).contains("1/1"), "{}", stdout(&out));
+}
+
+fn datum_of(dir: &Path, callsign: &str) -> String {
+    let out = grid(dir, &["resolve", callsign, "--json"]);
+    let refs: Vec<serde_json::Value> = serde_json::from_str(&stdout(&out)).expect("resolve --json");
+    refs.first().expect("one definition")["datum"]
+        .as_str()
+        .expect("a datum")
+        .to_owned()
+}
+
+const CFG_BEFORE: &str = "#[derive(serde::Deserialize)]\npub struct Cfg { pub a: u32 }\n\
+     pub fn untouched() -> Cfg { Cfg { a: 1 } }\n";
+// The constructor's text is byte-identical on both sides: it is the caller
+// nobody touched, which is what makes it a suspect.
+const CFG_AFTER: &str =
+    "#[derive(serde::Deserialize)]\npub struct Cfg { pub a: u32, pub b: u32 }\n\
+     pub fn untouched() -> Cfg { Cfg { a: 1 } }\n";
+
+/// A repo that trips every gate at once and feeds every tail: a Rust
+/// `Deserialize` type gains a required field (compat) with an untouched
+/// constructor (drift suspect), and a traced, green Python test covers a
+/// definition whose body then flips (stale verdict; weak once re-recorded).
+fn loaded_repo() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(
+        dir.path(),
+        &[
+            ("crates/app/src/lib.rs", CFG_BEFORE),
+            ("pkg/__init__.py", ""),
+            ("pkg/lib.py", "def covered(x):\n    return x + 1\n"),
+            ("pkg/other.py", "def alone():\n    return 1\n"),
+            (
+                "pkg/test_lib.py",
+                "from pkg.lib import covered\n\n\ndef test_covered():\n    covered(1)\n",
+            ),
+        ],
+    );
+    commit(dir.path(), "before");
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    ingest_trace(
+        dir.path(),
+        "trace:t",
+        "test_lib.test_covered",
+        "lib.covered",
+    );
+    record_pass(
+        dir.path(),
+        "env-1",
+        &datum_of(dir.path(), "pkg.test_lib.test_covered"),
+        "trace:t",
+    );
+    write(
+        dir.path(),
+        &[
+            ("crates/app/src/lib.rs", CFG_AFTER),
+            ("pkg/lib.py", "def covered(x):\n    return x - 1\n"),
+        ],
+    );
+    commit(dir.path(), "after");
+    dir
+}
+
+/// Differential (rung 5): each section of `check --json` is the standalone
+/// verb's own `--json`, byte for byte. The drift section is `drift --tests
+/// --compat`'s report with its three lists lifted out; stale and weak are
+/// `drift --tests`'s; compat is `drift --compat`'s.
+#[test]
+fn each_section_is_the_standalone_verbs_own_json() {
+    let dir = loaded_repo();
+    let check = json(&grid(dir.path(), &["check", "--json"]));
+    let mut full = json(&grid(
+        dir.path(),
+        &["drift", "--tests", "--compat", "--json"],
+    ));
+    let tests = json(&grid(dir.path(), &["drift", "--tests", "--json"]));
+    let compat = json(&grid(dir.path(), &["drift", "--compat", "--json"]));
+    let lifted: Vec<serde_json::Value> = ["stale_tests", "weak", "compat"]
+        .iter()
+        .map(|k| full.as_object_mut().expect("report").remove(*k).expect(k))
+        .collect();
+    let text = |v: &serde_json::Value| serde_json::to_string(v).expect("json");
+    assert_eq!(text(&check["drift"]), text(&full), "drift section");
+    assert_eq!(text(&check["stale"]), text(&tests["stale_tests"]), "stale");
+    assert_eq!(text(&check["weak"]), text(&tests["weak"]), "weak");
+    assert_eq!(text(&check["compat"]), text(&compat["compat"]), "compat");
+    assert_eq!(text(&check["stale"]), text(&lifted[0]));
+    assert_eq!(text(&check["compat"]), text(&lifted[2]));
+    // And the sections say something: an empty differential proves nothing.
+    assert!(!check["drift"]["suspects"]
+        .as_array()
+        .expect("suspects")
+        .is_empty());
+    assert!(!check["stale"].as_array().expect("stale").is_empty());
+    assert!(!check["compat"].as_array().expect("compat").is_empty());
+}
+
+/// The gate section is `grid gate`'s own verdict, and `--why` still carries
+/// the fulfilling paths the retired review verb carried.
+#[test]
+fn the_verdict_section_is_the_gates_own_and_why_carries_its_paths() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(
+        dir.path(),
+        &[
+            ("pkg/__init__.py", ""),
+            ("pkg/util.py", "def helper():\n    return 1\n"),
+            ("pkg/main.py", "def sweep():\n    return 0\n"),
+        ],
+    );
+    commit(dir.path(), "before");
+    let base = grid(dir.path(), &["survey", "--json"]);
+    let base_id = json(&base)["snapshot_id"].as_str().expect("id").to_owned();
+    write(
+        dir.path(),
+        &[(
+            "pkg/main.py",
+            "from pkg.util import helper\n\n\ndef sweep():\n    return helper()\n",
+        )],
+    );
+    commit(dir.path(), "after");
+    let plan = serde_json::json!({
+        "plan_id": "plan:check/v1",
+        "base": {"snapshot": base_id},
+        "delta": {
+            "defs": [{"action": "modify", "callsign": "pkg.main.sweep"}],
+            "edges": [{"action": "add", "src": "pkg.main.sweep",
+                       "relation": "calls", "dst": "pkg.util.helper"}]
+        }
+    });
+    std::fs::write(dir.path().join("plan.json"), plan.to_string()).expect("plan");
+
+    let check = json(&grid(
+        dir.path(),
+        &["check", "--plan", "plan.json", "--json"],
+    ));
+    let gate = json(&grid(dir.path(), &["gate", "plan.json", "--json"]));
+    assert_eq!(
+        serde_json::to_string(&check["verdict"]).expect("json"),
+        serde_json::to_string(&gate).expect("json"),
+        "the verdict is the gate's"
+    );
+    assert_eq!(check["verdict"]["gate"], "pass");
+
+    let why = grid(dir.path(), &["check", "--plan", "plan.json", "--why"]);
+    assert_eq!(code(&why), 0, "{}", stderr(&why));
+    let text = stdout(&why);
+    assert!(
+        text.starts_with("pass"),
+        "the verdict prints first:\n{text}"
+    );
+    assert!(
+        text.lines().any(|l| l.starts_with("path")) && text.lines().any(|l| l.starts_with("hop")),
+        "the fulfilling path rides under --why:\n{text}"
+    );
+    let without = stdout(&grid(dir.path(), &["check", "--plan", "plan.json"]));
+    assert!(
+        !without.lines().any(|l| l.starts_with("path")),
+        "without --why the path stays home:\n{without}"
+    );
+}
+
+/// Exit is the max over gates: a fixture tripping three of them at once
+/// exits 3, every gating record is on stdout, and `--quick` — drift alone —
+/// still exits 3 on the suspect while printing nothing it did not read.
+#[test]
+fn exit_is_the_max_over_gates_and_every_gate_prints() {
+    let dir = loaded_repo();
+    write(
+        dir.path(),
+        &[(
+            ".grid/invariants.json",
+            "[{\"id\": \"cfg-on-disk\", \"rule\": {\"persisted\": \"app.Cfg\"}}]",
+        )],
+    );
+    let out = grid(dir.path(), &["check"]);
+    assert_eq!(code(&out), 3, "{}\n{}", stdout(&out), stderr(&out));
+    let drift = records(&out, "drift");
+    assert!(
+        drift.iter().any(|(_, rest)| rest.contains("app.untouched")),
+        "the untouched constructor is a suspect:\n{}",
+        stdout(&out)
+    );
+    assert!(
+        records(&out, "miss").contains(&(
+            "test_lib.test_covered".to_owned(),
+            "closure-changed".to_owned()
+        )),
+        "the stale verdict is a miss:\n{}",
+        stdout(&out)
+    );
+    assert!(
+        records(&out, "inv")
+            .iter()
+            .any(|(status, rest)| status == "violated" && rest.contains("persisted:app.Cfg")),
+        "the declared compat finding gates:\n{}",
+        stdout(&out)
+    );
+    assert!(
+        !stdout(&out).lines().any(|l| l.starts_with("done")),
+        "no certificate while a gate holds:\n{}",
+        stdout(&out)
+    );
+
+    let quick = grid(dir.path(), &["check", "--quick"]);
+    assert_eq!(code(&quick), 3, "{}", stdout(&quick));
+    let quick_json = json(&grid(dir.path(), &["check", "--quick", "--json"]));
+    for absent in ["stale", "weak", "compat", "uncovered", "clones", "refactor"] {
+        assert!(
+            quick_json.get(absent).is_none(),
+            "--quick reads no trace or verdict log, so no {absent}: {quick_json}"
+        );
+    }
+    assert!(quick_json.get("drift").is_some());
+}
+
+/// The refactor certificate: when nothing gates, one `done` record states
+/// the three facts, and the weak test rides beneath it as a warning that
+/// never moves the exit.
+#[test]
+fn a_green_change_gets_one_done_record_and_the_tail_ranks() {
+    let dir = loaded_repo();
+    // Undo the interface move: only the body flip stays.
+    write(dir.path(), &[("crates/app/src/lib.rs", CFG_BEFORE)]);
+    commit(dir.path(), "keep the interface");
+    // Re-record the pass at head so the verdict is fresh, not stale.
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    record_pass(
+        dir.path(),
+        "env-1",
+        &datum_of(dir.path(), "pkg.test_lib.test_covered"),
+        "trace:t",
+    );
+    let out = grid(dir.path(), &["check", "HEAD~2", "HEAD"]);
+    assert_eq!(code(&out), 0, "{}\n{}", stdout(&out), stderr(&out));
+    assert_eq!(
+        records(&out, "done"),
+        vec![(
+            "refactor".to_owned(),
+            "interfaces held · 1 covering tests replayed pass · 0 changed defs uncovered"
+                .to_owned()
+        )],
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        records(&out, "warn").contains(&(
+            "test_lib.test_covered".to_owned(),
+            "weak-for pkg.lib.covered".to_owned()
+        )),
+        "the weak test ranks:\n{}",
+        stdout(&out)
+    );
+    assert!(
+        !stdout(&out).contains("behavior-preserving") && !stdout(&out).contains("behaviour"),
+        "{}",
+        stdout(&out)
+    );
+    let answer = json(&grid(dir.path(), &["check", "HEAD~2", "HEAD", "--json"]));
+    assert_eq!(answer["refactor"]["interfaces_moved"], 0);
+    assert_eq!(answer["refactor"]["replayed_pass"], 1);
+    assert_eq!(answer["refactor"]["uncovered"], 0);
+    assert_eq!(answer["uncovered"], serde_json::json!([]));
+}
+
+/// Uncovered: a changed definition no traced test reaches is named, and the
+/// certificate counts it. Without a retained trace nothing is claimed.
+#[test]
+fn a_changed_definition_no_trace_reaches_is_uncovered() {
+    let dir = loaded_repo();
+    write(
+        dir.path(),
+        &[
+            ("crates/app/src/lib.rs", CFG_BEFORE),
+            ("pkg/lib.py", "def covered(x):\n    return x + 1\n"),
+            ("pkg/other.py", "def alone():\n    return 2\n"),
+        ],
+    );
+    commit(dir.path(), "an untraced definition changes");
+    // Base is the commit with the traced pass: only `alone` moved since.
+    let out = grid(dir.path(), &["check", "HEAD~2", "HEAD"]);
+    assert_eq!(code(&out), 0, "{}\n{}", stdout(&out), stderr(&out));
+    assert!(
+        records(&out, "warn").contains(&("pkg.other.alone".to_owned(), "uncovered".to_owned())),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        records(&out, "done")[0]
+            .1
+            .ends_with("1 changed defs uncovered"),
+        "{}",
+        stdout(&out)
+    );
+
+    // No trace, no claim.
+    let bare = tempfile::tempdir().expect("tempdir");
+    git(bare.path(), &["init", "-q", "-b", "main"]);
+    write(
+        bare.path(),
+        &[
+            ("pkg/__init__.py", ""),
+            ("pkg/a.py", "def f():\n    return 1\n"),
+        ],
+    );
+    commit(bare.path(), "before");
+    write(bare.path(), &[("pkg/a.py", "def f():\n    return 2\n")]);
+    commit(bare.path(), "after");
+    let answer = json(&grid(bare.path(), &["check", "--json"]));
+    assert!(answer.get("uncovered").is_none(), "{answer}");
+    assert_eq!(answer["refactor"]["interfaces_moved"], 0);
+    assert!(answer["refactor"].get("uncovered").is_none(), "{answer}");
+    let text = stdout(&grid(bare.path(), &["check"]));
+    assert!(
+        text.contains("done    refactor  interfaces held · no retained traces"),
+        "{text}"
+    );
+}
+
+/// Clone-of: two functions identical once their names are erased are the
+/// pair, and a near-duplicate is not claimed.
+#[test]
+fn clone_of_finds_exactly_the_name_erased_identical_pair() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(
+        dir.path(),
+        &[(
+            "crates/app/src/lib.rs",
+            "pub fn a(x: u32) -> u32 { x + 1 }\n",
+        )],
+    );
+    commit(dir.path(), "before");
+    write(
+        dir.path(),
+        &[(
+            "crates/app/src/lib.rs",
+            "pub fn a(x: u32) -> u32 { x + 1 }\n\
+             pub fn b(x: u32) -> u32 { x + 1 }\n\
+             pub fn c(x: u32) -> u32 { x + 2 }\n",
+        )],
+    );
+    commit(dir.path(), "after");
+    let out = grid(dir.path(), &["check"]);
+    assert_eq!(code(&out), 0, "clone-of never gates:\n{}", stderr(&out));
+    let clones: Vec<(String, String)> = records(&out, "warn")
+        .into_iter()
+        .filter(|(_, rest)| rest.starts_with("clone-of"))
+        .collect();
+    assert_eq!(
+        clones,
+        vec![("app.b".to_owned(), "clone-of app.a".to_owned())],
+        "{}",
+        stdout(&out)
+    );
+    let answer = json(&grid(dir.path(), &["check", "--json"]));
+    assert_eq!(answer["clones"].as_array().expect("clones").len(), 1);
+    assert_eq!(answer["clones"][0]["def"]["callsign"], "app.b");
+    assert_eq!(answer["clones"][0]["existing"]["callsign"], "app.a");
+}
+
+/// Conservatism: a drift section that refuses refuses the whole check —
+/// exit 1 with the reason, an empty stdout — never a report with the drift
+/// section quietly missing. A retained trace that does not parse is a store
+/// with unknown contents, and drift declines to answer over it.
+#[test]
+fn a_refusing_drift_section_refuses_the_whole_check() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(
+        dir.path(),
+        &[
+            ("pkg/__init__.py", ""),
+            ("pkg/a.py", "def f():\n    return 1\n"),
+        ],
+    );
+    commit(dir.path(), "before");
+    write(dir.path(), &[("pkg/a.py", "def f():\n    return 2\n")]);
+    commit(dir.path(), "after");
+    assert_eq!(code(&grid(dir.path(), &["check"])), 0);
+    write(dir.path(), &[(".grid/traces/bad.json", "{")]);
+
+    let out = grid(dir.path(), &["check"]);
+    assert_eq!(
+        code(&out),
+        1,
+        "a refusing drift section refuses the whole check:\n{}",
+        stderr(&out)
+    );
+    assert_eq!(stdout(&out), "", "and serves no report: {:?}", stdout(&out));
+    assert!(
+        stderr(&out).contains("bad.json"),
+        "the refusal names its reason: {}",
+        stderr(&out)
+    );
+    let json_form = grid(dir.path(), &["check", "--json"]);
+    assert_eq!(code(&json_form), 1);
+    assert_eq!(stdout(&json_form), "");
+}
+
+/// Conservatism, the aground case: a coverage walk over fuel refuses the
+/// whole check with the budget named — not a report with `uncovered`
+/// missing. The fixture is generated because the budget is a real one: a
+/// hundred thousand edges, so the chart has to carry more.
+#[test]
+fn an_aground_coverage_walk_refuses_the_whole_check() {
+    // 330 definitions, each calling all 330: the changed one has 330
+    // callers, each expanding 330 edges, so the inbound walk examines
+    // 108_900 — past fuel.
+    const N: usize = 330;
+    let clique = |seed: u32| {
+        let mut source = String::with_capacity(N * N * 12);
+        for i in 0..N {
+            let _ = write!(source, "pub fn f{i:03}() -> u32 {{ {seed}");
+            for j in 0..N {
+                let _ = write!(source, " + f{j:03}()");
+            }
+            source.push_str(" }\n");
+        }
+        source.push_str("pub fn the_test() -> u32 { f000() }\n");
+        source
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(dir.path(), &[("crates/app/src/lib.rs", clique(0).as_str())]);
+    commit(dir.path(), "wide");
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    ingest_trace(dir.path(), "trace:t", "the_test", "f000");
+    // Every body moves, no interface does: drift has nothing to walk and
+    // the coverage walk has everything.
+    write(dir.path(), &[("crates/app/src/lib.rs", clique(1).as_str())]);
+    commit(dir.path(), "every body moves");
+
+    let out = grid(dir.path(), &["check"]);
+    assert_eq!(
+        code(&out),
+        1,
+        "an aground coverage walk refuses the whole check:\n{}",
+        stderr(&out)
+    );
+    assert_eq!(stdout(&out), "", "and serves no report: {:?}", stdout(&out));
+    assert!(
+        stderr(&out).contains("fuel"),
+        "the refusal names the budget it ran past: {}",
+        stderr(&out)
+    );
+    // Quick reads no trace, walks no coverage, and answers.
+    let quick = grid(dir.path(), &["check", "--quick"]);
+    assert_eq!(code(&quick), 0, "{}", stderr(&quick));
+}
+
+/// The compile record gates only when it describes the tree this check
+/// surveyed; otherwise the warning says so and nothing gates on it.
+#[test]
+fn a_compile_record_from_another_snapshot_warns_and_gates_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(
+        dir.path(),
+        &[
+            ("pkg/__init__.py", ""),
+            ("pkg/a.py", "def f():\n    return 1\n"),
+        ],
+    );
+    commit(dir.path(), "before");
+    write(dir.path(), &[("pkg/a.py", "def f():\n    return 2\n")]);
+    commit(dir.path(), "after");
+    let absent = json(&grid(dir.path(), &["check", "--json"]));
+    let head = absent["drift"]["head"].as_str().expect("head").to_owned();
+    assert!(absent.get("compile").is_none());
+    assert_eq!(absent["warnings"][0]["subject"], "-");
+    assert_eq!(
+        absent["warnings"][0]["message"],
+        format!(
+            "no compile record since @{}",
+            &head["snap:b3:".len()..][..8]
+        )
+    );
+
+    let record = |snapshot: &str| {
+        std::fs::write(
+            dir.path().join(".grid/compile.json"),
+            serde_json::json!({
+                "snapshot": snapshot, "features": [], "all_features": false,
+                "no_default_features": false, "tests": false, "target": "x", "host": "x",
+                "cfgs": [], "recorded_at": "1970-01-01T00:00:00Z"
+            })
+            .to_string(),
+        )
+        .expect("write record");
+    };
+    record("snap:b3:0000000000000000000000000000000000000000000000000000000000000000");
+    let stale = json(&grid(dir.path(), &["check", "--json"]));
+    assert!(stale.get("compile").is_none(), "{stale}");
+    assert!(stale["warnings"][0]["message"]
+        .as_str()
+        .expect("message")
+        .starts_with("no compile record since"));
+    record(&head);
+    let fresh = json(&grid(dir.path(), &["check", "--json"]));
+    assert!(fresh.get("compile").is_some(), "{fresh}");
+    assert!(fresh.get("warnings").is_none(), "{fresh}");
+}
+
+/// `grid orphans --traced`: the trailing `trace N` column, zero where no
+/// retained trace hits the definition.
+#[test]
+fn orphans_traced_counts_the_traces_that_hit_each_orphan() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    write(
+        dir.path(),
+        &[
+            ("pkg/__init__.py", ""),
+            ("pkg/api.py", "def window():\n    return 1\n\n\ndef never():\n    return 2\n"),
+            (
+                "pkg/caller.py",
+                "import importlib\n\n\ndef go():\n    return importlib.import_module(\"pkg.api\").window()\n",
+            ),
+        ],
+    );
+    commit(dir.path(), "before");
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    ingest_trace(dir.path(), "trace:one", "caller.go", "api.window");
+    let out = grid(dir.path(), &["orphans", "--traced"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let rows = records(&out, "orphan");
+    let traces = |name: &str| {
+        rows.iter().find(|(c, _)| c == name).map(|(_, rest)| {
+            rest.rsplit_once("trace ")
+                .expect("trace column")
+                .1
+                .to_owned()
+        })
+    };
+    assert_eq!(
+        traces("pkg.api.window").as_deref(),
+        Some("1"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(
+        traces("pkg.api.never").as_deref(),
+        Some("0"),
+        "{}",
+        stdout(&out)
+    );
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&stdout(&grid(
+        dir.path(),
+        &["orphans", "--traced", "--json"],
+    )))
+    .expect("json");
+    assert!(rows.iter().all(|r| r.get("traces").is_some()), "{rows:?}");
+    let plain: Vec<serde_json::Value> =
+        serde_json::from_str(&stdout(&grid(dir.path(), &["orphans", "--json"]))).expect("json");
+    assert!(
+        plain.iter().all(|r| r.get("traces").is_none()),
+        "plain orphans are DefRefs"
+    );
+}

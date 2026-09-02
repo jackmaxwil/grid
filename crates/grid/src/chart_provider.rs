@@ -23,8 +23,10 @@ pub enum Error {
     Store(grid_chart_io::StoreError),
     /// The survey that would have produced a snapshot failed.
     Survey(grid_survey::SurveyError),
-    /// A git rev was named, but no snapshot has been published for it. Unlike
-    /// an unknown snapshot id this is recoverable by surveying, so it says so.
+    /// A git rev was named, but the store holds no snapshot of the tree at
+    /// it — a dirty worktree survey labelled with the rev does not count.
+    /// Unlike an unknown snapshot id this is recoverable by surveying, so it
+    /// says so.
     NoSnapshotForRev(String),
     /// Repo configuration under `.grid` is present but unreadable. A broken
     /// rule file must not be mistaken for an absence of rules.
@@ -44,7 +46,10 @@ impl std::fmt::Display for Error {
             Self::Store(e) => write!(f, "chart: {e}"),
             Self::Survey(e) => write!(f, "survey: {e}"),
             Self::NoSnapshotForRev(rev) => {
-                write!(f, "no snapshot for rev {rev}: run `grid survey` first")
+                write!(
+                    f,
+                    "no snapshot for rev {rev}: run `grid survey {rev}` first"
+                )
             }
             Self::Config(msg) | Self::Plan(msg) => f.write_str(msg),
             Self::NoSnapshot => f.write_str("no snapshot published: run `grid survey` first"),
@@ -140,6 +145,27 @@ impl ChartDelta {
         (!self.head.segments().is_empty()).then(|| wire_id(self.head.snapshot_id()))
     }
 
+    /// The format epoch of a manifest this store refused to load.
+    ///
+    /// A superseded store opens *empty*, which is indistinguishable from a
+    /// store nobody has surveyed unless the caller can ask this — and for a
+    /// store in someone else's worktree the two demand opposite answers.
+    #[must_use]
+    pub const fn superseded(&self) -> Option<u32> {
+        self.store.superseded()
+    }
+
+    /// The membership image beside the chart, when one has been built.
+    ///
+    /// `None` is an absence of derived data, not a claim that nothing
+    /// changed; the next survey rebuilds it.
+    ///
+    /// # Errors
+    /// [`Error::Store`] if the image exists and cannot be read.
+    pub fn membership(&self) -> Result<Option<grid_chart::Membership<impl AsRef<[u8]>>>, Error> {
+        Ok(self.store.membership()?)
+    }
+
     /// The live epoch itself, for read-only queries that walk segments
     /// (scope, uses). Mutation stays behind `publish`: this hands out a
     /// read view, and `Epoch` exposes nothing else.
@@ -219,6 +245,7 @@ impl ChartDelta {
                         callsign: Some(Callsign(callsign.to_owned())),
                         lang: segment.lang(ord),
                         signature: None,
+                        cfg: segment.cfg(ord).map(str::to_owned),
                         materialization,
                     });
                 }
@@ -237,16 +264,18 @@ impl ChartDelta {
         out
     }
 
-    /// Has any snapshot been published for `rev`?
+    /// Is the live epoch the tree at `rev` — surveyed at it, or a clean
+    /// worktree checked out at it?
     ///
-    /// # Errors
-    /// [`Error::Store`] if the store cannot be read.
-    pub fn has_rev(&self, rev: &str) -> Result<bool, Error> {
-        let rev = resolve_rev(&self.root, rev);
-        if self.head.manifest().git_rev == rev && !self.head.segments().is_empty() {
-            return Ok(true);
-        }
-        Ok(self.store.epoch_for_rev(&rev)?.is_some())
+    /// A dirty worktree survey is labelled with the rev it was checked out
+    /// from, and that label is provenance, not identity: the tree it charted
+    /// is not the tree at the rev. Every rev-addressed lookup goes through
+    /// here, so none of them can hand back the worktree as "the base".
+    fn live_is(&self, rev: &str) -> bool {
+        let manifest = self.head.manifest();
+        manifest.git_rev == rev
+            && manifest.worktree_diff_hash.is_none()
+            && !self.head.segments().is_empty()
     }
 
     /// Where a datum currently materializes, if the live epoch knows.
@@ -285,11 +314,38 @@ impl ChartDelta {
                 let rev = resolve_rev(&self.root, &git_rev.0);
                 // The live epoch first: gating head against base is the common
                 // case and head is usually what was just surveyed.
-                if self.head.manifest().git_rev == rev {
+                if self.live_is(&rev) {
                     return Ok(Arc::clone(&self.head));
                 }
                 self.store
                     .epoch_for_rev(&rev)?
+                    .ok_or_else(|| Error::NoSnapshotForRev(git_rev.0.clone()))
+            }
+        }
+    }
+
+    /// The snapshot id a `SnapshotOrRev` names, without mapping its segments.
+    ///
+    /// A snapshot id is a hash of a manifest, so naming a snapshot never
+    /// needs the chart it indexes. A query that only wants the coordinate —
+    /// a membership diff reads a separate image — takes this rather than
+    /// [`ChartDelta::epoch_of`], which maps and validates every segment of an
+    /// epoch it will never walk.
+    ///
+    /// # Errors
+    /// [`Error::NoSnapshotForRev`] when a rev has never been surveyed,
+    /// [`Error::Store`] when the store cannot be read.
+    pub fn snapshot_of(&self, target: &SnapshotOrRev) -> Result<SnapshotId, Error> {
+        match target {
+            SnapshotOrRev::Snapshot { snapshot } => Ok(snapshot.clone()),
+            SnapshotOrRev::GitRev { git_rev } => {
+                let rev = resolve_rev(&self.root, &git_rev.0);
+                if self.live_is(&rev) {
+                    return Ok(wire_id(self.head.snapshot_id()));
+                }
+                self.store
+                    .snapshot_for_rev(&rev)?
+                    .map(|id| wire_id(&id))
                     .ok_or_else(|| Error::NoSnapshotForRev(git_rev.0.clone()))
             }
         }

@@ -420,6 +420,10 @@ fn a_glob_import_dependent_is_declined_and_counted_not_claimed() {
         }),
         "the declined reference is counted, not silent:\n{text}"
     );
+    assert!(
+        text.contains("external ") && text.contains("method ") && text.contains("internal "),
+        "the count says what it declined, not just how much:\n{text}"
+    );
 }
 
 /// Conservatism: a head nobody re-surveyed cannot report a declined count,
@@ -1288,5 +1292,39 @@ fn coverage_from_a_decayed_trace_is_declined_and_counted() {
             .any(|(n, reason)| n != "0" && reason.contains("weak-checks skipped")),
         "the declining is counted:\n{}",
         stdout(&out)
+    );
+}
+
+/// `grid diff HEAD` on a dirty tree is the tree at `HEAD` against the working
+/// tree — never the worktree against itself, which is what a rev lookup that
+/// took the hook's dirty survey for `HEAD` would print (nothing).
+#[test]
+fn diff_head_on_a_dirty_tree_shows_the_edit() {
+    let dir = repo(
+        &[
+            ("pkg/__init__.py", ""),
+            ("pkg/a.py", "def a():\n    return 1\n"),
+        ],
+        &[],
+    );
+    write(dir.path(), &[("pkg/a.py", "def a():\n    return 2\n")]);
+    // The hook's survey: the worktree, labelled with HEAD.
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let out = grid(dir.path(), &["diff", "HEAD"]);
+    assert_eq!(code(&out), 0, "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        stdout(&out).contains("pkg.a.a"),
+        "the edit is the diff:\n{}",
+        stdout(&out)
+    );
+    // And the snapshot record says which tree it charted.
+    let surveyed = grid(dir.path(), &["survey"]);
+    assert!(
+        stdout(&surveyed)
+            .lines()
+            .next()
+            .is_some_and(|l| l.contains('+')),
+        "a dirty survey renders as @rev+<prefix>:\n{}",
+        stdout(&surveyed)
     );
 }

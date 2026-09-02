@@ -1,10 +1,11 @@
 //! Method layer shared by CLI and daemon.
 use grid_wire::methods::{
-    CacheCheckParams, CacheRecordParams, CacheRecordResult, CacheRecordResultRejectedItem,
-    DeltaParams, DeltaResult, GateCheckParams, GateCheckResult, PlanLintParams, PlanLintResult,
-    QueryWalkParams, QueryWalkResult, ResolveParams, ResolveResult, ScopeParams, ScopeResult,
-    SnapshotCurrentResult, SurveyRunParams, SurveyRunResult, TodoParams, TodoResult,
-    TraceDiffParams, TraceIngestParams, TraceIngestResult, VersionResult,
+    CacheCheckParams, CacheRecordParams, CacheRecordResult, CacheRecordResultNondeterministicItem,
+    CacheRecordResultNondeterministicItemPrevious, CacheRecordResultRejectedItem, DeltaParams,
+    DeltaResult, GateCheckParams, GateCheckResult, PlanLintParams, PlanLintResult, QueryWalkParams,
+    QueryWalkResult, ResolveParams, ResolveResult, ScopeParams, ScopeResult, SnapshotCurrentResult,
+    SurveyRunParams, SurveyRunResult, TodoParams, TodoResult, TraceDiffParams, TraceIngestParams,
+    TraceIngestResult, VersionResult,
 };
 use grid_wire::{
     CacheCheckResult, CacheHit, CacheHitVerdict, CacheResultEntryVerdict, GitRev, Snapshot,
@@ -65,8 +66,8 @@ pub fn gate_check(
     let plan = standing::fold(&params.plan, standing);
     let mut chart = Chart::new(root);
     chart.ensure(&plan.base)?;
-    chart.ensure(&params.head)?;
-    grid_gate::check(&plan, &params.head, &ChartDelta::open(root)?)
+    let head = chart.head_of(&params.head)?;
+    grid_gate::check(&plan, &head, &ChartDelta::open(root)?)
 }
 
 /// What one survey *run* did, as opposed to what the snapshot *is*. Neither
@@ -83,8 +84,10 @@ pub struct Ran {
     pub superseded: Option<u32>,
     /// References the resolver declined to bind, so no edge exists for them.
     /// Every consumer that reads the edge set as "everything that reaches
-    /// this" is wrong by at most this much, and can now say so.
-    pub declined_refs: u64,
+    /// this" is wrong by at most this much, and can now say so — and, since
+    /// the three populations mean opposite things for an analysis, by how
+    /// much of each.
+    pub declined: crate::drift::Declined,
 }
 
 /// The repo's segment store, plus the survey cache that lives beside it.
@@ -107,28 +110,73 @@ impl Chart {
         }
     }
 
-    /// Publish a snapshot for `target` if the store has none.
+    /// The snapshot of the tree at `target`, surveyed at the rev if the store
+    /// holds none — retained, never made live.
     ///
     /// A snapshot id must already exist — it names content, so it cannot be
     /// conjured — but a rev can always be surveyed, and doing it here is what
-    /// lets `grid gate` be the only command CI runs.
+    /// lets `grid gate` be the only command CI runs. The answer is always a
+    /// snapshot id: a dirty worktree survey is labelled with the rev it was
+    /// checked out from, so a rev looked up *after* this call must not be
+    /// able to find the worktree instead. And the survey is retained rather
+    /// than published live, so a verb that ensured its base on the way in
+    /// leaves every later read verb answering about the worktree, not about
+    /// the base.
     ///
     /// # Errors
     /// [`chart_provider::Error`] if the rev cannot be surveyed or published.
-    pub fn ensure(&mut self, target: &SnapshotOrRev) -> Result<(), chart_provider::Error> {
+    pub fn ensure(
+        &mut self,
+        target: &SnapshotOrRev,
+    ) -> Result<SnapshotOrRev, chart_provider::Error> {
         let SnapshotOrRev::GitRev { git_rev } = target else {
-            return Ok(());
+            return Ok(target.clone());
         };
         // Already surveyed at this rev: surveying again would produce the same
         // bytes and the same id (D5), so it is pure cost.
-        if ChartDelta::open(&self.root)?.has_rev(&git_rev.0)? {
-            return Ok(());
+        match ChartDelta::open(&self.root)?.snapshot_of(target) {
+            Ok(snapshot) => return Ok(SnapshotOrRev::Snapshot { snapshot }),
+            Err(chart_provider::Error::NoSnapshotForRev(_)) => {}
+            Err(e) => return Err(e),
         }
-        self.survey_run(&SurveyRunParams {
-            git_rev: Some(git_rev.clone()),
-            worktree: None,
+        let (snapshot, _) = self.survey(
+            &SurveyRunParams {
+                git_rev: Some(git_rev.clone()),
+                worktree: None,
+            },
+            false,
+        )?;
+        Ok(SnapshotOrRev::Snapshot {
+            snapshot: snapshot.snapshot_id,
         })
-        .map(|_| ())
+    }
+
+    /// The snapshot a verb's *head* names, by id.
+    ///
+    /// A literal `HEAD` is the working tree — the everyday question is "what
+    /// did my uncommitted edits do" — surveyed now and published live. Any
+    /// other rev is the committed tree at that rev, surveyed at the rev if
+    /// the store lacks it and retained. Named by id either way, so no later
+    /// rev lookup can confuse the two.
+    ///
+    /// # Errors
+    /// [`chart_provider::Error`] if the tree cannot be surveyed or published.
+    pub fn head_of(
+        &mut self,
+        target: &SnapshotOrRev,
+    ) -> Result<SnapshotOrRev, chart_provider::Error> {
+        match target {
+            SnapshotOrRev::GitRev { git_rev } if git_rev.0 == "HEAD" => {
+                let (snapshot, _) = self.survey_run(&SurveyRunParams {
+                    git_rev: None,
+                    worktree: None,
+                })?;
+                Ok(SnapshotOrRev::Snapshot {
+                    snapshot: snapshot.snapshot_id,
+                })
+            }
+            other => self.ensure(other),
+        }
     }
 
     /// `grid.survey.run` — survey the tree and publish a snapshot.
@@ -144,23 +192,51 @@ impl Chart {
         &mut self,
         params: &SurveyRunParams,
     ) -> Result<(SurveyRunResult, Ran), chart_provider::Error> {
+        self.survey(params, true)
+    }
+
+    /// The survey itself. `live` publishes the snapshot as the store's live
+    /// epoch and logs the edits since the previous one; otherwise it is
+    /// retained only, which is what an on-demand base survey wants.
+    fn survey(
+        &mut self,
+        params: &SurveyRunParams,
+        live: bool,
+    ) -> Result<(SurveyRunResult, Ran), chart_provider::Error> {
         // Surveying "at a rev" means the tree at that rev, read out of the
         // object store; with no rev it is the working tree, labelled with the
-        // rev it was checked out from. Resolving the label is a git
-        // subprocess that reads nothing the survey writes, so it runs
-        // alongside the survey instead of after it.
+        // rev it was checked out from plus the hash of its diff against that
+        // rev when it has one — the label says where the tree came from, the
+        // hash says it is not that tree. Resolving both is git subprocesses
+        // that read nothing the survey writes, so they run alongside the
+        // survey instead of after it.
         let named = params.git_rev.as_ref().map_or("HEAD", |rev| rev.0.as_str());
         let root = &self.root;
-        let (survey, rev) = std::thread::scope(|scope| {
-            let resolver = scope.spawn(move || chart_provider::resolve_rev(root, named));
+        let (survey, rev, dirty) = std::thread::scope(|scope| {
+            let resolver = scope.spawn(move || {
+                let rev = chart_provider::resolve_rev(root, named);
+                let dirty = params
+                    .git_rev
+                    .is_none()
+                    .then(|| worktree_diff_hash(root))
+                    .flatten();
+                (rev, dirty)
+            });
             let survey = match params.git_rev.as_ref() {
                 Some(rev) => grid_survey::run_at(root, &rev.0, &mut self.cache),
                 None => grid_survey::run(root, &mut self.cache),
             };
-            let rev = resolver
-                .join()
-                .unwrap_or_else(|_| chart_provider::resolve_rev(root, named));
-            (survey, rev)
+            let (rev, dirty) = resolver.join().unwrap_or_else(|_| {
+                (
+                    chart_provider::resolve_rev(root, named),
+                    params
+                        .git_rev
+                        .is_none()
+                        .then(|| worktree_diff_hash(root))
+                        .flatten(),
+                )
+            });
+            (survey, rev, dirty)
         });
         let survey = survey?;
         // The daemon is the single writer (D6); `publish` takes `&mut self`,
@@ -169,14 +245,18 @@ impl Chart {
             .map_err(chart_provider::Error::Store)?;
         let superseded = store.superseded();
         let prev = store.load();
-        let id = store
-            .publish(&rev, None, &[survey.image])
-            .map_err(chart_provider::Error::Store)?;
+        let hash = dirty.map(|h| *h.as_bytes());
+        let id = if live {
+            store.publish(&rev, hash, &[survey.image])
+        } else {
+            store.publish_retained(&rev, hash, &[survey.image])
+        }
+        .map_err(chart_provider::Error::Store)?;
         // Every modification between the previous live set and this one is a
         // edit: edits made outside `grid edit` are still captured, one edit
         // per survey interval. Best effort — an unwritable log costs
         // history, never the snapshot that already published.
-        if !prev.segments().is_empty() && prev.snapshot_id() != &id {
+        if live && !prev.segments().is_empty() && prev.snapshot_id() != &id {
             let next = store.load();
             let delta = grid_chart::diff(
                 grid_wire::SnapshotId(prev.snapshot_id().as_str().to_owned()),
@@ -204,25 +284,66 @@ impl Chart {
                 .collect();
             let _unwritable = crate::history::append(&self.root, &edits);
         }
+        // The three add up to the survey's declined total by construction,
+        // which is the only place that identity can be guaranteed rather
+        // than asserted.
+        let declined = crate::drift::Declined {
+            external: survey.declined_external,
+            method: survey.declined_method,
+            internal: survey.declined_internal,
+        };
         Ok((
             Snapshot {
                 snapshot_id: SnapshotId(id.as_str().to_owned()),
                 git_rev: GitRev(rev),
                 created_at: String::new(),
-                worktree_diff_hash: None,
+                worktree_diff_hash: dirty.map(|h| format!("b3:{}", h.to_hex())),
                 stats: SnapshotStats {
                     defs: survey.defs,
                     edges: survey.edges,
                     langs: Some(survey.langs),
                 },
+                declined: Some(grid_wire::SnapshotDeclined {
+                    external: declined.external,
+                    method: declined.method,
+                    internal: declined.internal,
+                }),
             },
             Ran {
                 reread: survey.reread,
                 superseded,
-                declined_refs: survey.declined_refs,
+                declined,
             },
         ))
     }
+}
+
+/// The hash of the working tree's diff against `HEAD`, or `None` for a tree
+/// that is the committed one (or has no `HEAD` to differ from).
+///
+/// `git diff HEAD` sees exactly what the survey sees: tracked files, index
+/// and worktree alike, since the survey enumerates by `git ls-files` —
+/// minus `.grid/`, grid's own state, which a repo that tracks it would
+/// otherwise dirty with every publish. The value only ever labels a
+/// snapshot; the snapshot id is still the content.
+fn worktree_diff_hash(root: &std::path::Path) -> Option<blake3::Hash> {
+    let out = std::process::Command::new("git")
+        .args([
+            "diff",
+            "HEAD",
+            "--no-color",
+            "--no-ext-diff",
+            "--binary",
+            "--",
+            ".",
+            ":(exclude).grid",
+        ])
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    (!out.stdout.is_empty()).then(|| blake3::hash(&out.stdout))
 }
 
 /// `grid.drift` — dependents of changed interfaces.
@@ -233,7 +354,9 @@ impl Chart {
 /// question is "what did my uncommitted edits leave stale", and because the
 /// survey it runs is also where the declined-reference count comes from. Any
 /// other rev is surveyed at that rev; a snapshot id is taken as published,
-/// and its declined count is then unknown rather than zero.
+/// and its declined count is then unknown rather than zero. Both endpoints
+/// are then named by id: a worktree survey is labelled with its rev, and a
+/// rev lookup after it must never find the worktree instead.
 ///
 /// # Errors
 /// [`crate::drift::Error::Chart`] when an endpoint does not resolve;
@@ -244,34 +367,47 @@ pub fn drift(
     root: &std::path::Path,
 ) -> Result<grid_wire::methods::DriftResult, crate::drift::Error> {
     let mut chart = Chart::new(root);
-    chart.ensure(&params.base)?;
-    let declined = match &params.head {
+    let base = chart.ensure(&params.base)?;
+    let (head, declined) = match &params.head {
         SnapshotOrRev::GitRev { git_rev } => {
             let at = (git_rev.0 != "HEAD").then(|| git_rev.clone());
-            let (_, ran) = chart.survey_run(&SurveyRunParams {
+            let (snapshot, ran) = chart.survey_run(&SurveyRunParams {
                 git_rev: at,
                 worktree: None,
             })?;
-            Some(ran.declined_refs)
+            (
+                SnapshotOrRev::Snapshot {
+                    snapshot: snapshot.snapshot_id,
+                },
+                Some(ran.declined),
+            )
         }
         // Nobody re-surveyed head in this run, so nobody can say what its
         // survey declined. Unknown, not zero.
-        SnapshotOrRev::Snapshot { .. } => None,
+        snapshot @ SnapshotOrRev::Snapshot { .. } => (snapshot.clone(), None),
     };
     // A declaration file that exists but does not parse is a loud error,
     // never an absence of declarations: a covenant nobody can read is not a
     // covenant nobody made.
     let covenants = crate::covenant::load(root).map_err(crate::drift::Error::Covenants)?;
+    // Same posture for the invariant file: a rule nobody can read is not an
+    // absence of rules, so a broken file is an error rather than an empty set.
+    let invariants = if params.compat == Some(true) {
+        Some(crate::standing::load(root).map_err(crate::drift::Error::Covenants)?)
+    } else {
+        None
+    };
     let mut report = crate::drift::compute(
         root,
         &crate::drift::Query {
             floor: params
                 .floor
-                .unwrap_or(crate::drift::Query::new(&params.base, &params.head).floor),
+                .unwrap_or(crate::drift::Query::new(&base, &head).floor),
             plan: params.plan.as_ref(),
             covenants: &covenants,
-            declined_refs: declined,
-            ..crate::drift::Query::new(&params.base, &params.head)
+            declined,
+            compat: invariants.as_deref(),
+            ..crate::drift::Query::new(&base, &head)
         },
     )?;
     if params.tests == Some(true) {
@@ -279,12 +415,8 @@ pub fn drift(
         // Head, because the question is whether a recorded verdict still
         // applies *now* — the closure key is identity math over the current
         // chart, not over the one the verdict was taken against.
-        let epoch = chart
-            .epoch_of(&params.head)
-            .map_err(crate::drift::Error::Chart)?;
-        let base_epoch = chart
-            .epoch_of(&params.base)
-            .map_err(crate::drift::Error::Chart)?;
+        let epoch = chart.epoch_of(&head).map_err(crate::drift::Error::Chart)?;
+        let base_epoch = chart.epoch_of(&base).map_err(crate::drift::Error::Chart)?;
         let found = crate::stale::tests(root, epoch.segments(), |test| {
             // The `grid.resolve` rule, so the name a user can resolve is the
             // name a verdict can be attributed by. Ambiguity resolves to
@@ -333,6 +465,22 @@ pub fn drift(
     Ok(report)
 }
 
+/// `grid.interfere` — semantic overlap with another worktree of this repo.
+///
+/// # Errors
+/// [`crate::interfere::Error`] when either store cannot answer for the base,
+/// or when a drift walk refused.
+pub fn interfere(
+    params: &grid_wire::methods::InterfereParams,
+    root: &std::path::Path,
+) -> Result<grid_wire::methods::InterfereResult, crate::interfere::Error> {
+    crate::interfere::compute(
+        root,
+        std::path::Path::new(&params.other_root),
+        params.base.as_ref().map(|rev| rev.0.as_str()),
+    )
+}
+
 /// How many charted callsigns a pattern matches.
 ///
 /// Zero is the answer `grid covenant` refuses on: a declaration about code that
@@ -344,7 +492,7 @@ pub fn matching(root: &std::path::Path, pattern: &str) -> Result<usize, chart_pr
     let chart = ChartDelta::open(root)?;
     Ok(live_defs(&chart)
         .into_iter()
-        .filter(|(_, callsign, _, _)| grid_gate::pattern::matches(pattern, callsign))
+        .filter(|(_, callsign, _, _, _)| grid_gate::pattern::matches(pattern, callsign))
         .count())
 }
 
@@ -364,7 +512,7 @@ pub fn nearest(
     let chart = ChartDelta::open(root)?;
     let mut scored: Vec<(usize, usize, String)> = live_defs(&chart)
         .into_iter()
-        .map(|(_, callsign, _, _)| {
+        .map(|(_, callsign, _, _, _)| {
             (
                 edit_distance(&wanted, &tail(&callsign)),
                 edit_distance(name, &callsign),
@@ -425,6 +573,7 @@ pub fn defs_in_file(
                 callsign: Some(grid_wire::Callsign(callsign.to_owned())),
                 lang: segment.lang(ord),
                 signature: None,
+                cfg: None,
                 materialization: Some(grid_wire::DefRefMaterialization {
                     file: loc.path.to_owned(),
                     line: u64::from(loc.line),
@@ -484,6 +633,7 @@ pub fn orphans(
                 callsign: Some(grid_wire::Callsign(callsign.to_owned())),
                 lang: segment.lang(ord),
                 signature: None,
+                cfg: None,
                 materialization: segment.location(ord).map(|loc| {
                     grid_wire::DefRefMaterialization {
                         file: loc.path.to_owned(),
@@ -498,6 +648,48 @@ pub fn orphans(
         key(a).cmp(&key(b))
     });
     Ok(out)
+}
+
+/// `grid orphans --traced` — the same rows, each with how many retained
+/// traces hit the definition as caller or callee. `trace 0` beside "no
+/// proven caller" is the workspace-level unused-`pub` question rustc cannot
+/// ask (it checks per crate); still heuristic — `pub` in a published crate
+/// stays a maybe.
+///
+/// # Errors
+/// [`chart_provider::Error`] if the store or the trace store cannot be
+/// opened — an unreadable trace store is not zero traces.
+pub fn orphans_traced(
+    root: &std::path::Path,
+    lang: Option<grid_wire::Lang>,
+    under: Option<&str>,
+) -> Result<Vec<grid_wire::Orphan>, chart_provider::Error> {
+    let rows = orphans(root, lang, under)?;
+    let traces = trace_dir(root)
+        .and_then(grid_trace::Store::open)
+        .and_then(|store| store.retained())
+        .map_err(|e| chart_provider::Error::Config(e.to_string()))?;
+    // ponytail: one pass over every retained trace's hops per call; index
+    // the store by datum when a repo holds enough traces for this to show.
+    let mut hits: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    for stored in &traces {
+        let seen: std::collections::BTreeSet<grid_chart::DatumId> = stored
+            .hops
+            .iter()
+            .flat_map(|(caller, callee)| [*caller, *callee])
+            .collect();
+        for datum in seen {
+            let count = hits.entry(datum.to_string()).or_default();
+            *count = count.saturating_add(1);
+        }
+    }
+    Ok(rows
+        .into_iter()
+        .map(|def| grid_wire::Orphan {
+            traces: Some(hits.get(&def.datum.0).copied().unwrap_or(0)),
+            def,
+        })
+        .collect())
 }
 
 /// One hotspot row: a definition scored by complexity times churn.
@@ -680,8 +872,15 @@ pub fn snapshot_current(
         snapshot_id: id,
         git_rev: GitRev(chart.git_rev().to_owned()),
         created_at: String::new(),
-        worktree_diff_hash: None,
+        worktree_diff_hash: chart
+            .head()
+            .manifest()
+            .worktree_diff_hash
+            .map(|h| format!("b3:{}", blake3::Hash::from_bytes(h).to_hex())),
         stats: chart.stats(),
+        // Published, not re-surveyed here: nobody in this call can say what
+        // its survey declined, and unknown is not zero.
+        declined: None,
     }))
 }
 
@@ -694,9 +893,9 @@ pub fn delta(
     root: &std::path::Path,
 ) -> Result<DeltaResult, chart_provider::Error> {
     let mut chart = Chart::new(root);
-    chart.ensure(&params.base)?;
-    chart.ensure(&params.head)?;
-    ChartDelta::open(root)?.diff(&params.base, &params.head)
+    let base = chart.ensure(&params.base)?;
+    let head = chart.head_of(&params.head)?;
+    ChartDelta::open(root)?.diff(&base, &head)
 }
 
 /// `grid.resolve` — a locator to the definitions it names.
@@ -864,6 +1063,8 @@ pub fn cache_check(
                 },
                 recorded_at: entry.recorded_at,
                 trace_id: entry.trace_id,
+                // A cache check is addressed by datum; nobody named a test.
+                test: None,
             }),
             None => misses.push(datum.clone()),
         }
@@ -899,6 +1100,7 @@ pub fn cache_record(
     let chart = grid_cache::Chart::new(epoch.segments());
     let kind = grid_cache::Kind::from(params.kind);
     let recorded_at = grid_cache::now_rfc3339();
+    let mut nondeterministic = Vec::new();
 
     // A verdict tied to a retained trace also lands in the datum-outcome
     // log: that pairing — this test, this datum version, this verdict — is
@@ -922,14 +1124,33 @@ pub fn cache_record(
         };
         match chart.key(id, kind, &params.env_hash) {
             Ok(key) => {
+                let verdict = match entry.verdict {
+                    CacheResultEntryVerdict::Pass => grid_cache::Verdict::Pass,
+                    CacheResultEntryVerdict::Fail => grid_cache::Verdict::Fail,
+                };
+                // Same key, opposite verdict: the closure proves the charted
+                // code did not change and the environment is the same, so
+                // whatever differed is not the charted code. Reported from
+                // the last entry — no history table — and stored regardless.
+                if let Some(previous) = cache.get(key).filter(|p| p.verdict != verdict) {
+                    nondeterministic.push(CacheRecordResultNondeterministicItem {
+                        datum: entry.datum.clone(),
+                        previous: match previous.verdict {
+                            grid_cache::Verdict::Pass => {
+                                CacheRecordResultNondeterministicItemPrevious::Pass
+                            }
+                            grid_cache::Verdict::Fail => {
+                                CacheRecordResultNondeterministicItemPrevious::Fail
+                            }
+                        },
+                        previous_at: previous.recorded_at.clone(),
+                    });
+                }
                 cache
                     .put(
                         key,
                         grid_cache::Entry {
-                            verdict: match entry.verdict {
-                                CacheResultEntryVerdict::Pass => grid_cache::Verdict::Pass,
-                                CacheResultEntryVerdict::Fail => grid_cache::Verdict::Fail,
-                            },
+                            verdict,
                             recorded_at: recorded_at.clone(),
                             trace_id: params.trace_id.clone(),
                             // Stored so the key can be recomputed later:
@@ -956,7 +1177,147 @@ pub fn cache_record(
             }),
         }
     }
-    Ok(CacheRecordResult { recorded, rejected })
+    Ok(CacheRecordResult {
+        recorded,
+        rejected,
+        nondeterministic: (!nondeterministic.is_empty()).then_some(nondeterministic),
+    })
+}
+
+/// Why `grid.test.plan` could not answer.
+#[derive(Debug)]
+pub enum TestPlanError {
+    /// An endpoint did not resolve, or the worktree survey failed.
+    Chart(chart_provider::Error),
+    /// The trace store or the verdict log could not be read. Neither is an
+    /// empty set: a store that fails to open has unknown contents, and a
+    /// plan computed as if it were empty would skip tests on nothing.
+    Store(String),
+}
+
+impl std::fmt::Display for TestPlanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Chart(e) => write!(f, "{e}"),
+            Self::Store(msg) => f.write_str(msg),
+        }
+    }
+}
+
+impl std::error::Error for TestPlanError {}
+
+/// `grid.test.plan` — selection as data over base and a fresh worktree
+/// survey. The survey is the head, as it is for `grid drift`, because the
+/// everyday question is "what do my uncommitted edits reach".
+///
+/// Base defaults to the snapshot the last `grid test` recorded against,
+/// then to `HEAD`. A remembered snapshot the store no longer holds (an
+/// epoch bump drops the store) falls back to `HEAD` rather than refusing:
+/// the remembered base is a convenience, not a claim.
+///
+/// # Errors
+/// [`TestPlanError::Chart`] when base cannot be resolved or the worktree
+/// cannot be surveyed; [`TestPlanError::Store`] when the traces or the
+/// verdict log cannot be read.
+pub fn test_plan(
+    params: &grid_wire::methods::TestPlanParams,
+    root: &std::path::Path,
+    chart: &mut Chart,
+) -> Result<grid_wire::TestPlan, TestPlanError> {
+    test_plan_timed(params, root, chart).map(|(plan, _)| plan)
+}
+
+/// How long the two halves of a plan took: the surveys, which are the
+/// ledger's `grid survey` row, and the plan itself, which is this step's.
+#[derive(Debug, Clone, Copy)]
+pub struct Timing {
+    pub survey: std::time::Duration,
+    pub plan: std::time::Duration,
+}
+
+/// [`test_plan`], with the timing the CLI states on stderr.
+///
+/// # Errors
+/// As [`test_plan`].
+pub fn test_plan_timed(
+    params: &grid_wire::methods::TestPlanParams,
+    root: &std::path::Path,
+    chart: &mut Chart,
+) -> Result<(grid_wire::TestPlan, Timing), TestPlanError> {
+    let started = std::time::Instant::now();
+    let head_rev = SnapshotOrRev::GitRev {
+        git_rev: GitRev("HEAD".to_owned()),
+    };
+    let base = match &params.base {
+        Some(base) => base.clone(),
+        None => match std::fs::read_to_string(crate::testplan::last_path(root)) {
+            Ok(id) => {
+                let remembered = SnapshotOrRev::Snapshot {
+                    snapshot: SnapshotId(id.trim().to_owned()),
+                };
+                let held = ChartDelta::open(root)
+                    .and_then(|c| c.epoch_of(&remembered))
+                    .is_ok();
+                if held {
+                    remembered
+                } else {
+                    head_rev.clone()
+                }
+            }
+            Err(_) => head_rev.clone(),
+        },
+    };
+    // A rev base is surveyed *at the rev*, out of the object store, retained
+    // rather than made live, and named by the snapshot that produced — a
+    // plan of a snapshot against itself selects nothing, and the worktree
+    // survey below must not be mistaken for the base. Idempotent (D5): an
+    // already-surveyed rev costs a manifest scan.
+    let base = chart.ensure(&base).map_err(TestPlanError::Chart)?;
+    let (_, ran) = chart
+        .survey_run(&SurveyRunParams {
+            git_rev: None,
+            worktree: None,
+        })
+        .map_err(TestPlanError::Chart)?;
+    let survey = started.elapsed();
+    let planning = std::time::Instant::now();
+    let provider = ChartDelta::open(root).map_err(TestPlanError::Chart)?;
+    let base_epoch = provider.epoch_of(&base).map_err(TestPlanError::Chart)?;
+    let head_epoch = provider.head();
+    let diff = grid_chart::diff(
+        SnapshotId(base_epoch.snapshot_id().as_str().to_owned()),
+        base_epoch.segments(),
+        SnapshotId(head_epoch.snapshot_id().as_str().to_owned()),
+        head_epoch.segments(),
+    );
+    let changed = crate::testplan::changed_of(&diff);
+    let traces = trace_dir(root)
+        .and_then(grid_trace::Store::open)
+        .and_then(|store| store.retained())
+        .map_err(|e| TestPlanError::Store(e.to_string()))?;
+    let cache = grid_cache::Cache::open(cache_path(root))
+        .map_err(|e| TestPlanError::Store(e.to_string()))?;
+    let plan = crate::testplan::compute(&crate::testplan::Inputs {
+        base: base_epoch.segments(),
+        head: head_epoch.segments(),
+        base_id: diff.base,
+        head_id: diff.head,
+        changed: &changed,
+        traces: &traces,
+        cache: &cache,
+        env_hash: &params.env_hash,
+        tests: &params.tests,
+        replay: params.replay.unwrap_or(true),
+        fuel: grid_cache::FUEL,
+        declined: Some(ran.declined),
+    });
+    Ok((
+        plan,
+        Timing {
+            survey,
+            plan: planning.elapsed(),
+        },
+    ))
 }
 
 /// Open the chart against the epoch a request names.
@@ -1005,25 +1366,46 @@ pub fn scope(
     let all = live_defs(&chart);
     let matched: Vec<String> = all
         .iter()
-        .filter(|(_, callsign, _, _)| {
+        .filter(|(_, callsign, _, _, _)| {
             params
                 .callsigns
                 .iter()
                 .any(|p| grid_gate::pattern::matches(&p.0, callsign))
         })
-        .map(|(datum, _, _, _)| datum.clone())
+        .map(|(datum, _, _, _, _)| datum.clone())
         .collect();
-    let in_scope = expand(&chart, matched, params.depth.unwrap_or(0));
+    // Asking for text asks for the hops the text lives at: a `--sigs 3` pack
+    // over a zero-hop walk would certify three hops it never walked. An
+    // explicit `--depth` past the tiers still widens the def and edge sections.
+    let tiers = params.bodies.is_some() || params.sigs.is_some();
+    let bodies_n = params.bodies.unwrap_or(1);
+    // A body carries its own sig, so a sig tier below the body tier is not a
+    // narrower answer, only a confusing certificate.
+    let sigs_m = params.sigs.unwrap_or(3).max(bodies_n);
+    let depth = if tiers {
+        params.depth.unwrap_or(0).max(sigs_m)
+    } else {
+        params.depth.unwrap_or(0)
+    };
+    let mut layers = expand(&chart, matched, depth);
+    if let Some(since) = params.since.as_ref() {
+        let moved = moved_since(&chart, since)?;
+        for layer in &mut layers {
+            layer.retain(|datum| moved.contains(datum));
+        }
+    }
+    let in_scope: Vec<String> = layers.iter().flatten().cloned().collect();
 
     let defs: Vec<grid_wire::DefRef> = all
         .iter()
-        .filter(|(datum, _, _, _)| in_scope.contains(datum))
+        .filter(|(datum, _, _, _, _)| in_scope.contains(datum))
         .map(
-            |(datum, callsign, lang, materialization)| grid_wire::DefRef {
+            |(datum, callsign, lang, materialization, _)| grid_wire::DefRef {
                 datum: grid_wire::Datum(datum.clone()),
                 callsign: Some(grid_wire::Callsign(callsign.clone())),
                 lang: *lang,
                 signature: None,
+                cfg: None,
                 materialization: materialization.clone(),
             },
         )
@@ -1041,17 +1423,30 @@ pub fn scope(
         .map_err(chart_provider::Error::Config)?
         .into_iter()
         .filter(|inv| {
-            let rule = match &inv.rule {
-                grid_wire::InvariantRule::ForbidEdge { forbid_edge } => forbid_edge,
-                grid_wire::InvariantRule::RequireEdge { require_edge } => require_edge,
+            let patterns = match &inv.rule {
+                grid_wire::InvariantRule::ForbidEdge { forbid_edge } => {
+                    vec![&forbid_edge.src, &forbid_edge.dst]
+                }
+                grid_wire::InvariantRule::RequireEdge { require_edge } => {
+                    vec![&require_edge.src, &require_edge.dst]
+                }
+                // One pattern, over the type itself rather than over an edge.
+                grid_wire::InvariantRule::Persisted { persisted } => vec![persisted],
             };
-            [&rule.src, &rule.dst].into_iter().any(|pattern| {
+            patterns.into_iter().any(|pattern| {
                 callsigns
                     .iter()
                     .any(|c| grid_gate::pattern::matches(&pattern.0, c))
             })
         })
         .collect();
+
+    let (bodies, sigs, horizon) = if tiers {
+        let packed = pack_text(root, &all, &layers, bodies_n, sigs_m, params.budget);
+        (Some(packed.bodies), Some(packed.sigs), Some(packed.horizon))
+    } else {
+        (None, None, None)
+    };
 
     Ok(ScopeResult {
         snapshot,
@@ -1061,7 +1456,266 @@ pub fn scope(
         invariants,
         anchors: Vec::new(),
         churn: Vec::new(),
+        bodies,
+        sigs,
+        horizon,
     })
+}
+
+/// Every live datum whose definition moved since `since` — the head side of
+/// every change a membership diff reports. A sig move implies a datum move, so
+/// "datum or sig moved" is exactly this set; a definition that was removed has
+/// no head side and is not in the live chart to pack anyway.
+fn moved_since(
+    chart: &ChartDelta,
+    since: &SnapshotOrRev,
+) -> Result<std::collections::HashSet<String>, chart_provider::Error> {
+    // ponytail: resolved against retained epochs, never surveyed — `scope` is
+    // a read, and a survey inside it would cost more than the whole pack. A
+    // rev nobody has surveyed is `NoSnapshotForRev`, which says so.
+    let base = chart.epoch_of(since)?;
+    let head = chart.head();
+    let diff = grid_chart::diff(
+        SnapshotId(base.snapshot_id().as_str().to_owned()),
+        base.segments(),
+        SnapshotId(head.snapshot_id().as_str().to_owned()),
+        head.segments(),
+    );
+    Ok(diff
+        .defs
+        .iter()
+        .filter_map(|d| Some(d.after.as_ref()?.0.clone()))
+        .collect())
+}
+
+/// The text tiers and the certificate over them.
+struct Packed {
+    bodies: Vec<grid_wire::PackText>,
+    sigs: Vec<grid_wire::PackText>,
+    horizon: grid_wire::PackHorizon,
+}
+
+/// One definition's renderable text at one hop: its body as the worktree
+/// holds it, and the sig its frontend renders from that body.
+struct Renderable {
+    def: grid_wire::DefRef,
+    callsign: String,
+    body: String,
+    sig: Option<String>,
+}
+
+/// One `Renderable` per definition in each hop layer, layers ordered by hop
+/// and definitions inside a layer by callsign — so the pack is a function of
+/// the chart's content and not of walk order (C2).
+fn renderables(
+    root: &std::path::Path,
+    all: &[LiveDef],
+    layers: &[Vec<String>],
+    bodies_n: u64,
+    sigs_m: u64,
+    budget: Option<u64>,
+) -> Vec<Vec<Renderable>> {
+    let by_datum: std::collections::HashMap<&str, &LiveDef> =
+        all.iter().map(|d| (d.0.as_str(), d)).collect();
+    // ponytail: one read per file, memoized across the pack — the plan's cost
+    // row is a file read per body, and a hot definition's file is read once.
+    let mut files: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+    let mut per_hop: Vec<Vec<Renderable>> = Vec::new();
+    for layer in layers.iter().take(
+        usize::try_from(sigs_m)
+            .unwrap_or(usize::MAX)
+            .saturating_add(1),
+    ) {
+        let hop = u64::try_from(per_hop.len()).unwrap_or(u64::MAX);
+        let mut here: Vec<Renderable> = Vec::new();
+        for datum in layer {
+            let Some((_, callsign, lang, materialization, line_end)) =
+                by_datum.get(datum.as_str()).copied()
+            else {
+                continue;
+            };
+            // No location is no body: a definition grid cannot point at is not
+            // one it can quote. It stays in `defs`, where a handle is enough.
+            let (Some(loc), Some(line_end)) = (materialization.as_ref(), *line_end) else {
+                continue;
+            };
+            let Some(body) = body_at(root, &mut files, &loc.file, loc.line, u64::from(line_end))
+            else {
+                continue;
+            };
+            // The body is the sig's input, so the sig costs one parse and no
+            // extra read. Skipped for a body layer when no budget can demote
+            // it — nothing would ever ask for it.
+            let sig = (hop > bodies_n || budget.is_some())
+                .then(|| lang.and_then(|lang| grid_survey::sig_text(lang, &body)))
+                .flatten();
+            here.push(Renderable {
+                def: grid_wire::DefRef {
+                    datum: grid_wire::Datum(datum.clone()),
+                    callsign: Some(grid_wire::Callsign(callsign.clone())),
+                    lang: *lang,
+                    signature: None,
+                    cfg: None,
+                    materialization: materialization.clone(),
+                },
+                callsign: callsign.clone(),
+                body,
+                sig,
+            });
+        }
+        here.sort_by(|a, b| a.callsign.cmp(&b.callsign));
+        per_hop.push(here);
+    }
+    per_hop
+}
+
+/// Bodies for hops `0..=bodies_n`, sig text for the hops past that up to
+/// `sigs_m`, spent against `budget` in whole layers, and the certificate that
+/// says how far each tier is complete.
+///
+/// The budget is spent farthest layer first, and a body layer that will not
+/// fit is demoted to its own sigs before it is dropped: a sig where a body was
+/// asked for is a smaller answer, while half a body is a wrong one. Nothing
+/// here truncates a layer, which is what lets the horizon be believed (C31).
+fn pack_text(
+    root: &std::path::Path,
+    all: &[LiveDef],
+    layers: &[Vec<String>],
+    bodies_n: u64,
+    sigs_m: u64,
+    budget: Option<u64>,
+) -> Packed {
+    let per_hop = renderables(root, all, layers, bodies_n, sigs_m, budget);
+    // Byte cost per hop, bodies and sigs, taken once: the budget search reads
+    // this table and never the text again.
+    let weight: Vec<(u64, u64)> = per_hop
+        .iter()
+        .map(|here| {
+            let sum = |f: fn(&Renderable) -> Option<&String>| {
+                here.iter()
+                    .map(|d| u64::try_from(f(d).map_or(0, String::len)).unwrap_or(u64::MAX))
+                    .fold(0u64, u64::saturating_add)
+            };
+            (sum(|d| Some(&d.body)), sum(|d| d.sig.as_ref()))
+        })
+        .collect();
+    let cost = |b: Option<u64>, s: Option<u64>| -> u64 {
+        weight
+            .iter()
+            .enumerate()
+            .map(|(hop, (body, sig))| {
+                let k = u64::try_from(hop).unwrap_or(u64::MAX);
+                if b.is_some_and(|b| k <= b) {
+                    *body
+                } else if s.is_some_and(|s| k <= s) {
+                    *sig
+                } else {
+                    0
+                }
+            })
+            .fold(0u64, u64::saturating_add)
+    };
+
+    // Layers past the walk are empty and cost nothing, so the search runs over
+    // the populated range and the certificate reports the requested depth when
+    // nothing had to be given up: a hop the walk ran and found nothing at is
+    // complete, vacuously but truly.
+    let top = u64::try_from(per_hop.len().saturating_sub(1)).unwrap_or(u64::MAX);
+    let (start_b, start_s) = (bodies_n.min(top), sigs_m.min(top));
+    let (mut b, mut s) = (Some(start_b), Some(start_s));
+    if let Some(budget) = budget {
+        // Each step drops one layer or demotes one, so twice the layer count
+        // is a bound, not a hope.
+        for _ in 0..=top.saturating_mul(2).saturating_add(4) {
+            if cost(b, s) / 4 <= budget {
+                break;
+            }
+            match (b, s) {
+                (_, None) => break,
+                (Some(bb), Some(ss)) if ss > bb => s = Some(ss.saturating_sub(1)),
+                (Some(0), Some(_)) => b = None,
+                (Some(bb), Some(_)) => b = Some(bb.saturating_sub(1)),
+                (None, Some(0)) => s = None,
+                (None, Some(ss)) => s = Some(ss.saturating_sub(1)),
+            }
+        }
+    }
+    let untouched = b == Some(start_b) && s == Some(start_s);
+    let (reported_b, reported_s) = if untouched {
+        (Some(bodies_n), Some(sigs_m))
+    } else {
+        (b, s)
+    };
+
+    let mut bodies = Vec::new();
+    let mut sigs = Vec::new();
+    for (hop, here) in per_hop.into_iter().enumerate() {
+        let k = u64::try_from(hop).unwrap_or(u64::MAX);
+        let body_layer = b.is_some_and(|b| k <= b);
+        let sig_layer = !body_layer && s.is_some_and(|s| k <= s);
+        for d in here {
+            if body_layer {
+                bodies.push(grid_wire::PackText {
+                    def: d.def,
+                    hop: k,
+                    text: d.body,
+                });
+            } else if sig_layer {
+                if let Some(text) = d.sig {
+                    sigs.push(grid_wire::PackText {
+                        def: d.def,
+                        hop: k,
+                        text,
+                    });
+                }
+            }
+        }
+    }
+    Packed {
+        bodies,
+        sigs,
+        horizon: grid_wire::PackHorizon {
+            bodies_complete_within: reported_b,
+            sigs_complete_within: reported_s,
+            // ponytail: bytes/4 as the token estimate — grid ships no
+            // tokenizer and will not add one; every rendering states the
+            // number as an approximation, and a real count is the upgrade if
+            // a caller ever needs the budget to be exact rather than safe.
+            approx_tokens: cost(b, s) / 4,
+        },
+    }
+}
+
+/// Source lines `[line, line_end]` of one file in the worktree, 1-based and
+/// inclusive — the definition's body as the tree holds it *now*, which is what
+/// an agent is about to edit. A file the survey named and the tree no longer
+/// has yields nothing rather than a fabricated body.
+fn body_at(
+    root: &std::path::Path,
+    files: &mut std::collections::HashMap<String, Option<String>>,
+    file: &str,
+    line: u64,
+    line_end: u64,
+) -> Option<String> {
+    let source = files
+        .entry(file.to_owned())
+        .or_insert_with(|| std::fs::read_to_string(root.join(file)).ok())
+        .as_deref()?;
+    let skip = usize::try_from(line.saturating_sub(1)).unwrap_or(usize::MAX);
+    let take =
+        usize::try_from(line_end.saturating_sub(line).saturating_add(1)).unwrap_or(usize::MAX);
+    let mut text: String = source
+        .lines()
+        .skip(skip)
+        .take(take)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if text.is_empty() {
+        return None;
+    }
+    text.push('\n');
+    Some(text)
 }
 
 type LiveDef = (
@@ -1069,29 +1723,31 @@ type LiveDef = (
     String,
     Option<grid_wire::Lang>,
     Option<grid_wire::DefRefMaterialization>,
+    Option<u32>,
 );
 
-/// Every definition in the live epoch: (datum, callsign, lang, location),
-/// in segment order — which is content order, so everything derived from it
-/// is deterministic by construction (C2).
+/// Every definition in the live epoch: (datum, callsign, lang, location, the
+/// location's last line), in segment order — which is content order, so
+/// everything derived from it is deterministic by construction (C2). The last
+/// line rides along because a body is the source lines `[line, line_end]`,
+/// and only the segment knows where a definition ends.
 fn live_defs(chart: &ChartDelta) -> Vec<LiveDef> {
     let mut all = Vec::new();
     for segment in chart.head().segments() {
         for ord in 0..segment.def_count() {
             let ord = grid_chart::Ordinal(ord);
             if let (Some(datum), Some(callsign)) = (segment.datum(ord), segment.callsign(ord)) {
-                let materialization =
-                    segment
-                        .location(ord)
-                        .map(|loc| grid_wire::DefRefMaterialization {
-                            file: loc.path.to_owned(),
-                            line: u64::from(loc.line),
-                        });
+                let loc = segment.location(ord);
+                let materialization = loc.as_ref().map(|loc| grid_wire::DefRefMaterialization {
+                    file: loc.path.to_owned(),
+                    line: u64::from(loc.line),
+                });
                 all.push((
                     datum.to_string(),
                     callsign.to_owned(),
                     segment.lang(ord),
                     materialization,
+                    loc.map(|loc| loc.line_end),
                 ));
             }
         }
@@ -1099,10 +1755,18 @@ fn live_defs(chart: &ChartDelta) -> Vec<LiveDef> {
     all
 }
 
-/// The matched set plus `depth` BFS layers over edges in both directions.
-/// Depth zero is the definitions the patterns name, no neighbours — the
-/// pack's edges still say what touches them.
-fn expand(chart: &ChartDelta, matched: Vec<String>, depth: u64) -> Vec<String> {
+/// The matched set plus `depth` BFS layers over edges in both directions, one
+/// entry per hop: layer 0 is the definitions the patterns name, layer k those
+/// first reached in k hops. The walk stops as soon as a layer comes back
+/// empty — every hop past that is empty too, and a caller asking for a depth
+/// past the graph should not pay a segment scan per hop for the privilege. A
+/// hop the walk ran and found nothing at is *complete*, not unvisited, which
+/// is the distinction the pack's horizon rests on.
+///
+/// Flattened, this is exactly the order the pre-tier `scope` walked in, so the
+/// pack a request without `bodies`/`sigs` gets is byte-identical to before.
+fn expand(chart: &ChartDelta, matched: Vec<String>, depth: u64) -> Vec<Vec<String>> {
+    let mut layers = vec![matched.clone()];
     let mut in_scope = matched;
     let mut frontier = in_scope.clone();
     for _ in 0..depth {
@@ -1128,10 +1792,14 @@ fn expand(chart: &ChartDelta, matched: Vec<String>, depth: u64) -> Vec<String> {
                 }
             }
         }
+        if next.is_empty() {
+            break;
+        }
         in_scope.extend(next.iter().cloned());
+        layers.push(next.clone());
         frontier = next;
     }
-    in_scope
+    layers
 }
 
 /// The chart edges touching a datum set, from the set's perspective: an
@@ -1205,16 +1873,13 @@ pub fn todo(
     let mut chart = Chart::new(root);
     chart.ensure(&plan.base)?;
     let head = match &params.head {
-        Some(head) => head.clone(),
+        Some(head) => chart.head_of(head)?,
         None => SnapshotOrRev::Snapshot {
             snapshot: ChartDelta::open(root)?
                 .current()
                 .ok_or(chart_provider::Error::NoSnapshot)?,
         },
     };
-    if let SnapshotOrRev::GitRev { .. } = head {
-        chart.ensure(&head)?;
-    }
     let provider = ChartDelta::open(root)?;
     let diff = provider.diff(&plan.base, &head)?;
     let verdict = grid_gate::verdict(&plan, &diff, &provider);

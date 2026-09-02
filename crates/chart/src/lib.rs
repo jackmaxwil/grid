@@ -33,15 +33,17 @@ pub const MAGIC: &[u8; 8] = b"GRIDSEG\x00";
 /// reinterpretation of bytes on disk (see ASSURANCE.md, normalization
 /// stability). Every epoch ever shipped parses forever; a section an older
 /// image does not declare answers `None`, never a fabricated value.
-pub const FORMAT_EPOCH: u32 = 3;
+pub const FORMAT_EPOCH: u32 = 4;
 /// Sections an epoch-1 image declares — the first ten of [`Section`].
 pub const V1_SECTION_COUNT: usize = 10;
 /// Sections an epoch-2 image declares — the first fifteen of [`Section`].
 pub const V2_SECTION_COUNT: usize = 15;
+/// Sections an epoch-3 image declares — the first sixteen of [`Section`].
+pub const V3_SECTION_COUNT: usize = 16;
 /// Fixed-size header: magic, counts, and the checksum of everything after it.
 pub const HEADER_LEN: usize = 64;
-/// Number of sections a v3 image declares, in the order of [`Section`].
-pub const SECTION_COUNT: usize = 16;
+/// Number of sections a v4 image declares, in the order of [`Section`].
+pub const SECTION_COUNT: usize = 19;
 /// Bytes per section-table entry: `(offset: u64, len: u64)`.
 pub const SECTION_ENTRY_LEN: usize = 16;
 
@@ -87,6 +89,16 @@ pub enum Section {
     /// body. All-zero = absent, which is what an epoch-1 or epoch-2 image
     /// answers (epoch 3).
     DefSigs = 15,
+    /// Per def: u32 index into the cfg table ([`Section::CfgOffsets`] /
+    /// [`Section::CfgBytes`]) — the conjunction of every `#[cfg]` predicate
+    /// that conditions the definition, as written. Index 0 is the empty
+    /// predicate: nothing conditions it (epoch 4).
+    DefCfgs = 16,
+    /// `cfg_count + 1` u32 byte starts into [`Section::CfgBytes`]; entry 0
+    /// is always the empty string (epoch 4).
+    CfgOffsets = 17,
+    /// UTF-8 cfg predicates, deduplicated and concatenated (epoch 4).
+    CfgBytes = 18,
 }
 
 /// Why an image was rejected. Every variant is a refusal, never a panic: the
@@ -115,8 +127,10 @@ pub enum ChartError {
     UnsortedDatums,
     /// An edge names an ordinal no definition has.
     OrdinalOutOfRange,
-    /// A callsign is not UTF-8.
+    /// A callsign or a cfg predicate is not UTF-8.
     BadUtf8,
+    /// A definition's cfg index names a table entry the image does not hold.
+    BadCfgIndex,
     /// A relation or grade byte is not one this version knows.
     BadAttrs,
     /// More defs or edges than the format's u32 ordinals can address.
@@ -136,7 +150,8 @@ impl std::fmt::Display for ChartError {
             Self::BadCsr(s) => write!(f, "section {s:?} is not a monotone CSR index"),
             Self::UnsortedDatums => f.write_str("datum digests are not strictly ascending"),
             Self::OrdinalOutOfRange => f.write_str("edge names an unknown ordinal"),
-            Self::BadUtf8 => f.write_str("callsign is not UTF-8"),
+            Self::BadUtf8 => f.write_str("callsign or cfg predicate is not UTF-8"),
+            Self::BadCfgIndex => f.write_str("cfg index names no table entry"),
             Self::BadAttrs => f.write_str("unknown relation or grade"),
             Self::TooLarge => f.write_str("more defs or edges than u32 ordinals address"),
         }
@@ -353,7 +368,8 @@ impl<B: AsRef<[u8]>> Segment<B> {
         let expected_sections = match epoch {
             1 => V1_SECTION_COUNT,
             2 => V2_SECTION_COUNT,
-            3 => SECTION_COUNT,
+            3 => V3_SECTION_COUNT,
+            4 => SECTION_COUNT,
             other => return Err(ChartError::BadEpoch(other)),
         };
         let sections = read_u32(header, 12).ok_or(ChartError::Truncated)?;
@@ -475,6 +491,9 @@ impl<B: AsRef<[u8]>> Segment<B> {
                 defs.checked_mul(32).ok_or(ChartError::TooLarge)?,
             )?;
         }
+        if self.epoch >= 4 {
+            self.validate_cfgs(defs)?;
+        }
 
         // Ordinals are a binary search over the digests, which is only a
         // function if they are strictly ascending.
@@ -517,6 +536,34 @@ impl<B: AsRef<[u8]>> Segment<B> {
         for &tag in self.section(Section::Langs) {
             if !lang_tag_known(tag) {
                 return Err(ChartError::BadAttrs);
+            }
+        }
+        Ok(())
+    }
+
+    /// The epoch-4 cfg column: one index per def into a table that always
+    /// holds entry 0 (the empty predicate), so index 0 is a real row and
+    /// never an out-of-range read; the table's offsets are a monotone CSR;
+    /// the bytes are UTF-8.
+    fn validate_cfgs(&self, defs: usize) -> Result<(), ChartError> {
+        if self.section(Section::DefCfgs).len()
+            != defs.checked_mul(4).ok_or(ChartError::TooLarge)?
+        {
+            return Err(ChartError::BadSectionSize(Section::DefCfgs));
+        }
+        let offsets = self.section(Section::CfgOffsets);
+        if offsets.len() < 8 || !offsets.len().is_multiple_of(4) {
+            return Err(ChartError::BadSectionSize(Section::CfgOffsets));
+        }
+        let table_len = u32::try_from(self.section(Section::CfgBytes).len())
+            .map_err(|_| ChartError::TooLarge)?;
+        self.check_csr(Section::CfgOffsets, Section::CfgBytes, table_len)?;
+        std::str::from_utf8(self.section(Section::CfgBytes)).map_err(|_| ChartError::BadUtf8)?;
+        let cfg_count = offsets.len() / 4 - 1;
+        for raw in self.section(Section::DefCfgs).chunks_exact(4) {
+            let idx = u32::from_le_bytes(raw.try_into().unwrap_or_default());
+            if idx as usize >= cfg_count {
+                return Err(ChartError::BadCfgIndex);
             }
         }
         Ok(())
@@ -656,6 +703,27 @@ impl<B: AsRef<[u8]>> Segment<B> {
         let raw = self.section(Section::DefSigs).get(at..at + 32)?;
         let sig: [u8; 32] = raw.try_into().ok()?;
         (sig != [0u8; 32]).then_some(sig)
+    }
+
+    /// The cfg predicate conditioning the definition at `ord`, as written —
+    /// `all(...)`-joined over the item and its enclosing modules, empty when
+    /// nothing conditions it. `None` on an image that predates epoch 4: an
+    /// older snapshot answers *unknown*, never "unconditional", because the
+    /// one consumer (`grid check --compile`) would otherwise call every
+    /// `#[cfg(test)]` caller compiled.
+    #[must_use]
+    pub fn cfg(&self, ord: Ordinal) -> Option<&str> {
+        let idx = read_u32(
+            self.section(Section::DefCfgs),
+            (ord.0 as usize).checked_mul(4)?,
+        )? as usize;
+        let offsets = self.section(Section::CfgOffsets);
+        let start = read_u32(offsets, idx.checked_mul(4)?)?;
+        let end = read_u32(offsets, idx.checked_add(1)?.checked_mul(4)?)?;
+        let raw = self
+            .section(Section::CfgBytes)
+            .get(start as usize..end as usize)?;
+        std::str::from_utf8(raw).ok()
     }
 
     /// Cyclomatic complexity of the definition at `ord`, if surveyed. A

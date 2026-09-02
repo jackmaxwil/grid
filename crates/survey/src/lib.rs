@@ -108,6 +108,14 @@ pub struct Survey {
     /// that reads the edge set as "everything that reaches this" is wrong by
     /// at most this much — and can say so.
     pub declined_refs: u64,
+    /// Of [`Survey::declined_refs`]: names that were never this tree's to
+    /// hold. Harmless to any claim grid makes about this repo.
+    pub declined_external: u64,
+    /// Of [`Survey::declined_refs`]: calls through a receiver with no type.
+    pub declined_method: u64,
+    /// Of [`Survey::declined_refs`]: names this tree could have held and the
+    /// resolver could not bind. The population that is a hole.
+    pub declined_internal: u64,
 }
 
 /// The definitions the frontend `lang` names finds in `source`. This is the
@@ -122,6 +130,19 @@ pub fn definitions(lang: Lang, source: &str) -> Result<Vec<Definition>, ParseErr
         Lang::Py => grid_lang_py::definitions(source),
         Lang::Rs => grid_lang_rs::definitions(source),
         Lang::Ts | Lang::Js => Ok(Vec::new()),
+    }
+}
+
+/// The sig text of one definition's own source, as the frontend for `lang`
+/// renders it: everything a caller can observe without the body, spelled as
+/// source. The same frontend seam [`definitions`] sits on — a language with
+/// no frontend answers `None`, which is *unknown*, never an empty signature.
+#[must_use]
+pub fn sig_text(lang: Lang, source: &str) -> Option<String> {
+    match lang {
+        Lang::Py => grid_lang_py::sig_text(source),
+        Lang::Rs => grid_lang_rs::sig_text(source),
+        Lang::Ts | Lang::Js => None,
     }
 }
 
@@ -247,6 +268,41 @@ fn extract_all<'s>(
     (per_file, reread)
 }
 
+/// The cfg every definition in a file inherits from outside the file: what
+/// a cargo target directory implies (`tests/`, `benches/`), plus the `#[cfg]`
+/// on each `mod x;` declaration up the module chain — an out-of-line
+/// module's file cannot see the attribute on its own declaration, so it is
+/// joined back on by module path here. Keyed by file path.
+fn inherited_cfgs(
+    per_file: &[(&SourceFile, FileFacts)],
+    module_for: &dyn Fn(&SourceFile) -> String,
+    roots: &files::CrateRoots,
+) -> HashMap<String, String> {
+    let mut mod_cfgs: HashMap<String, String> = HashMap::new();
+    for (file, facts) in per_file {
+        let module = module_for(file);
+        for (name, cfg) in &facts.refs.mod_cfgs {
+            mod_cfgs.insert(format!("{module}.{name}"), cfg.clone());
+        }
+    }
+    let mut out = HashMap::new();
+    for (file, _) in per_file {
+        let module = module_for(file);
+        let segs: Vec<&str> = module.split('.').collect();
+        let mut parts: Vec<&str> = files::target_cfg(&file.path, roots).into_iter().collect();
+        for end in 2..=segs.len() {
+            if let Some(cfg) = mod_cfgs.get(&segs.get(..end).unwrap_or_default().join(".")) {
+                parts.push(cfg);
+            }
+        }
+        let cfg = grid_datum::cfg_join(&parts);
+        if !cfg.is_empty() {
+            out.insert(file.path.clone(), cfg);
+        }
+    }
+    out
+}
+
 /// Survey an already-discovered file set.
 ///
 /// Discovery is the expensive part of [`run`] on a warm tree — `git ls-files`
@@ -286,6 +342,8 @@ pub fn run_sources(
             .unwrap_or_else(|| files::module_of(file.lang, &file.path, roots))
     };
 
+    let inherited = inherited_cfgs(&per_file, &module_for, roots);
+
     // Phase 2 — index the whole tree. Edges cannot be resolved before every
     // definition is known, which is the reason for two phases and the reason
     // the cache cannot hold edges.
@@ -297,6 +355,7 @@ pub fn run_sources(
             &facts.defs,
             &file.path,
             &file.source,
+            inherited.get(&file.path).map_or("", String::as_str),
         );
     }
     // Aliases go in after every definition, so a real name always wins over
@@ -316,6 +375,7 @@ pub fn run_sources(
     // resolver dispatches exactly where extraction does.
     let mut edges = Vec::new();
     let mut declined_refs = 0u64;
+    let (mut declined_external, mut declined_method, mut declined_internal) = (0u64, 0u64, 0u64);
     for (file, facts) in &per_file {
         let module = module_for(file);
         let resolved = match file.lang {
@@ -324,6 +384,9 @@ pub fn run_sources(
             Lang::Ts | Lang::Js => Resolved::default(),
         };
         declined_refs = declined_refs.saturating_add(u64::from(resolved.declined));
+        declined_external = declined_external.saturating_add(u64::from(resolved.declined_external));
+        declined_method = declined_method.saturating_add(u64::from(resolved.declined_method));
+        declined_internal = declined_internal.saturating_add(u64::from(resolved.declined_internal));
         edges.extend(resolved.edges);
     }
 
@@ -370,5 +433,8 @@ pub fn run_sources(
         langs,
         ambiguous: index.ambiguous_count() as u64,
         declined_refs,
+        declined_external,
+        declined_method,
+        declined_internal,
     })
 }

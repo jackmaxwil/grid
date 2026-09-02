@@ -13,6 +13,7 @@ mod sig;
 
 pub use extract::definitions;
 pub use refs::references;
+pub use sig::sig_text;
 
 use grid_datum::{Datum, Definition, FileRefs, ParseError};
 use rustpython_parser::ast;

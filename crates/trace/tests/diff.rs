@@ -32,6 +32,7 @@ fn stored(id: &str, hops: &[(u8, u8)]) -> grid_trace::Stored {
         git_rev: grid_wire::GitRev("4f2c9e1".to_string()),
         command: None,
         started_at: None,
+        snapshot: None,
         observations,
     };
     let ingested = grid_trace::ingest(&no_chart(), &trace);

@@ -94,6 +94,10 @@ fn stdout(out: &Output) -> String {
     String::from_utf8(out.stdout.clone()).expect("stdout is utf-8")
 }
 
+fn stderr(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
 fn code(out: &Output) -> i32 {
     out.status.code().expect("exit code")
 }
@@ -355,6 +359,40 @@ fn survey_emits_one_snapshot_record() {
     assert!(text.contains("defs "), "stats are on the record: {text}");
 }
 
+/// A survey that says how much it charted without saying how much it declined
+/// reports a hole as an absence. One `miss`, split three ways, because the
+/// three mean opposite things for any claim about this repo.
+#[test]
+fn survey_closes_with_the_declined_split() {
+    let dir = repo();
+    // Two declines the fixture otherwise has none of: a path out of the tree
+    // and a call through a receiver with no type.
+    std::fs::write(
+        dir.path().join("c.py"),
+        "import os\n\ndef c(x):\n    os.getcwd()\n    x.frob()\n",
+    )
+    .expect("write");
+    let add = Command::new("git")
+        .args(["add", "c.py"])
+        .current_dir(dir.path())
+        .output()
+        .expect("git add");
+    assert!(add.status.success());
+    let out = grid(dir.path(), &["survey"]);
+    assert_eq!(code(&out), 0);
+    let text = stdout(&out);
+    let miss = text
+        .lines()
+        .find(|l| l.starts_with("miss"))
+        .unwrap_or_else(|| panic!("a closing miss record:\n{text}"));
+    let c = columns(miss);
+    let total: u64 = c[1].parse().expect("a count");
+    assert!(total > 0, "the fixture declines something: {miss}");
+    for word in ["references declined", "external", "method", "internal"] {
+        assert!(miss.contains(word), "`{word}` missing from: {miss}");
+    }
+}
+
 #[test]
 fn diff_records_the_definition_that_changed() {
     let dir = repo();
@@ -436,6 +474,75 @@ fn diff_marks_only_the_definition_whose_interface_moved() {
         row("m.body").len(),
         4,
         "a body-only edit carries no sig column:\n{text}"
+    );
+}
+
+/// `interface: false` claims a definition's body may change but its
+/// interface may not; a plan promise correctly telling the two apart passes.
+#[test]
+fn interface_promises_made_good_by_the_transition_they_named_pass() {
+    let dir = repo_with_a_body_and_a_signature_edit();
+    let plan = write_track(
+        dir.path(),
+        "interface-pass",
+        &json!({
+            "plan_id": "plan:interface-pass/v1",
+            "base": {"git_rev": "HEAD~1"},
+            "delta": {
+                "defs": [
+                    {"action": "modify", "callsign": "m.body", "interface": false},
+                    {"action": "modify", "callsign": "m.iface", "interface": true}
+                ],
+                "edges": []
+            }
+        }),
+    );
+    let out = grid(dir.path(), &["gate", plan.to_str().expect("path"), "HEAD"]);
+    let text = stdout(&out);
+    assert_eq!(code(&out), 0, "stdout:\n{text}");
+    assert!(
+        !text.lines().any(|l| columns(l)[0] == "def"),
+        "nothing left unaccounted:\n{text}"
+    );
+}
+
+/// The plan's own headline use case: a promise that a definition's interface
+/// holds (`interface: false`) is not made good when the interface moves
+/// anyway — the gate holds, and the trailing column names the reason.
+#[test]
+fn a_def_promise_that_forbids_the_interface_move_holds_the_gate() {
+    let dir = repo_with_a_body_and_a_signature_edit();
+    let plan = write_track(
+        dir.path(),
+        "interface-hold",
+        &json!({
+            "plan_id": "plan:interface-hold/v1",
+            "base": {"git_rev": "HEAD~1"},
+            "delta": {
+                "defs": [
+                    {"action": "modify", "callsign": "m.iface", "interface": false}
+                ],
+                "edges": []
+            }
+        }),
+    );
+    let out = grid(dir.path(), &["gate", plan.to_str().expect("path"), "HEAD"]);
+    let text = stdout(&out);
+    assert_eq!(code(&out), 3, "stdout:\n{text}");
+    // The trailing column is free text (like a `warn` message), so it is
+    // matched by substring on the whole line rather than by exact column
+    // equality: `columns()` would otherwise split "unaccounted: interface"
+    // at its embedded space.
+    let row = text
+        .lines()
+        .find(|l| {
+            let c = columns(l);
+            c[0] == "def" && c.get(1) == Some(&"~") && c.get(2) == Some(&"m.iface")
+        })
+        .unwrap_or_else(|| panic!("a `def ~ m.iface` record:\n{text}"));
+    assert!(
+        row.trim_end().ends_with("unaccounted: interface"),
+        "row: {row}"
     );
 }
 
@@ -1040,6 +1147,198 @@ fn lcov_ingests_as_a_reach_set_and_omits_what_it_cannot_map() {
     );
 }
 
+/// Every retained trace record, keyed by the trace id inside it. The file
+/// name is a hash of that id, so the id is read out rather than derived.
+fn retained_traces(dir: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    let Ok(entries) = std::fs::read_dir(dir.join(".grid/traces")) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "json") {
+            continue;
+        }
+        let bytes = std::fs::read(&path).expect("read retained trace");
+        let record: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("a retained trace parses");
+        let id = record["trace"]["trace_id"]
+            .as_str()
+            .expect("a retained trace names its id")
+            .to_owned();
+        out.insert(id, bytes);
+    }
+    out
+}
+
+/// A coverage.py `coverage json` report over one file's executed lines.
+fn coverage_json(files: &[(String, &[u32])]) -> String {
+    let files: serde_json::Map<String, serde_json::Value> = files
+        .iter()
+        .map(|(path, lines)| (path.clone(), json!({ "executed_lines": lines })))
+        .collect();
+    json!({ "meta": { "version": "7.6.1" }, "files": files, "totals": {} }).to_string()
+}
+
+#[test]
+fn coverage_json_and_lcov_map_the_same_lines_to_the_same_observations() {
+    // The two ingestion paths share the line-to-definition mapping and
+    // nothing else, so the same executed lines must produce the same
+    // observations. Anything else means one of the parsers is inventing.
+    let dir = repo();
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let b = format!("{}/b.py", dir.path().display());
+
+    let lcov = format!("TN:\nSF:{b}\nDA:1,1\nDA:2,1\nend_of_record\n");
+    std::fs::write(dir.path().join("cov.lcov"), lcov).expect("write");
+    let out = grid(
+        dir.path(),
+        &["trace", "ingest", "--lcov", "cov.lcov", "--test", "t"],
+    );
+    assert_eq!(code(&out), 0, "stderr:\n{}", stderr(&out));
+
+    std::fs::write(dir.path().join("cov.json"), coverage_json(&[(b, &[1, 2])])).expect("write");
+    let out = grid(
+        dir.path(),
+        &[
+            "trace",
+            "ingest",
+            "--coverage-json",
+            "cov.json",
+            "--test",
+            "t",
+        ],
+    );
+    assert_eq!(code(&out), 0, "stderr:\n{}", stderr(&out));
+
+    let retained = retained_traces(dir.path());
+    let load = |id: &str| -> serde_json::Value {
+        serde_json::from_slice(
+            retained
+                .get(id)
+                .unwrap_or_else(|| panic!("{id} retained, of {:?}", retained.keys())),
+        )
+        .expect("parse")
+    };
+    // The ids differ by design — one names the format that produced it —
+    // and everything the chart was asked about is identical.
+    let (lcov, cov) = (load("trace:lcov:t"), load("trace:cov:t"));
+    assert_eq!(
+        lcov["trace"]["observations"], cov["trace"]["observations"],
+        "the same executed lines are the same observations"
+    );
+    assert_eq!(lcov["hops"], cov["hops"], "and the same resolved hops");
+    // Both were mapped against the live chart, and both say which one.
+    assert!(
+        lcov["trace"]["snapshot"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("snap:b3:")),
+        "an ingested trace pins the snapshot it was mapped against: {}",
+        lcov["trace"]
+    );
+    assert_eq!(lcov["trace"]["snapshot"], cov["trace"]["snapshot"]);
+}
+
+#[test]
+fn a_coverage_report_counts_what_the_chart_cannot_place() {
+    // Conservatism: a file the chart does not hold and a line inside no
+    // definition are both reported. An ingestion that quietly dropped them
+    // would claim a smaller reach set than the report describes, with
+    // nothing on stderr to say so.
+    let dir = repo();
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let root = dir.path().display();
+    std::fs::write(
+        dir.path().join("cov.json"),
+        coverage_json(&[
+            (format!("{root}/b.py"), &[1, 2, 9]),
+            (format!("{root}/vendor/nope.py"), &[1]),
+        ]),
+    )
+    .expect("write");
+    let out = grid(
+        dir.path(),
+        &[
+            "trace",
+            "ingest",
+            "--coverage-json",
+            "cov.json",
+            "--test",
+            "t",
+        ],
+    );
+    assert_eq!(code(&out), 0, "stderr:\n{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains("1 executed lines outside any definition"),
+        "the line inside no definition is counted:\n{err}"
+    );
+    assert!(
+        err.contains("1 files not in the chart"),
+        "the file the chart does not hold is counted:\n{err}"
+    );
+}
+
+#[test]
+fn a_malformed_coverage_report_is_bad_input_not_an_empty_trace() {
+    // Conservatism: the failure mode that matters is a parse error read as
+    // "this test reached nothing", which would retain a trace claiming a
+    // test covers no definition at all.
+    let dir = repo();
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    for report in ["not json at all", "{\"files\": [1, 2, 3]}", "{}"] {
+        std::fs::write(dir.path().join("cov.json"), report).expect("write");
+        let out = grid(
+            dir.path(),
+            &[
+                "trace",
+                "ingest",
+                "--coverage-json",
+                "cov.json",
+                "--test",
+                "t",
+            ],
+        );
+        assert_eq!(
+            code(&out),
+            2,
+            "a report grid cannot parse is bad input: {report}\n{}",
+            stderr(&out)
+        );
+        assert!(
+            !retained_traces(dir.path()).contains_key("trace:cov:t"),
+            "and retains nothing: {report}"
+        );
+    }
+}
+
+#[test]
+fn ingesting_the_same_coverage_report_twice_retains_one_trace() {
+    // C2's shape for ingestion: a trace id names a run, so re-reporting the
+    // same run replaces rather than accumulates, byte for byte.
+    let dir = repo();
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    std::fs::write(
+        dir.path().join("cov.json"),
+        coverage_json(&[(format!("{}/b.py", dir.path().display()), &[1, 2])]),
+    )
+    .expect("write");
+    let args = [
+        "trace",
+        "ingest",
+        "--coverage-json",
+        "cov.json",
+        "--test",
+        "t",
+    ];
+    assert_eq!(code(&grid(dir.path(), &args)), 0);
+    let first = retained_traces(dir.path());
+    assert_eq!(code(&grid(dir.path(), &args)), 0);
+    let second = retained_traces(dir.path());
+    assert_eq!(first.len(), 1, "one report is one retained trace");
+    assert_eq!(first, second, "ingesting it again changes not one byte");
+}
+
 #[test]
 fn hotspots_rank_the_branchy_and_edited_above_the_large_and_flat() {
     let dir = repo();
@@ -1316,5 +1615,179 @@ fn two_trace_directories_are_refused_by_name_not_merged() {
     assert!(
         dir.path().join(".grid/wakes").is_dir() && dir.path().join(".grid/traces").is_dir(),
         "a refusal changes nothing on disk"
+    );
+}
+
+/// A pytest repo: two definitions, two tests, one of them red.
+fn repo_with_pytest(a: i64, b: i64) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let git = |args: &[&str]| {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .env("GIT_AUTHOR_NAME", "grid")
+            .env("GIT_AUTHOR_EMAIL", "grid@example.invalid")
+            .env("GIT_COMMITTER_NAME", "grid")
+            .env("GIT_COMMITTER_EMAIL", "grid@example.invalid")
+            .output()
+            .expect("run git")
+            .status
+            .success();
+        assert!(ok, "git {args:?} failed");
+    };
+    let write = |path: &str, body: &str| {
+        let full = dir.path().join(path);
+        std::fs::create_dir_all(full.parent().expect("parent")).expect("mkdir");
+        std::fs::write(full, body).expect("write");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    write("pkg/__init__.py", "");
+    write("pytest.ini", "[pytest]\n");
+    write(
+        "pkg/core.py",
+        &format!("def a():\n    return {a}\n\n\ndef b():\n    return {b}\n"),
+    );
+    write(
+        "tests/test_core.py",
+        "from pkg.core import a, b\n\n\ndef test_a():\n    assert a() == 1\n\n\n\
+         def test_b():\n    assert b() == 2\n",
+    );
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "one"]);
+    dir
+}
+
+/// `grid test` end to end over the real runner: the runner's inventory,
+/// records on stdout, runner output on stderr, exit 3 exactly when a run
+/// test failed. Skipped, saying so, where `python3 -m pytest` is absent —
+/// the fake-runner tests inside the crate cover the loop without it.
+#[test]
+fn grid_test_runs_the_inventory_and_exits_three_on_a_red_test() {
+    let pytest = Command::new("python3")
+        .args(["-m", "pytest", "--version"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !pytest {
+        eprintln!("skipping: python3 -m pytest is not available here");
+        return;
+    }
+    let dir = repo_with_pytest(1, 2);
+    let out = grid(dir.path(), &["test"]);
+    assert_eq!(code(&out), 0, "stderr:\n{}", stderr(&out));
+    let records = stdout(&out);
+    assert!(
+        records.contains("miss    tests/test_core.py::test_a  no-trace\n"),
+        "an untraced test is selected and says why:\n{records}"
+    );
+    assert!(
+        records.contains("test    ok         tests/test_core.py::test_a  pass=pass\n"),
+        "{records}"
+    );
+    assert!(
+        records.contains("done    tests 2/2 ran · 0 replayed · 0 failed\n"),
+        "{records}"
+    );
+    assert!(
+        !records.contains("PASSED"),
+        "runner output stays off stdout:\n{records}"
+    );
+    assert!(stderr(&out).contains("2 passed"), "runner output on stderr");
+
+    // A red test: exit 3, and the outcome row says so.
+    std::fs::write(
+        dir.path().join("pkg/core.py"),
+        "def a():\n    return 1\n\n\ndef b():\n    return 5\n",
+    )
+    .expect("write");
+    let out = grid(dir.path(), &["test", "--json"]);
+    assert_eq!(code(&out), 3, "stderr:\n{}", stderr(&out));
+    let run: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("TestRun JSON");
+    assert!(
+        run["env_hash"]
+            .as_str()
+            .is_some_and(|e| e.starts_with("env:b3:")),
+        "the environment is stated: {run}"
+    );
+    let ran: Vec<(String, String)> = run["ran"]
+        .as_array()
+        .expect("ran")
+        .iter()
+        .map(|o| {
+            (
+                o["test"].as_str().expect("test").to_owned(),
+                o["verdict"].as_str().expect("verdict").to_owned(),
+            )
+        })
+        .collect();
+    assert!(
+        ran.contains(&("tests/test_core.py::test_b".to_owned(), "fail".to_owned())),
+        "{ran:?}"
+    );
+}
+
+/// A reported coverage path is attributed to the *longest* charted suffix,
+/// never the first in sort order: `/repo/b/a/x.py` is `b/a/x.py`, not
+/// `a/x.py`, and the observation lands on the definition that actually ran.
+#[test]
+fn a_coverage_path_is_attributed_to_the_longest_charted_suffix() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let git = |args: &[&str]| {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .env("GIT_AUTHOR_NAME", "grid")
+            .env("GIT_AUTHOR_EMAIL", "grid@example.invalid")
+            .env("GIT_COMMITTER_NAME", "grid")
+            .env("GIT_COMMITTER_EMAIL", "grid@example.invalid")
+            .output()
+            .expect("run git")
+            .status
+            .success();
+        assert!(ok, "git {args:?} failed");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    for (path, text) in [
+        ("a/__init__.py", ""),
+        ("a/x.py", "def f():\n    return 1\n"),
+        ("b/__init__.py", ""),
+        ("b/a/__init__.py", ""),
+        ("b/a/x.py", "def g():\n    return 2\n"),
+    ] {
+        let full = dir.path().join(path);
+        std::fs::create_dir_all(full.parent().expect("parent")).expect("mkdir");
+        std::fs::write(full, text).expect("write");
+    }
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "two modules, one file name"]);
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let lcov = format!(
+        "TN:\nSF:{}/b/a/x.py\nDA:1,1\nDA:2,1\nend_of_record\n",
+        dir.path().display()
+    );
+    std::fs::write(dir.path().join("cov.lcov"), lcov).expect("write");
+    let out = grid(
+        dir.path(),
+        &["trace", "ingest", "--lcov", "cov.lcov", "--test", "t"],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let expected: Vec<serde_json::Value> = serde_json::from_str(&stdout(&grid(
+        dir.path(),
+        &["resolve", "b.a.x.g", "--json"],
+    )))
+    .expect("resolve --json");
+    let retained = retained_traces(dir.path());
+    let record: serde_json::Value =
+        serde_json::from_slice(retained.get("trace:lcov:t").expect("retained trace"))
+            .expect("json");
+    let callees: Vec<&serde_json::Value> = record["trace"]["observations"]
+        .as_array()
+        .expect("observations")
+        .iter()
+        .map(|o| &o["callee"]["datum"])
+        .collect();
+    assert_eq!(
+        callees,
+        vec![&expected[0]["datum"]],
+        "the lines ran in b/a/x.py, so the observation is b.a.x.g: {record}"
     );
 }

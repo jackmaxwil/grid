@@ -24,6 +24,7 @@ fn def(callsign: &str, datum: u8, sig: u8) -> Def {
             shape: [datum; 32],
             complexity: 1,
             sig: [sig; 32],
+            cfg: String::new(),
         }),
     }
 }

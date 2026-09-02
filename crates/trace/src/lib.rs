@@ -99,6 +99,30 @@ fn endpoint<B: AsRef<[u8]>>(
         }
     }
 }
+/// [`endpoint`], memoized across one ingestion.
+///
+/// Resolving a symbol scans every definition in every segment, and a coverage
+/// trace names the same test symbol on every one of its observations — one
+/// per definition the test reached. Resolution is a pure function of (chart,
+/// text) and the chart does not move inside an ingestion, so one scan per
+/// distinct symbol is the same answer as one scan per hop. On yi that is one
+/// scan instead of 4312.
+fn resolve<B: AsRef<[u8]>>(
+    segments: &[Segment<B>],
+    memo: &mut BTreeMap<String, Result<DatumId, String>>,
+    ep: &TraceEndpoint,
+) -> Result<DatumId, String> {
+    let TraceEndpoint::Symbol { symbol } = ep else {
+        // A datum handle is parsed, not searched. Nothing to remember.
+        return endpoint(segments, ep);
+    };
+    if let Some(hit) = memo.get(symbol) {
+        return hit.clone();
+    }
+    let hit = endpoint(segments, ep);
+    memo.insert(symbol.clone(), hit.clone());
+    hit
+}
 /// Does `callsign` end with `want` on a dotted-segment boundary? The input
 /// rule `grid.resolve` documents: `validate` finds `pkg.TagContract.validate`,
 /// and `revalidate` finds nothing, because a suffix that starts mid-name is
@@ -203,11 +227,11 @@ pub fn ingest<B: AsRef<[u8]>>(segments: &[Segment<B>], trace: &Trace) -> Ingeste
     let mut counts: BTreeMap<(DatumId, DatumId), u64> = BTreeMap::new();
     let mut hops = Vec::new();
     let mut unresolved = BTreeSet::new();
+    let mut memo = BTreeMap::new();
     for obs in &trace.observations {
-        match (
-            endpoint(segments, &obs.caller),
-            endpoint(segments, &obs.callee),
-        ) {
+        let from = resolve(segments, &mut memo, &obs.caller);
+        let to = resolve(segments, &mut memo, &obs.callee);
+        match (from, to) {
             (Ok(from), Ok(to)) => {
                 hops.push((from, to));
                 // A hop without a count happened once.
@@ -296,6 +320,10 @@ impl From<FormerRecord> for Record {
                 git_rev: former.wake.git_rev,
                 command: former.wake.command,
                 started_at: former.wake.started_at,
+                // An epoch-0 record predates the snapshot column: nobody
+                // recorded which chart it was mapped against, and grid does
+                // not guess one.
+                snapshot: None,
                 observations: former.wake.observations,
             },
             hops: former.trace,
@@ -386,6 +414,11 @@ impl Store {
     /// returned as an error, the same posture [`Store::get`] takes, because
     /// a consumer that silently skipped it would answer "no observations"
     /// for a store that has them.
+    ///
+    /// `ponytail:` O(traces) per read — one file opened and parsed per
+    /// retained trace, every query. With one trace per test that is the test
+    /// count, which is fine at grid's and yi's size; a membership-style
+    /// packed index lands when a repo holds more than ~10k retained traces.
     ///
     /// # Errors
     /// [`StoreError::Io`] if the directory cannot be read;

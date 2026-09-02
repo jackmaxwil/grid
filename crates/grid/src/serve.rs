@@ -265,10 +265,43 @@ fn dispatch(request: &Value, root: &Path, chart: &mut rpc::Chart) -> Result<Valu
                     crate::suspects::Error::UnknownTrace(_) => {
                         (WireError::UnknownTrace.code(), e.to_string())
                     }
-                    crate::suspects::Error::InsufficientHistory(_) => {
+                    crate::suspects::Error::InsufficientHistory(_)
+                    | crate::suspects::Error::UnknownTest(_) => {
                         (WireError::NoSnapshot.code(), e.to_string())
                     }
+                    crate::suspects::Error::UnknownSince(_) => {
+                        (WireError::UnknownSnapshot.code(), e.to_string())
+                    }
+                    // A refused closure is the engine declining to answer,
+                    // not the caller asking wrongly: internal, like every
+                    // other budget rejection.
+                    crate::suspects::Error::ClosureRejected(_) => (-32603, e.to_string()),
                     crate::suspects::Error::Chart(chart) => chart_error(chart),
+                })
+        }
+        "grid.interfere" => {
+            let params = serde_json::from_value(params).map_err(bad_params)?;
+            rpc::interfere(&params, root)
+                .map(|v| encode(&v))
+                .map_err(|e| match &e {
+                    // A store grid could not read is the caller's coordinate
+                    // problem, and the message names the command that fixes
+                    // it. Never an empty answer.
+                    crate::interfere::Error::Unreadable(_) | crate::interfere::Error::Git(_) => {
+                        (WireError::UnknownSnapshot.code(), e.to_string())
+                    }
+                    crate::interfere::Error::Drift(_) => (-32603, e.to_string()),
+                })
+        }
+        "grid.test.plan" => {
+            let params = serde_json::from_value(params).map_err(bad_params)?;
+            // Surveys the worktree, so it takes the daemon's chart: the
+            // single writer, and the warm survey cache.
+            rpc::test_plan(&params, root, chart)
+                .map(|v| encode(&v))
+                .map_err(|e| match &e {
+                    rpc::TestPlanError::Chart(chart) => chart_error(chart),
+                    rpc::TestPlanError::Store(_) => (-32603, e.to_string()),
                 })
         }
         "grid.bisect" => {
@@ -359,9 +392,25 @@ fn dispatch_query_check(
             crate::check::answer(&params, root)
                 .map(|v| encode(&v))
                 .map_err(|e| match &e {
-                    crate::check::Error::Chart(chart) => chart_error(chart),
+                    crate::check::Error::Chart(chart)
+                    | crate::check::Error::Drift(crate::drift::Error::Chart(chart)) => {
+                        chart_error(chart)
+                    }
                     crate::check::Error::UnknownTrace(_) => {
                         (WireError::UnknownTrace.code(), e.to_string())
+                    }
+                    // A section grid declined to serve — aground, an
+                    // unreadable store — is internal, as `grid.drift`
+                    // treats its own; an unreadable declaration file is the
+                    // caller's to fix.
+                    crate::check::Error::Refused(_)
+                    | crate::check::Error::Drift(
+                        crate::drift::Error::BudgetRejected(_)
+                        | crate::drift::Error::Trace(_)
+                        | crate::drift::Error::Stale(_),
+                    ) => (-32603, e.to_string()),
+                    crate::check::Error::Drift(crate::drift::Error::Covenants(_)) => {
+                        (-32602, e.to_string())
                     }
                 })
         }

@@ -80,13 +80,47 @@ pub struct Resolved {
     pub edges: Vec<ResolvedEdge>,
     /// References whose source definition resolved and whose *target* did
     /// not. Module-level references are not counted: they have no source
-    /// definition, so they were never candidates for an edge.
+    /// definition, so they were never candidates for an edge. The sum of the
+    /// three splits below.
     pub declined: u32,
+    /// Of [`Resolved::declined`]: a name that was never this tree's to hold —
+    /// `std`/`core`/`alloc` or another crate in Rust, a top-level module the
+    /// tree does not root in Python. Costs intra-repo soundness nothing.
+    pub declined_external: u32,
+    /// Of [`Resolved::declined`]: a call through a receiver whose type would
+    /// have to be known. Never resolved, always counted.
+    pub declined_method: u32,
+    /// Of [`Resolved::declined`]: a name this tree could have held and the
+    /// resolver could not bind — glob-supplied, ambiguous, an unresolved
+    /// re-export. The population that is an actual hole in what grid claims.
+    pub declined_internal: u32,
+}
+
+/// Which population a declined reference belongs to.
+///
+/// One number for three meanings was the honesty gap: a path into `std` is
+/// harmless to any claim about this repo, while a name a glob import would
+/// have supplied is a hole in exactly the claim `grid drift` makes, and a
+/// method call is a hole no static rule can close.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Decline {
+    /// The name was never in this tree.
+    External,
+    /// The callee sits behind a receiver with no type.
+    Method,
+    /// A name this tree could have held.
+    Internal,
 }
 
 impl Resolved {
-    fn decline(&mut self) {
+    pub(crate) fn decline(&mut self, which: Decline) {
         self.declined = self.declined.saturating_add(1);
+        let slot = match which {
+            Decline::External => &mut self.declined_external,
+            Decline::Method => &mut self.declined_method,
+            Decline::Internal => &mut self.declined_internal,
+        };
+        *slot = slot.saturating_add(1);
     }
 }
 
@@ -105,7 +139,7 @@ pub fn resolve(index: &DefIndex, module: &str, imports: &[Import], refs: &[Refer
             continue;
         };
         let Some(target) = target_of(index, &bindings, module, r) else {
-            out.decline();
+            out.decline(decline_of(index, &bindings, module, r));
             continue;
         };
         // A definition referencing itself is a fact about recursion, not a
@@ -134,11 +168,157 @@ pub(crate) fn relation_of(kind: RefKind, target_is_class: bool) -> Relation {
         RefKind::FieldWrite => Relation::WritesField,
         // A decorator is applied to the definition, which is a call of the
         // decorator with the definition as its argument.
-        RefKind::Decorator | RefKind::Call | RefKind::SelfCall if target_is_class => {
+        RefKind::Decorator | RefKind::Call | RefKind::SelfCall | RefKind::MethodCall
+            if target_is_class =>
+        {
             Relation::Constructs
         }
         _ => Relation::Calls,
     }
+}
+
+/// The names Python's `builtins` module puts in every scope without an
+/// import — the functions, the types called as constructors, and the
+/// exception classes a `class X(Exception)` base names. A tree that defines
+/// one of these itself resolves it before this table is consulted.
+const PY_BUILTINS: &[&str] = &[
+    "abs",
+    "all",
+    "any",
+    "ascii",
+    "bin",
+    "bool",
+    "breakpoint",
+    "bytearray",
+    "bytes",
+    "callable",
+    "chr",
+    "classmethod",
+    "compile",
+    "complex",
+    "delattr",
+    "dict",
+    "dir",
+    "divmod",
+    "enumerate",
+    "eval",
+    "exec",
+    "filter",
+    "float",
+    "format",
+    "frozenset",
+    "getattr",
+    "globals",
+    "hasattr",
+    "hash",
+    "help",
+    "hex",
+    "id",
+    "input",
+    "int",
+    "isinstance",
+    "issubclass",
+    "iter",
+    "len",
+    "list",
+    "locals",
+    "map",
+    "max",
+    "memoryview",
+    "min",
+    "next",
+    "object",
+    "oct",
+    "open",
+    "ord",
+    "pow",
+    "print",
+    "property",
+    "range",
+    "repr",
+    "reversed",
+    "round",
+    "set",
+    "setattr",
+    "slice",
+    "sorted",
+    "staticmethod",
+    "str",
+    "sum",
+    "super",
+    "tuple",
+    "type",
+    "vars",
+    "zip",
+    "__import__",
+    "BaseException",
+    "Exception",
+    "ArithmeticError",
+    "AssertionError",
+    "AttributeError",
+    "EOFError",
+    "ImportError",
+    "ModuleNotFoundError",
+    "IndexError",
+    "KeyError",
+    "KeyboardInterrupt",
+    "LookupError",
+    "MemoryError",
+    "NameError",
+    "NotImplementedError",
+    "OSError",
+    "IOError",
+    "OverflowError",
+    "RecursionError",
+    "RuntimeError",
+    "StopIteration",
+    "StopAsyncIteration",
+    "SyntaxError",
+    "SystemExit",
+    "TimeoutError",
+    "TypeError",
+    "UnicodeDecodeError",
+    "UnicodeEncodeError",
+    "UnicodeError",
+    "ValueError",
+    "ZeroDivisionError",
+    "FileNotFoundError",
+    "PermissionError",
+    "FileExistsError",
+    "ConnectionError",
+    "DeprecationWarning",
+    "UserWarning",
+    "Warning",
+];
+
+/// Which population a declined Python reference belongs to.
+///
+/// An import binding settles it: the module the head names is either one this
+/// tree roots or one it does not. Without a binding, an attribute call is a
+/// method call on a value, a builtin is a name every scope holds without an
+/// import — never this tree's to lose — and any other bare name is one this
+/// tree could have held: a glob's supply, or a definition the resolver could
+/// not find.
+fn decline_of(index: &DefIndex, bindings: &Bindings, module: &str, r: &Reference) -> Decline {
+    let Some(head) = r.path.first() else {
+        return Decline::Internal;
+    };
+    if let Some(target) = bindings.lookup(&r.from, head) {
+        let absolute = absolute(module, target);
+        let root = absolute.split('.').next().unwrap_or(&absolute);
+        return if index.is_root(root) {
+            Decline::Internal
+        } else {
+            Decline::External
+        };
+    }
+    if r.kind == RefKind::MethodCall {
+        return Decline::Method;
+    }
+    if r.path.len() == 1 && PY_BUILTINS.contains(&head.as_str()) {
+        return Decline::External;
+    }
+    Decline::Internal
 }
 
 /// Resolve a reference's dotted path to a definition, or to nothing.

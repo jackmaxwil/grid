@@ -1,27 +1,48 @@
-//! `grid check` — the gate verdict and, on request, why it says so.
+//! `grid check` — everything the change did that nobody checked, in one call.
 //!
-//! A reviewer asks four questions about a change: did it do what it promised,
-//! what did it do that it did not promise, what changed without being run,
-//! and what is still open against this code. The gate answers the first two
-//! already; this verb adds the *how*: for every promise the gate matched, the
-//! paths through the chart that make it good.
+//! The composite. Each finding grid can make about a change is its own verb;
+//! an agent needs one call after an edit and one exit code. This module
+//! composes those verbs and adds nothing of its own except the join:
 //!
-//! Only fulfilling paths ship. A promise the gate matched but for which no
-//! path exists under the budget carries no `hops` entry rather than an empty
-//! one — an item here means "this is why the gate said match", and an item
-//! with nothing behind it would be a claim with no evidence.
+//! - **gates** (any → exit 3): drift suspects, the compile record's
+//!   uncompiled callers, adherence to a plan when one is named, stale
+//!   verdicts, covenant fires (they are drift suspects at `modeled`), and a
+//!   compat finding on a type declared `persisted`;
+//! - **ranked tail** (never moves the exit): weak tests, uncovered
+//!   definitions, clone-of, undeclared compat findings;
+//! - a **refactor certificate** — one `done` record over the same data when
+//!   no gate fired: interfaces held or moved, covering tests replayed pass,
+//!   changed definitions uncovered. Three facts; the phrase
+//!   "behavior-preserving" appears nowhere.
 //!
-//! Traversal is [`grid_walk::query`], the same engine `grid.query.walk`
-//! serves, so a path a reviewer sees is a path the query verb would produce.
-//! Nothing here re-implements a walk, and nothing here upgrades evidence: a
-//! hop renders with the [`grid_wire::Grade`] the chart stored for it.
+//! The composition rule: every section is the corresponding verb's own
+//! result — [`grid_wire::DriftReport`] from `grid.drift`,
+//! [`grid_wire::CompileReport`] from `grid check --compile`'s record,
+//! [`grid_wire::GateVerdict`] from `grid.gate.check`, the stale, weak and
+//! compat lists from `grid drift --tests` / `--compat`, uncovered from
+//! `grid.test.plan`'s walk — never a re-implementation. A section that
+//! refuses (aground, unknown snapshot, unreadable store) refuses the whole
+//! check with that reason, never a check with a section silently missing.
+//!
+//! With `--plan`, the verdict is the gate's and `--why` carries the
+//! reasoning: for every promise the gate matched, the paths through the chart
+//! that make it good. Only fulfilling paths ship — a promise with no path
+//! under the budget carries no `hops` entry rather than an empty one, because
+//! an item here means "this is why the gate said match". Traversal is
+//! [`grid_walk::query`], the engine `grid.query.walk` serves, so a path a
+//! reviewer sees is a path the query verb would produce, at the grade the
+//! chart stored for it.
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
+use grid_chart::{DatumId, Ordinal, Segment};
 use grid_gate::DeltaProvider as _;
-use grid_wire::methods::CheckParams;
+use grid_wire::methods::{CheckParams, DriftParams};
 use grid_wire::{
-    Callsign, CheckResult, CheckWhy, CheckWhyFulfillingItem, Datum, DefChangeAction, Fuel, Grade,
-    Locator, PlanEdgePromise, SnapshotOrRev, WalkQuery, WalkQueryDirection,
+    Callsign, CheckResult, CheckWhy, CheckWhyFulfillingItem, CloneFinding, Datum, DefChangeAction,
+    DefRef, DefRefMaterialization, DriftWarning, Fuel, GateVerdictGate, Grade, Locator,
+    PlanEdgePromise, RefactorCertificate, SnapshotId, SnapshotOrRev, TestId, TestSelectionWhy,
+    WalkQuery, WalkQueryDirection,
 };
 
 use crate::chart_provider::{self, ChartDelta};
@@ -43,7 +64,10 @@ const MAX_MS: u64 = 250;
 /// sorted before it applies), so two runs cut the same set.
 const MAX_ENDPOINTS: usize = 32;
 
-/// Why a review pack could not be produced.
+/// The base a plan-less check measures from: `grid drift`'s default.
+const DEFAULT_BASE: &str = "HEAD~1";
+
+/// Why a check could not be produced.
 #[derive(Debug)]
 pub enum Error {
     /// The chart could not answer (unknown snapshot, failed survey, unknown
@@ -52,13 +76,23 @@ pub enum Error {
     /// A trace id was supplied and the log does not hold it. Coverage without
     /// the trace it names would be a different question silently answered.
     UnknownTrace(String),
+    /// The drift section refused — aground, an unreadable trace store or
+    /// verdict log, an endpoint that does not resolve, a declaration file
+    /// that does not parse. Carried whole so the exit is drift's own.
+    Drift(crate::drift::Error),
+    /// A section grid cannot stand behind: the coverage walk ran past its
+    /// fuel, or a store it needed would not open. Refused whole rather than
+    /// served without the section.
+    Refused(String),
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Chart(e) => write!(f, "{e}"),
+            Self::Drift(e) => write!(f, "{e}"),
             Self::UnknownTrace(id) => write!(f, "no retained trace `{id}`"),
+            Self::Refused(why) => f.write_str(why),
         }
     }
 }
@@ -71,63 +105,388 @@ impl From<chart_provider::Error> for Error {
     }
 }
 
-/// `grid.check` — verdict, and why: fulfilling paths, surplus, coverage, anchors.
+/// `grid.check` — the composite.
 ///
-/// The verdict is the gate's, computed here the way `grid.todo` computes it:
-/// one engine, so a review and a gate can never disagree about whether a
-/// promise was kept.
+/// Drift runs first because it surveys the endpoints; every later section
+/// reads the snapshots it published, named by id, so nothing is surveyed
+/// twice and no section can see a different tree.
 ///
 /// # Errors
 /// [`Error::Chart`] when the plan, the base or the head cannot be resolved;
+/// [`Error::Drift`] when the drift or compile section refused;
+/// [`Error::Refused`] when the coverage walk refused;
 /// [`Error::UnknownTrace`] when a supplied trace id names nothing retained.
 pub fn answer(params: &CheckParams, root: &Path) -> Result<CheckResult, Error> {
-    let plan = crate::plan::load(&params.plan.0).map_err(chart_provider::Error::Plan)?;
-    let plan = standing::fold(
-        &plan,
-        standing::load(root).map_err(chart_provider::Error::Config)?,
-    );
-    let mut chart = rpc::Chart::new(root);
-    chart.ensure(&plan.base)?;
-    if let SnapshotOrRev::GitRev { .. } = params.head {
-        chart.ensure(&params.head)?;
-    }
+    let quick = params.quick == Some(true);
+    let plan = match params.plan.as_ref() {
+        Some(id) => {
+            let plan = crate::plan::load(&id.0).map_err(chart_provider::Error::Plan)?;
+            Some(standing::fold(
+                &plan,
+                standing::load(root).map_err(chart_provider::Error::Config)?,
+            ))
+        }
+        None => None,
+    };
+    let base = params
+        .base
+        .clone()
+        .or_else(|| plan.as_ref().map(|p| p.base.clone()))
+        .unwrap_or_else(|| SnapshotOrRev::GitRev {
+            git_rev: grid_wire::GitRev(DEFAULT_BASE.to_owned()),
+        });
+
+    // The drift section, whole: `grid drift --tests --compat`'s own report,
+    // with the three lists it carries lifted into their own sections. Quick
+    // is drift at the proven floor — no trace store, verdict log or source
+    // read — plus the compile record.
+    let mut drift = rpc::drift(
+        &DriftParams {
+            base: base.clone(),
+            head: params.head.clone(),
+            floor: quick.then_some(Grade::Proven),
+            plan: plan.clone(),
+            tests: (!quick).then_some(true),
+            compat: (!quick).then_some(true),
+        },
+        root,
+    )
+    .map_err(Error::Drift)?;
+    let stale = drift.stale_tests.take();
+    let weak = drift.weak.take();
+    let compat = drift.compat.take();
+    let (base_id, head_id) = (drift.base.clone(), drift.head.clone());
+    let at = |id: &SnapshotId| SnapshotOrRev::Snapshot {
+        snapshot: id.clone(),
+    };
+
+    // The compile record is read, never written, here: `--compile` wrote it
+    // before asking. A record that names another snapshot than the one this
+    // check surveyed describes a compile of a different tree, and gates
+    // nothing; the warning says so rather than the section going quiet.
+    let mut warnings = Vec::new();
+    let compile = match crate::compile::load(root).map_err(chart_provider::Error::Config)? {
+        Some(record) if record.snapshot == drift.head => Some(
+            crate::compile::report(root, &at(&drift.base), &at(&drift.head), &record)
+                .map_err(Error::Drift)?,
+        ),
+        _ => {
+            warnings.push(DriftWarning {
+                subject: "-".to_owned(),
+                message: format!("no compile record since @{}", prefix_of(&drift.head.0)),
+            });
+            None
+        }
+    };
+
     let provider = ChartDelta::open(root)?;
-    let diff = provider.diff(&plan.base, &params.head)?;
+    let (verdict, why) = match plan.as_ref() {
+        Some(plan) => adherence(&at(&head_id), params.trace.as_ref(), plan, root, &provider)?,
+        None => (None, None),
+    };
+
+    let mut result = CheckResult {
+        verdict,
+        why,
+        drift: Some(drift),
+        compile,
+        stale,
+        weak,
+        uncovered: None,
+        clones: None,
+        compat,
+        refactor: None,
+        warnings: (!warnings.is_empty()).then_some(warnings),
+    };
+    if quick {
+        return Ok(result);
+    }
+
+    let base_epoch = provider.epoch_of(&at(&base_id))?;
+    let head_epoch = provider.epoch_of(&at(&head_id))?;
+    let diff = grid_chart::diff(
+        base_id,
+        base_epoch.segments(),
+        head_id,
+        head_epoch.segments(),
+    );
+    result.clones = Some(clones(&diff, head_epoch.segments()));
+    let coverage = traced_coverage(root, &diff, base_epoch.segments(), head_epoch.segments())?;
+    result.uncovered = coverage.as_ref().map(|c| c.uncovered.clone());
+    if !gated(&result) {
+        result.refactor = Some(RefactorCertificate {
+            interfaces_moved: count(interfaces_moved(&diff)),
+            replayed_pass: coverage.as_ref().map(|c| c.replayed_pass),
+            uncovered: coverage.as_ref().map(|c| count(c.uncovered.len())),
+        });
+    }
+    Ok(result)
+}
+
+/// Did any gating section fire? The exit code is 3 exactly when this holds,
+/// and the refactor certificate exists exactly when it does not — one
+/// function, so the two can never disagree.
+#[must_use]
+pub fn gated(answer: &CheckResult) -> bool {
+    answer
+        .drift
+        .as_ref()
+        .is_some_and(|d| !d.suspects.is_empty())
+        || answer
+            .compile
+            .as_ref()
+            .is_some_and(|c| !c.uncompiled.is_empty())
+        || answer
+            .verdict
+            .as_ref()
+            .is_some_and(|v| v.gate == GateVerdictGate::Hold)
+        || answer.stale.as_ref().is_some_and(|s| !s.is_empty())
+        || answer.compat.iter().flatten().any(|f| f.declared)
+}
+
+/// The adherence section: the gate's verdict and the reasoning behind it.
+///
+/// The verdict is computed here the way `grid.todo` computes it: one engine,
+/// so a review and a gate can never disagree about whether a promise was
+/// kept.
+fn adherence(
+    head: &SnapshotOrRev,
+    trace: Option<&grid_wire::TraceId>,
+    plan: &grid_wire::Plan,
+    root: &Path,
+    provider: &ChartDelta,
+) -> Result<(Option<grid_wire::GateVerdict>, Option<CheckWhy>), Error> {
+    // Head by the id drift surveyed, never by the rev the caller typed: a
+    // worktree survey is labelled with its rev, and looking the rev up here
+    // would be the committed tree, not the one drift just judged.
+    let diff = provider.diff(&plan.base, head)?;
     let verdict = rpc::gate_check(
         &grid_wire::methods::GateCheckParams {
             plan: plan.clone(),
-            head: params.head.clone(),
+            head: head.clone(),
         },
         root,
     )?;
-
     let snapshot = provider
         .current()
         .ok_or(chart_provider::Error::NoSnapshot)?;
-    let names = callsigns(&provider);
+    let names = callsigns(provider);
     let fulfilling = verdict
         .matched
         .iter()
         .filter_map(|promise| {
-            let hops = hops_for(&provider, &names, promise, &snapshot);
+            let hops = hops_for(provider, &names, promise, &snapshot);
             (!hops.is_empty()).then(|| CheckWhyFulfillingItem {
                 promise: promise.clone(),
                 hops,
             })
         })
         .collect();
+    let why = CheckWhy {
+        surplus: verdict.surplus.clone(),
+        coverage: coverage(&diff, trace, root)?,
+        // Grid stores no anchors: nothing writes them, so the honest
+        // answer is none, not an invented one. The field is the
+        // consumer's (an Artifacts review, say) once a store exists.
+        open_anchors: Vec::new(),
+        fulfilling,
+    };
+    Ok((Some(verdict), Some(why)))
+}
 
-    Ok(CheckResult {
-        why: Some(CheckWhy {
-            surplus: verdict.surplus.clone(),
-            coverage: coverage(&diff, params.trace.as_ref(), root)?,
-            // Grid stores no anchors: nothing writes them, so the honest
-            // answer is none, not an invented one. The field is the
-            // consumer's (an Artifacts review, say) once a store exists.
-            open_anchors: Vec::new(),
-            fulfilling,
+/// What the retained traces say about the change: the changed definitions
+/// no traced test reaches, and how many covering tests already have a pass
+/// on record at head.
+struct Coverage {
+    uncovered: Vec<DefRef>,
+    replayed_pass: u64,
+}
+
+/// `grid.test.plan`'s walk with the retained traces as the inventory: every
+/// test a trace names is a test, and the plan's `uncovered` is the answer.
+/// No trace, no claim — `None` is "nothing is known", never "nothing is
+/// uncovered".
+///
+/// `replayed_pass` is the reached tests whose closure key at head, in an
+/// environment their verdicts were recorded in, is a recorded pass: the
+/// attribution `grid drift --tests` uses, through the trace id the cache
+/// line carries.
+fn traced_coverage<B: AsRef<[u8]>>(
+    root: &Path,
+    diff: &grid_wire::Diff,
+    base: &[Segment<B>],
+    head: &[Segment<B>],
+) -> Result<Option<Coverage>, Error> {
+    let refused = |e: &dyn std::fmt::Display| Error::Refused(e.to_string());
+    let traces = rpc::trace_dir(root)
+        .and_then(grid_trace::Store::open)
+        .and_then(|store| store.retained())
+        .map_err(|e| refused(&e))?;
+    if traces.is_empty() {
+        return Ok(None);
+    }
+    let cache = grid_cache::Cache::open(rpc::cache_path(root)).map_err(|e| refused(&e))?;
+    let mut tests: Vec<TestId> = traces
+        .iter()
+        .filter_map(|s| s.trace.command.clone())
+        .map(TestId)
+        .collect();
+    tests.sort_by(|a, b| a.0.cmp(&b.0));
+    tests.dedup_by(|a, b| a.0 == b.0);
+    let changed = crate::testplan::changed_of(diff);
+    // ponytail: the plan is recomputed here rather than read from the last
+    // `grid test`, which persists only its base; persist the plan when a
+    // repo's trace inventory makes this walk measurable.
+    let plan = crate::testplan::compute(&crate::testplan::Inputs {
+        base,
+        head,
+        base_id: diff.base.clone(),
+        head_id: diff.head.clone(),
+        changed: &changed,
+        traces: &traces,
+        cache: &cache,
+        env_hash: "",
+        tests: &tests,
+        replay: false,
+        fuel: crate::drift::FUEL,
+        declined: None,
+    });
+    if plan.unchecked.budget_rejected > 0 {
+        return Err(Error::Refused(format!(
+            "the coverage walk exceeded fuel ({}) — refused whole, because a truncated \
+             walk would report fewer uncovered definitions and look clean",
+            crate::drift::FUEL
+        )));
+    }
+
+    let test_of: BTreeMap<&str, &str> = traces
+        .iter()
+        .filter_map(|w| Some((w.trace.trace_id.as_str(), w.trace.command.as_deref()?)))
+        .collect();
+    let mut envs: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for (_, entry) in cache.entries() {
+        if let Some((test, env)) = entry
+            .trace_id
+            .as_deref()
+            .and_then(|id| test_of.get(id))
+            .zip(entry.env_hash.as_deref())
+        {
+            envs.entry(test).or_default().insert(env);
+        }
+    }
+    let head_chart = grid_cache::Chart::new(head);
+    let replayed_pass = plan
+        .selected
+        .iter()
+        .filter(|s| s.why == TestSelectionWhy::Reached)
+        .filter(|s| {
+            let Some(datum) = s.datum.as_ref().and_then(|d| DatumId::parse(&d.0)) else {
+                return false;
+            };
+            envs.get(s.test.0.as_str()).is_some_and(|envs| {
+                envs.iter().any(|env| {
+                    head_chart
+                        .key(datum, grid_cache::Kind::Test, env)
+                        .ok()
+                        .and_then(|key| cache.get(key))
+                        .is_some_and(|entry| entry.verdict == grid_cache::Verdict::Pass)
+                })
+            })
+        })
+        .count();
+    Ok(Some(Coverage {
+        uncovered: plan.uncovered,
+        replayed_pass: count(replayed_pass),
+    }))
+}
+
+/// Definitions added since base whose name-erased shape equals an existing
+/// definition's — exact match only, the `Added` half of the diff joined
+/// against head's shape column. A definition the diff calls `Moved` (a
+/// rename) is not added and counts as existing.
+fn clones<B: AsRef<[u8]>>(diff: &grid_wire::Diff, head: &[Segment<B>]) -> Vec<CloneFinding> {
+    let added: BTreeSet<&str> = diff
+        .defs
+        .iter()
+        .filter(|d| d.action == DefChangeAction::Added)
+        .map(|d| d.callsign.0.as_str())
+        .collect();
+    if added.is_empty() {
+        return Vec::new();
+    }
+    let mut existing: HashMap<[u8; 32], Vec<DefRef>> = HashMap::new();
+    let mut fresh: Vec<(DefRef, [u8; 32])> = Vec::new();
+    for segment in head {
+        for i in 0..segment.def_count() {
+            let ord = Ordinal(i);
+            let (Some(callsign), Some(shape), Some(def)) = (
+                segment.callsign(ord),
+                segment.shape(ord),
+                def_ref(segment, ord),
+            ) else {
+                continue;
+            };
+            if added.contains(callsign) {
+                fresh.push((def, shape));
+            } else {
+                existing.entry(shape).or_default().push(def);
+            }
+        }
+    }
+    let mut out: Vec<CloneFinding> = fresh
+        .iter()
+        .flat_map(|(def, shape)| {
+            existing
+                .get(shape)
+                .into_iter()
+                .flatten()
+                .map(|old| CloneFinding {
+                    def: def.clone(),
+                    existing: old.clone(),
+                })
+        })
+        .collect();
+    let name = |d: &DefRef| d.callsign.as_ref().map(|c| c.0.clone());
+    out.sort_by(|a, b| (name(&a.def), name(&a.existing)).cmp(&(name(&b.def), name(&b.existing))));
+    out
+}
+
+/// Drift's changed set, counted: every definition whose interface moved or
+/// whose transition is unknown — unknown is treated as moved, as drift
+/// treats it.
+fn interfaces_moved(diff: &grid_wire::Diff) -> usize {
+    diff.defs
+        .iter()
+        .filter(|d| match d.action {
+            DefChangeAction::Removed => true,
+            DefChangeAction::Modified => d.sig_changed != Some(false),
+            DefChangeAction::Added | DefChangeAction::Moved => false,
+        })
+        .count()
+}
+
+fn count(n: usize) -> u64 {
+    u64::try_from(n).unwrap_or(u64::MAX)
+}
+
+/// The eight-character prefix of a snapshot id's hash, as `@prefix`.
+fn prefix_of(id: &str) -> &str {
+    let hex = id.rsplit_once(':').map_or(id, |(_, hex)| hex);
+    hex.get(..8).unwrap_or(hex)
+}
+
+/// A definition at head, named and located.
+fn def_ref<B: AsRef<[u8]>>(segment: &Segment<B>, ord: Ordinal) -> Option<DefRef> {
+    Some(DefRef {
+        datum: Datum(segment.datum(ord)?.to_string()),
+        callsign: Some(Callsign(segment.callsign(ord)?.to_owned())),
+        lang: segment.lang(ord),
+        signature: None,
+        cfg: None,
+        materialization: segment.location(ord).map(|loc| DefRefMaterialization {
+            file: loc.path.to_owned(),
+            line: u64::from(loc.line),
         }),
-        verdict,
     })
 }
 
@@ -248,43 +607,63 @@ fn coverage(
     Ok(out)
 }
 
-/// Render a pack as porcelain records (`docs/PORCELAIN.md`).
-///
-/// The verdict renders exactly as `grid gate` renders it — a review that
-/// spelled the verdict differently would be a second grammar for one judgment.
-/// What follows is the review's own: a `path` per fulfilling route, its `hop`
-/// records beneath it, and a `miss` per changed-but-unexecuted definition.
+/// Render a check as porcelain records (`docs/PORCELAIN.md`), sections in
+/// gate-first order: drift (its suspects, covenant warnings and closing
+/// `miss` counts), the compile report, the verdict — with, under `why`, a
+/// `path` per fulfilling route, its `hop` records beneath it, and a `miss`
+/// per changed-but-unexecuted definition — stale verdicts, compat; then the
+/// ranked tail and the certificate. Every section renders exactly as its
+/// own verb renders it: a second grammar for one judgment would be a second
+/// judgment.
 #[must_use]
-pub fn porcelain(answer: &CheckResult, name: &crate::porcelain::NameOf) -> String {
+pub fn porcelain(answer: &CheckResult, name: &crate::porcelain::NameOf, why: bool) -> String {
     let show = |d: &Datum| name(d).unwrap_or_else(|| format!("@{}", prefix(d)));
-    let mut out = crate::porcelain::verdict(&answer.verdict, name);
-    let Some(why) = answer.why.as_ref() else {
-        return out;
-    };
-    for item in &why.fulfilling {
-        for path in &item.hops {
-            let head = path.nodes.first().map_or_else(String::new, &show);
-            record(
-                &mut out,
-                "path",
-                &[&head, &path.edges.len().to_string(), weakest(&path.edges)],
-            );
-            for edge in &path.edges {
+    let mut out = String::new();
+    if let Some(drift) = answer.drift.as_ref() {
+        out.push_str(&crate::porcelain::drift(drift));
+    }
+    if let Some(compile) = answer.compile.as_ref() {
+        out.push_str(&crate::porcelain::compile(compile));
+    }
+    if let Some(verdict) = answer.verdict.as_ref() {
+        out.push_str(&crate::porcelain::verdict(verdict, name));
+    }
+    if let Some(why) = answer.why.as_ref().filter(|_| why) {
+        for item in &why.fulfilling {
+            for path in &item.hops {
+                let head = path.nodes.first().map_or_else(String::new, &show);
                 record(
                     &mut out,
-                    "hop",
-                    &[
-                        grid_gate::lint::relation_name(edge.relation),
-                        &show(&edge.dst),
-                        grade(edge.grade),
-                    ],
+                    "path",
+                    &[&head, &path.edges.len().to_string(), weakest(&path.edges)],
                 );
+                for edge in &path.edges {
+                    record(
+                        &mut out,
+                        "hop",
+                        &[
+                            grid_gate::lint::relation_name(edge.relation),
+                            &show(&edge.dst),
+                            grade(edge.grade),
+                        ],
+                    );
+                }
             }
         }
+        for datum in &why.coverage {
+            record(&mut out, "miss", &[&show(datum), "unexecuted"]);
+        }
     }
-    for datum in &why.coverage {
-        record(&mut out, "miss", &[&show(datum), "unexecuted"]);
-    }
+    out.push_str(&crate::porcelain::stale(
+        answer.stale.as_deref().unwrap_or_default(),
+    ));
+    out.push_str(&crate::porcelain::compat(
+        answer.compat.as_deref().unwrap_or_default(),
+    ));
+    out.push_str(&crate::porcelain::weak(
+        answer.weak.as_deref().unwrap_or_default(),
+    ));
+    out.push_str(&crate::porcelain::check_tail(answer));
     out
 }
 
