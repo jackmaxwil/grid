@@ -187,6 +187,18 @@ pub fn drive(root: &std::path::Path, opts: &Opts, runner: &mut dyn Runner, json:
         ));
     }
     let run_set: Vec<String> = plan.selected.iter().map(|s| s.test.0.clone()).collect();
+    // `.grid/test/` holds the traced runner's per-test report and, after the
+    // run, the remembered base. On a repository that has never run `grid
+    // test` it does not exist yet, and a runner spawned before it did wrote
+    // no report for any test — every verdict kept, no trace, exit 0. Once,
+    // here, before the spawn. Best effort: a directory that cannot be made is
+    // said, and the runner then says so again per report.
+    let last = crate::testplan::last_path(root);
+    if let Some(dir) = last.parent() {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            hint(&format!("grid: could not create {}: {e}", dir.display()));
+        }
+    }
     let outcomes = if run_set.is_empty() {
         Vec::new()
     } else {
@@ -201,12 +213,7 @@ pub fn drive(root: &std::path::Path, opts: &Opts, runner: &mut dyn Runner, json:
     let run = finish(root, &plan, &env_hash, &run_set, &outcomes);
     // Remembered for the next run's default base. Best effort: a base that
     // cannot be remembered costs a wider selection next time, never a verdict.
-    let last = crate::testplan::last_path(root);
-    if let Err(e) = last
-        .parent()
-        .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| std::fs::write(&last, &run.plan.head.0))
-    {
+    if let Err(e) = std::fs::write(&last, &run.plan.head.0) {
         hint(&format!(
             "grid: could not remember this base for the next run ({}): {e}",
             last.display()
@@ -720,6 +727,49 @@ mod tests {
         };
         assert_eq!(run(dir.path(), &mut fake, true), 0);
         assert!(super::retained_count(dir.path()) > 0);
+    }
+
+    /// The traced runner writes its per-test report under `.grid/test/`,
+    /// and on a repository that has never run `grid test` that directory
+    /// does not exist until the run's base is remembered *after* the run:
+    /// every report failed to be written, every test was "verdict kept, no
+    /// trace", and the first `grid test --trace --all` — the command the
+    /// first-run banner sends a new user to — exited 0 with no traces. The
+    /// directory exists before the runner is spawned.
+    #[test]
+    fn the_report_directory_exists_before_the_traced_runner_is_spawned() {
+        struct Sees {
+            inner: Fake,
+            report_dir: Vec<bool>,
+        }
+        impl Runner for Sees {
+            fn inventory(&mut self) -> Result<Vec<String>, String> {
+                self.inner.inventory()
+            }
+            fn environment(&self) -> Vec<u8> {
+                self.inner.environment()
+            }
+            fn run(&mut self, tests: &[String], trace: bool) -> Result<Vec<Outcome>, String> {
+                self.report_dir
+                    .push(self.inner.root.join(".grid/test").is_dir());
+                self.inner.run(tests, trace)
+            }
+        }
+        let dir = repo(&owned(&python(1, 2, 9, [1, 2, 3])));
+        assert!(!dir.path().join(".grid/test").exists(), "never run here");
+        let mut sees = Sees {
+            inner: Fake {
+                root: dir.path().to_path_buf(),
+                ran: Vec::new(),
+            },
+            report_dir: Vec::new(),
+        };
+        assert_eq!(drive(dir.path(), &opts(false), &mut sees, false), 0);
+        assert_eq!(
+            sees.report_dir,
+            [true],
+            "the runner found .grid/test/ when it was spawned"
+        );
     }
 
     /// A verdict recorded for a test that ran untraced names its own test in
