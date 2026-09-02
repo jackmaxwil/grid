@@ -155,7 +155,8 @@ impl Real {
     }
 
     /// The step-1 recipe, per selected test: `cargo llvm-cov nextest --lcov
-    /// -E 'test(=t)'`, then ingest as the test's trace.
+    /// -E 'test(=t)'`, then ingest as the test's trace. Flags in [`TRACED`],
+    /// where the one pair `cargo llvm-cov` refuses can be tested for.
     ///
     /// `ponytail:` one `cargo llvm-cov` invocation per test, because a
     /// single profile cannot be attributed back to the tests that shared a
@@ -181,17 +182,16 @@ impl Real {
             // test command fails, and reading the stale file would file the
             // last test's reach under this test's name.
             let _absent = std::fs::remove_file(&lcov);
-            let mut args: Vec<String> = vec![
-                "llvm-cov".into(),
-                "nextest".into(),
-                "--lcov".into(),
-                "--output-path".into(),
-                lcov.display().to_string(),
-                // A failing test still ran, and its reach is still its
-                // trace: without this the report is withheld on failure.
-                "--ignore-run-fail".into(),
-                "--no-fail-fast".into(),
-            ];
+            let mut args: Vec<String> = TRACED
+                .iter()
+                .map(|a| {
+                    if *a == OUTPUT_PATH {
+                        lcov.display().to_string()
+                    } else {
+                        (*a).to_owned()
+                    }
+                })
+                .collect();
             args.extend(self.args.iter().cloned());
             args.extend(self.rollup(std::slice::from_ref(test)));
             args.push("-E".into());
@@ -448,6 +448,27 @@ impl Runner for Real {
     }
 }
 
+/// The placeholder [`TRACED`] carries where the report path goes, so the flag
+/// list stays one readable slice.
+const OUTPUT_PATH: &str = "<output-path>";
+
+/// The traced invocation's fixed flags.
+///
+/// `--ignore-run-fail` is load-bearing: a failing test still ran, and its
+/// reach is still its trace, so without it the report is withheld exactly
+/// when a trace is most wanted. `--no-fail-fast` must **not** appear beside
+/// it — `cargo llvm-cov` refuses the pair outright, which turned every traced
+/// run into "not reported by the runner" — and it would say nothing anyway,
+/// because one test cannot fail fast past itself.
+const TRACED: [&str; 6] = [
+    "llvm-cov",
+    "nextest",
+    "--lcov",
+    "--output-path",
+    OUTPUT_PATH,
+    "--ignore-run-fail",
+];
+
 /// Where the nextest wrapper template writes one profile per test:
 /// `GRID_LLVM_PROFILE_DIR` when the environment names one, else
 /// `target/grid-profiles` — the same default the template's wrapper uses.
@@ -688,6 +709,25 @@ mod tests {
         );
         assert_eq!(failed.len(), 1);
         assert!(!failed[0].pass);
+    }
+
+    /// The traced invocation asks for a report a failing test still gets,
+    /// and never asks for it together with `--no-fail-fast`: `cargo llvm-cov`
+    /// refuses that pair, and grid took the refusal as a runner that reported
+    /// nothing — 540 tests "not reported by the runner", every traced run,
+    /// until `just traces` was run for real.
+    #[test]
+    fn the_traced_invocation_asks_for_nothing_cargo_llvm_cov_refuses() {
+        assert!(super::TRACED.contains(&"--ignore-run-fail"));
+        assert!(
+            !super::TRACED.contains(&"--no-fail-fast"),
+            "cargo llvm-cov refuses --ignore-run-fail with --no-fail-fast: {:?}",
+            super::TRACED
+        );
+        assert!(
+            super::TRACED.contains(&super::OUTPUT_PATH),
+            "the report path has somewhere to go"
+        );
     }
 
     /// The per-test profiles the nextest wrapper template leaves behind are
