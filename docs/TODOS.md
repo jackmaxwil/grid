@@ -454,6 +454,44 @@ fix.
   "never observed a published epoch" guard once under a full parallel
   suite; 3/3 green alone. The harness's kill window is time-based.
 
+## From the 2026-09-02 review of `claude/grid-p1-check` (forge PR #23)
+
+F1–F7 and F10 were fixed on that branch. What was left, and why.
+
+- **P-F4b (medium)** `crates/grid/src/standing.rs` `save` and
+  `crates/grid/src/covenant.rs` `save` publish by rename now, but neither
+  takes a lock, so two concurrent `grid invariant` (or `grid covenant`)
+  calls read-modify-write the whole file and one declaration is lost with
+  no error. Left out of the atomicity fix on purpose: a different failure
+  with a different remedy (an `O_EXCL` lock file beside the declaration, or
+  a compare-and-swap on the bytes read). Rare today — both verbs are
+  hand-run — and it becomes real the moment an agent loop writes them.
+- **P-F8 (low)** `crates/grid/src/suspects.rs` `last_pass` breaks a tie on
+  `trace_id` lexicographically because `recorded_at` is RFC 3339 at second
+  resolution (`cache/src/lib.rs:276`). Two passes recorded in the same
+  second against different snapshots resolve to whichever trace id sorts
+  higher, which may be the older snapshot, while the stderr line says "the
+  last snapshot ... recorded a pass at". Deterministic, and it names the
+  snapshot it chose, so the answer stays checkable; the honest fix is
+  sub-second resolution on `recorded_at`, which is a cache record change
+  and an epoch question rather than a tie-break tweak.
+- **P-F9 (low)** `standing::save` re-serializes with `to_string_pretty`, so
+  a compactly authored `.grid/invariants.json` is reformatted on the first
+  successful write. `deny_unknown_fields` on `Invariant` and `EdgeRule`
+  (`wire/src/lib.rs:327,338`) means nothing is dropped, so the claim holds
+  semantically; a558a9e's body said "survives a `grid invariant` call byte
+  for byte", which is stronger than what
+  `compat.rs::an_invariant_over_nothing_is_refused_and_hand_authored_rules_survive`
+  asserts — bytes on the refusal path, ids on the write path. Wording debt,
+  not a defect: the fix is to say "survives" and leave the assertion where
+  it is.
+- **P-plan (medium)** the `self-gate` CI job runs `grid gate
+  .grid/plans/*.json` and fails a source-changing pull request that carries
+  none. The ignore rules no longer forbid one, but no branch has written one
+  yet, so the job still fails on any pull request touching `.rs`/`.py`/
+  `.pyi`. Either every such branch carries a plan, or the job's guard grows
+  a case for a branch that predates the convention.
+
 ## Recorded ceilings (from `ponytail:` markers in the tree)
 
 The per-test `cargo llvm-cov` loop; `Store::retained` O(traces); bytes/4

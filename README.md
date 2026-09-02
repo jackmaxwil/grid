@@ -193,13 +193,20 @@ cargo install --path crates/grid      # or copy target/release/grid onto PATH
 Per-repo state lives in `.grid/`: the content-addressed segment store, the
 membership image, retained traces, the verdict log, the compile record.
 All of it is rebuilt by the next survey — gitignore it, except the two
-declarations:
+declarations and the plans a change is gated against:
 
 ```gitignore
-.grid/
+.grid/*
 !.grid/invariants.json
 !.grid/covenants.json
+!.grid/plans/
+.grid/plans/*
+!.grid/plans/*.json
 ```
+
+`.grid/*`, not `.grid/`: git does not descend into an excluded directory, so
+a negation under `.grid/` is never reached and the declaration would be
+ignored anyway.
 
 Gates before any commit: `cargo fmt --all --check`, `cargo clippy
 --workspace --all-targets` (pedantic, deny), `cargo test --workspace`,
