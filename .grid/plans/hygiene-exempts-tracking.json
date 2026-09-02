@@ -1,0 +1,21 @@
+{
+  "plan_id": "plan:from-diff-bc6df21dc372",
+  "base": {
+    "snapshot": "snap:b3:249529b62e63eaf58c3dcea6f274e8c3cd3e9b0a6c04a1d3b94bbc6df21dc372"
+  },
+  "delta": {
+    "defs": [
+      {
+        "action": "modify",
+        "callsign": "scripts.forge_tracking.hygiene",
+        "interface": false
+      },
+      {
+        "action": "modify",
+        "callsign": "scripts.forge_tracking.selfcheck",
+        "interface": false
+      }
+    ],
+    "edges": []
+  }
+}
