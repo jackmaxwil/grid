@@ -342,6 +342,31 @@ impl Record {
         })
     }
 }
+/// What one [`Store::export`] or [`Store::import`] did, by trace id. Ids
+/// rather than counts, because a refusal has to name what it refused.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Moved {
+    /// Traces whose file the transport wrote.
+    pub written: Vec<String>,
+    /// Traces the destination already held, byte for byte. This is why the
+    /// transport is idempotent: running it twice writes nothing the second
+    /// time and says so.
+    pub unchanged: Vec<String>,
+    /// Traces the destination holds under *different* bytes. Refused, never
+    /// overwritten — and on import the whole transport is refused, so these
+    /// are the ids to reconcile, not the ones that were skipped.
+    pub conflicts: Vec<String>,
+}
+
+impl Moved {
+    fn sort(&mut self) {
+        for ids in [&mut self.written, &mut self.unchanged, &mut self.conflicts] {
+            ids.sort();
+            ids.dedup();
+        }
+    }
+}
+
 /// Why a store operation failed.
 #[derive(Debug)]
 pub enum StoreError {
@@ -456,6 +481,127 @@ impl Store {
         }
         out.sort_by(|a, b| a.trace.trace_id.cmp(&b.trace.trace_id));
         Ok(out)
+    }
+
+    /// The `.json` files directly under `dir`, sorted. An absent directory
+    /// holds none of them, which is a state and not a failure.
+    fn json_files(dir: &Path) -> Result<Vec<PathBuf>, StoreError> {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(StoreError::Io(e)),
+        };
+        let mut out = Vec::new();
+        for entry in entries {
+            let path = entry?.path();
+            if path.extension().is_some_and(|e| e == "json") {
+                out.push(path);
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
+    /// Copy every retained trace into `dir`, one file per trace named by the
+    /// blake3 of its own bytes.
+    ///
+    /// Content-addressed, so exporting the same store twice writes the same
+    /// names with the same bytes and the second run changes nothing, and so
+    /// two machines' exports can be poured into one directory without either
+    /// standing on the other. The bytes are copied, never re-serialized: a
+    /// record written by an older engine travels as itself and is read on the
+    /// far side by the same fallback that reads it here.
+    ///
+    /// # Errors
+    /// [`StoreError::Io`] on a read or a write; [`StoreError::Corrupt`] if a
+    /// retained record does not parse — a store that cannot be read is not an
+    /// empty export.
+    pub fn export(&self, dir: &Path) -> Result<Moved, StoreError> {
+        std::fs::create_dir_all(dir)?;
+        let mut moved = Moved::default();
+        for path in Self::json_files(&self.dir)? {
+            let bytes = std::fs::read(&path)?;
+            let record = Record::parse(&bytes)
+                .map_err(|e| StoreError::Corrupt(format!("{}: {e}", path.display())))?;
+            let id = record.trace.trace_id;
+            let dest = dir.join(format!("{}.json", blake3::hash(&bytes).to_hex()));
+            match std::fs::read(&dest) {
+                Ok(existing) if existing == bytes => moved.unchanged.push(id),
+                // The name *is* the content hash, so a file there holding
+                // other bytes is a collision or a truncated write. Neither is
+                // a file to overwrite.
+                Ok(_) => moved.conflicts.push(id),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    Self::write_atomically(&dest, &bytes)?;
+                    moved.written.push(id);
+                }
+                Err(e) => return Err(StoreError::Io(e)),
+            }
+        }
+        moved.sort();
+        Ok(moved)
+    }
+
+    /// Copy every trace file in `dir` into the store.
+    ///
+    /// A trace id names a run, and two different records under one id are two
+    /// claims about one run: the import refuses rather than choosing. The
+    /// refusal is whole — nothing is written when any id conflicts — for the
+    /// same reason a walk over budget is rejected whole: a half-applied
+    /// import is a store nobody can describe. Every refused id is named.
+    ///
+    /// Whole against conflicts, which are decided before anything is
+    /// written; not against the disk. An IO error mid-write leaves the files
+    /// written before it in the store and returns the error — the recovery
+    /// is to run the same import again, which writes the rest and reports
+    /// the first ones `unchanged`.
+    ///
+    /// # Errors
+    /// [`StoreError::Io`] on a read or a write; [`StoreError::Corrupt`] if a
+    /// file in `dir` is neither the current record shape nor the epoch-0 one.
+    pub fn import(&self, dir: &Path) -> Result<Moved, StoreError> {
+        let mut moved = Moved::default();
+        let mut planned: BTreeMap<PathBuf, (Vec<u8>, String)> = BTreeMap::new();
+        for path in Self::json_files(dir)? {
+            let bytes = std::fs::read(&path)?;
+            let record = Record::parse(&bytes)
+                .map_err(|e| StoreError::Corrupt(format!("{}: {e}", path.display())))?;
+            let id = record.trace.trace_id;
+            let dest = self.path(&id);
+            let held = match std::fs::read(&dest) {
+                Ok(held) => Some(held),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(StoreError::Io(e)),
+            };
+            // Two files in `dir` claiming one id disagree exactly as a file in
+            // `dir` disagreeing with the store does, and count the same.
+            let held = held.or_else(|| planned.get(&dest).map(|(bytes, _)| bytes.clone()));
+            match held {
+                Some(held) if held == bytes => moved.unchanged.push(id),
+                Some(_) => moved.conflicts.push(id),
+                None => {
+                    planned.insert(dest, (bytes, id));
+                }
+            }
+        }
+        if moved.conflicts.is_empty() {
+            for (dest, (bytes, id)) in planned {
+                Self::write_atomically(&dest, &bytes)?;
+                moved.written.push(id);
+            }
+        }
+        moved.sort();
+        Ok(moved)
+    }
+
+    /// Write through a temporary file and a rename, so a reader never meets
+    /// half a trace. The temporary sits beside its destination, because a
+    /// rename across filesystems is not one.
+    fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
     }
 
     /// Load a retained trace, if the id is known.

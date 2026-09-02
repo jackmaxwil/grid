@@ -104,7 +104,7 @@ pub fn join<B: AsRef<[u8]>>(
         if let Some((test, env)) = entry
             .trace_id
             .as_deref()
-            .and_then(|id| test_of.get(id))
+            .and_then(|id| crate::stale::attributed(&test_of, id))
             .zip(entry.env_hash.as_deref())
         {
             envs.entry(test).or_default().insert(env);

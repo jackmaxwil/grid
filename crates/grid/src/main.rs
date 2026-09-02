@@ -110,6 +110,7 @@ fn help() {
          test [base] [--trace|--all]  run what the change can reach; replay the rest; exit 3 on red\n  \
          gate <plan> [head]           promise vs delta; exit 3 on hold\n  \
          plan lint <file>             validate a promise file\n  \
+         plan new [--from-diff <b>]   a starter promise file, or one drafted from the diff\n  \
          todo <plan>                  the promise as a worklist\n  \
          check [base] [head] [--quick]  everything the change did that nobody checked; exit 3\n  \
          check --plan <p> [--why]     the same, plus the gate verdict and why it says so\n  \
@@ -118,6 +119,7 @@ fn help() {
          cache lookup|record ...      test verdicts keyed by identity closure\n  \
          edit apply <file>            compare-and-swap edits by datum\n  \
          trace ingest|diff ...        runtime traces -> observed edges\n  \
+         trace export|import <dir>    retained traces as a directory that travels\n  \
          explain <anything>           define any word or id in grid output\n  \
          serve                        the same contract on a socket\n\n\
          every verb takes --json; hints live on stderr (GRID_HINTS=0)",
@@ -2383,9 +2385,73 @@ fn trace(args: &[&str], json: bool) -> u8 {
                 }
             }
         }
+        Some((direction @ (&"export" | &"import"), rest)) => {
+            trace_transport(*direction == "export", rest, json, root)
+        }
         _ => {
-            hint("usage: grid trace ingest|diff ...");
+            hint("usage: grid trace ingest|diff|export|import ...");
             exit::BAD_INPUT
         }
+    }
+}
+
+/// `grid trace export <dir>` / `grid trace import <dir>` — retained traces
+/// as a directory that can travel.
+///
+/// CLI-only: no wire method and no daemon involvement, because the operation
+/// is a file copy between two paths on one machine and the daemon holds
+/// nothing either side needs. `--json` emits the wire `TraceTransportResult`
+/// — the same three lists the records carry, in the contract's words.
+fn trace_transport(exporting: bool, args: &[&str], json: bool, root: &std::path::Path) -> u8 {
+    let verb = if exporting { "export" } else { "import" };
+    let Some(dir) = args.first() else {
+        hint(&format!("usage: grid trace {verb} <dir>"));
+        return exit::BAD_INPUT;
+    };
+    let dir = std::path::Path::new(dir);
+    let store = match rpc::trace_dir(root).and_then(grid_trace::Store::open) {
+        Ok(store) => store,
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            return exit::INTERNAL;
+        }
+    };
+    let moved = if exporting {
+        store.export(dir)
+    } else {
+        store.import(dir)
+    };
+    let moved = match moved {
+        Ok(moved) => moved,
+        Err(e) => {
+            hint(&format!("grid: {e}"));
+            return exit::INTERNAL;
+        }
+    };
+    if json {
+        let refused = !moved.conflicts.is_empty();
+        let code = emit_json(&grid_wire::TraceTransportResult {
+            written: moved.written,
+            unchanged: moved.unchanged,
+            refused: moved.conflicts,
+        });
+        return if code == exit::OK && refused {
+            exit::BAD_INPUT
+        } else {
+            code
+        };
+    }
+    print!("{}", porcelain::trace_transport(&moved, exporting, dir));
+    if moved.conflicts.is_empty() {
+        exit::OK
+    } else {
+        // Bad input, not divergence: the directory and the store disagree
+        // about what a run did, and no code has diverged from anything.
+        // Only import is refused whole; export wrote every other trace, and
+        // the `done` line already counts what it did.
+        if !exporting {
+            hint("grid: nothing was imported — reconcile the ids above, or import into an empty store");
+        }
+        exit::BAD_INPUT
     }
 }

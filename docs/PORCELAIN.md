@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.16.0
+version: 2.20.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -143,8 +143,15 @@ emitted and the report carries no `compat` field at all.
 per replayed verdict; `miss <test>  <reason>` per selected test, the reason
 one of `closure-changed` (the walk from the changed set reached it, or the
 test itself changed), `no-trace` (no live trace watched it, so the static
-closure alone does not license a skip), `unresolved` (the chart cannot name
-it), `aground` (the walk ran past its fuel, so every test is selected), or
+closure alone does not license a skip), `unresolved:<why>` (the chart cannot
+name it — `:ambiguous` when the name resolves to more than one definition,
+`:module-charted` when its module is charted and the name is not — the
+observation, named the same in every language; on Rust a macro invocation
+such as `proptest!` defines it, on Python a decorator or a generated
+attribute or a definition the frontend declined — `:not-charted`
+when nothing under that module is charted at all; bare `unresolved` from a
+plan computed before the column existed), `aground` (the walk ran past its
+fuel, so every test is selected), or
 `not-recorded` (nothing on record to replay); `test <ok|fail>  <test>
 pass=<pass|fail>` per outcome the runner reported; `warn <test>
 nondeterministic  same closure key, same env: <v1> <t1>, <v2> now` when a
@@ -157,8 +164,36 @@ a replayed verdict is `fail` — the closure is unchanged, so the failure
 stands, and `F` in the `done` line counts both (a selected test the runner
 never reported on counts as failed and is named in a `warn`), `1` when the runner could not be spawned, `0` otherwise —
 `uncovered` and `nondeterministic` are heuristic and never move it. Runner
-output goes to stderr; the horizon line on stderr says how many tests were
+output goes to stderr as the runner produces it, not replayed at the end; the horizon line on stderr says how many tests were
 selected out of how many, and what the plan and the survey cost.
+
+`grid plan new <id>` writes a starter plan into the store and prints one
+`todo  <plan-id>  <path>` record. `grid plan new [<id>] --from-diff <base>`
+instead *drafts* one from the diff between `<base>` and the worktree — a
+`modify`/`add`/`remove`/`move` def promise per changed definition, carrying
+`interface` where the diff could establish it and omitting it where it could
+not, and an `add` edge promise per added edge in callsign space — and writes
+the plan itself, as JSON, to stdout. This is a text-mode output, not
+records: the plan file is the answer. With `--out <file>` it goes there and
+stdout is the same `todo` record. An added edge whose endpoints the chart
+cannot both name is not promised and is named on stderr. Without an id the
+plan is called `plan:from-diff-<base tail>`. Exit `2` on a base that does
+not resolve; the draft is a draft, so nothing here diverges and nothing
+exits `3`.
+
+`grid trace export <dir>` and `grid trace import <dir>` carry retained
+traces between machines, and use existing tags. Export writes one file per
+trace named by the blake3 of its own bytes; import files each one under the
+trace id the record carries. Both close with `done  traces N <exported|
+imported> · M unchanged · K refused  <dir>`. An id the destination already
+holds under different bytes is a `miss <trace-id>  differs from the trace
+already there`, and an import with any such id writes *nothing* — the whole
+transport is refused, like a walk over budget — exiting `2`: a directory and
+a store disagreeing about what one run did is bad input, not code diverging
+from a promise. Both directions are idempotent, so a second run of either
+reports every trace `unchanged` and exits `0`. `--json` emits the wire
+`TraceTransportResult` (`written`, `unchanged`, `refused`, each a list of
+trace ids); the verb is CLI-only and no wire method carries it.
 
 `grid check --compile [-- <cargo check args>]` runs `cargo check` with the
 given arguments from the worktree root, the compiler's output on stderr. A

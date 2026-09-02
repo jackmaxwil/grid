@@ -31,7 +31,7 @@ use std::collections::{HashMap, HashSet};
 use grid_chart::{DatumId, Ordinal, Segment};
 use grid_wire::{
     CacheHit, CacheHitVerdict, Callsign, Datum, DefRef, DriftUnchecked, SnapshotId, TestId,
-    TestPlan, TestSelection, TestSelectionWhy,
+    TestPlan, TestSelection, TestSelectionUnresolved, TestSelectionWhy,
 };
 
 /// Everything one plan is computed from. Bundled because every field is part
@@ -131,11 +131,15 @@ pub fn callsign_of(test: &str) -> String {
 /// scan of the chart per test.
 struct Resolver {
     by_suffix: HashMap<String, Vec<DatumId>>,
+    /// Every dotted suffix of every charted callsign's parent — the modules
+    /// the survey did chart something in.
+    modules: HashSet<String>,
 }
 
 impl Resolver {
     fn new<B: AsRef<[u8]>>(segments: &[Segment<B>]) -> Self {
         let mut by_suffix: HashMap<String, Vec<DatumId>> = HashMap::new();
+        let mut modules: HashSet<String> = HashSet::new();
         for segment in segments {
             for ord in 0..segment.def_count() {
                 let ord = Ordinal(ord);
@@ -154,17 +158,44 @@ impl Resolver {
                         None => break,
                     }
                 }
+                // The same suffix chain over the callsign's *parent*, so the
+                // reason an unresolved test gives can distinguish a name the
+                // survey never charted from a name inside a module it did.
+                if let Some((parent, _)) = callsign.rsplit_once('.') {
+                    let mut rest = parent;
+                    loop {
+                        modules.insert(rest.to_owned());
+                        match rest.split_once('.') {
+                            Some((_, tail)) => rest = tail,
+                            None => break,
+                        }
+                    }
+                }
             }
         }
-        Self { by_suffix }
+        Self { by_suffix, modules }
     }
 
-    /// Exactly one definition, or nothing: two is an ambiguity, and an
-    /// ambiguous test is one grid cannot say anything about.
-    fn resolve(&self, callsign: &str) -> Option<DatumId> {
+    /// Exactly one definition, or the reason there is not one: two is an
+    /// ambiguity, and an ambiguous test is one grid cannot say anything
+    /// about. Absent splits again on whether the *module* is charted: a name
+    /// missing from a module the survey did chart is a name the survey could
+    /// not see. The variant names that observation and not its cause,
+    /// because the cause is per language — on Rust a macro invocation
+    /// defines it (the frontend charts items, and macro output is not an
+    /// item); on Python a decorator, a generated attribute, or a definition
+    /// the frontend declined.
+    fn resolve(&self, callsign: &str) -> Result<DatumId, TestSelectionUnresolved> {
         match self.by_suffix.get(callsign).map(Vec::as_slice) {
-            Some([one]) => Some(*one),
-            _ => None,
+            Some([one]) => Ok(*one),
+            Some([_, _, ..]) => Err(TestSelectionUnresolved::Ambiguous),
+            _ if callsign
+                .rsplit_once('.')
+                .is_some_and(|(module, _)| self.modules.contains(module)) =>
+            {
+                Err(TestSelectionUnresolved::ModuleCharted)
+            }
+            _ => Err(TestSelectionUnresolved::NotCharted),
         }
     }
 }
@@ -249,7 +280,7 @@ fn read_traces<'a, B: AsRef<[u8]>>(
                 .trace
                 .command
                 .as_deref()
-                .and_then(|name| resolver.resolve(name))
+                .and_then(|name| resolver.resolve(name).ok())
                 .filter(|test| held_at_base(*test))
             {
                 traced.insert(test);
@@ -300,13 +331,17 @@ fn sort_tests<B: AsRef<[u8]>>(
         reached_tests: Vec::new(),
     };
     for test in inputs.tests {
-        let Some(datum) = resolver.resolve(&callsign_of(&test.0)) else {
-            out.selected.push(TestSelection {
-                test: test.clone(),
-                datum: None,
-                why: TestSelectionWhy::Unresolved,
-            });
-            continue;
+        let datum = match resolver.resolve(&callsign_of(&test.0)) {
+            Ok(datum) => datum,
+            Err(unresolved) => {
+                out.selected.push(TestSelection {
+                    test: test.clone(),
+                    datum: None,
+                    why: TestSelectionWhy::Unresolved,
+                    unresolved: Some(unresolved),
+                });
+                continue;
+            }
         };
         let wire = Datum(datum.to_string());
         let why = match reached {
@@ -351,6 +386,9 @@ fn sort_tests<B: AsRef<[u8]>>(
             test: test.clone(),
             datum: Some(wire),
             why,
+            // The column answers exactly one question, and this test is not
+            // the one it asks.
+            unresolved: None,
         });
     }
     out
@@ -947,6 +985,100 @@ mod tests {
             names(&after)
         );
         assert!(names(&after).contains("tests/test_core.py::test_c"));
+    }
+
+    /// Ground truth for the `unresolved` reason, over the real Rust frontend.
+    /// A `proptest!` block is a macro invocation, so the survey charts no
+    /// definition for the tests it generates: the name is missing from a
+    /// module the survey *did* chart. That is a different fact from a module
+    /// nothing was charted in, and a different one again from a name two
+    /// definitions answer to — and the reader of `miss` gets told which.
+    #[test]
+    fn an_unresolved_test_says_why_the_chart_cannot_name_it() {
+        use grid_wire::TestSelectionUnresolved as U;
+
+        let files: Vec<(&'static str, String)> = vec![
+            (
+                "Cargo.toml",
+                "[package]\nname = \"fx\"\nversion = \"0.1.0\"\nedition = \"2021\"\n".to_owned(),
+            ),
+            (
+                "src/lib.rs",
+                "pub fn a() -> i64 { 1 }\n\
+                 pub mod p { pub mod t { pub fn dup() -> i64 { 1 } } }\n\
+                 pub mod q { pub mod t { pub fn dup() -> i64 { 2 } } }\n\n\
+                 #[cfg(test)]\n\
+                 mod tests {\n    \
+                 use super::*;\n    \
+                 #[test]\n    fn charted() { assert_eq!(a(), 1); }\n\n    \
+                 proptest! {\n        \
+                 #[test]\n        fn generated(x in 0u8..) { let _ = x; }\n    }\n}\n"
+                    .to_owned(),
+            ),
+        ];
+        let dir = repo(&owned(&files));
+        let ids = [
+            "fx tests::charted",
+            "fx tests::generated",
+            "fx nowhere::absent",
+            "t::dup",
+        ];
+        let plan = plan(dir.path(), Some("HEAD"), ENV, &ids);
+        let reason = |id: &str| {
+            plan.selected
+                .iter()
+                .find(|s| s.test.0 == id)
+                .map_or_else(|| panic!("{id} is in the plan"), |s| (s.why, s.unresolved))
+        };
+        assert_eq!(
+            reason("fx tests::charted").1,
+            None,
+            "a charted test is not unresolved"
+        );
+        assert_eq!(
+            reason("fx tests::generated"),
+            (Why::Unresolved, Some(U::ModuleCharted)),
+            "the module is charted and the name is not — on Rust, a macro defines it"
+        );
+        assert_eq!(
+            reason("fx nowhere::absent"),
+            (Why::Unresolved, Some(U::NotCharted)),
+            "nothing under that module is charted at all"
+        );
+        assert_eq!(
+            reason("t::dup"),
+            (Why::Unresolved, Some(U::Ambiguous)),
+            "two definitions answer to that name"
+        );
+        // And the record says so where a reader will meet it.
+        let run = grid_wire::TestRun {
+            env_hash: ENV.to_owned(),
+            plan,
+            ran: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let out = crate::porcelain::test_run(&run);
+        assert!(
+            out.contains("miss    fx tests::generated  unresolved:module-charted\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("miss    fx nowhere::absent  unresolved:not-charted\n"),
+            "{out}"
+        );
+        // Conservatism: a plan from before the column existed carries no
+        // reason, and no reason is printed. Unknown is not `not-charted`,
+        // which is a claim about the survey nobody made.
+        let mut older = run;
+        for sel in &mut older.plan.selected {
+            sel.unresolved = None;
+        }
+        let out = crate::porcelain::test_run(&older);
+        assert!(
+            out.contains("miss    fx tests::generated  unresolved\n"),
+            "an absent reason prints no reason:\n{out}"
+        );
+        assert!(!out.contains("unresolved:"), "{out}");
     }
 
     #[test]

@@ -107,7 +107,10 @@ the single largest gap between grid's promise and its evidence. → T-06.
 
 **A1 — every `check` says `miss 391 unattributed entries`.** Verdicts that
 `grid test` recorded without a trace have no trace id, so `--tests`
-cannot attribute them, forever. The count only grows. → T-07.
+cannot attribute them, forever. The count only grows. → T-07 stops it
+growing; it does not make it fall. Lines already in the append-only log
+never gain an attribution, so on an existing store the count stays where
+it was. The 0 on this repo is a store created fresh on the branch.
 
 **A2 — authoring a plan is JSON by hand.** `grid plan new` exists; an agent
 still has to write callsign patterns and promise kinds. The journey is
@@ -139,7 +142,10 @@ alone. → T-14.
 **Untested live paths.** `grid test --trace` on Rust (needs `cargo
 llvm-cov`), the pytest inventory and pytest-cov path, `--coverage-json`
 against a real coverage.py report (fixture only). They are implemented to
-the recipes and have not run for real. → T-15.
+the recipes and have not run for real. → T-15, which found that the Rust
+side had never worked: `cargo llvm-cov` refuses the flag pair grid was
+passing, so every traced run reported no verdicts. Both paths have now run
+for real and the numbers are in README.
 
 **Platform.** The daemon is `std::os::unix::net`; Windows is out and not
 stated anywhere. → T-16.
@@ -191,22 +197,54 @@ plan).
   changed since the last check in this store (a one-line state file).
   Stated in PORCELAIN as a `--quick` property; the full form always
   prints them. (done eb946ff)
-- **T-03 (P0, S) First-run banner for `grid test`.** When zero traces are
-  retained: one stderr line naming the fact and the two commands (install
-  `cargo-llvm-cov` / `pytest-cov`; run `grid test --trace --all` once).
-- **T-04 (P1, S) `just traces` recipe.** Install check plus the CI form.
-- **T-05 (P1, M) Single-run per-test tracing on Rust.** A nextest wrapper
-  script keyed by test name sets `LLVM_PROFILE_FILE`, making `--trace`
-  one invocation instead of one per test. Configuration shipped as a
-  documented template, not code.
-- **T-07 (P0, S) Attribute `grid test` verdicts without a trace.** Record
-  a synthetic trace id (`test:<inventory id>`) so `stale.rs` can attribute
-  them; the `unattributed` count becomes what it should be — verdicts
-  recorded by something other than `grid test`.
-- **T-08 (P1, M) Plan authoring on-ramp.** `grid plan new --from-diff
-  <base>` drafts promises from a working diff (defs touched, edges added)
-  for the agent to prune; `grid plan new --defs a.b c.d` for the tiny
-  case. The gate stays the judge.
+- **T-03 — done** (dc152d7): with zero retained traces `grid test` prints one
+  stderr line naming the fact and both install commands, and stops once a
+  trace exists. Also silent under `--trace`, which is the run it recommends.
+- **T-04 — done** (a8b2fae): `just traces` checks `cargo-llvm-cov`, the
+  `llvm-tools` component and `pytest_cov`, prints the exact install command
+  for each missing one and exits 2; `just traces-ci` is the CI form.
+- **T-05 — done** (aa5e036), in part: `scripts/templates/` ships the nextest
+  wrapper and its `.config/nextest.toml`, keyed by `NEXTEST_BINARY_ID` and
+  `NEXTEST_TEST_NAME` — verified writing one `.profraw` per test from one
+  nextest run — and `grid test --trace` counts those profiles and says what
+  is still missing. Ingesting them is T-45. The wrapper stands down when
+  `GRID_TEST` is in its environment, which every runner grid drives sets:
+  with both armed, the profile went to the wrapper's file and the report
+  grid read had every count zero, which `trace_of_lcov` now refuses as a
+  lost profile rather than retaining as a test that reached nothing.
+- **T-45 (P1, M) Ingest the wrapper's per-test profiles.** T-05 shipped the
+  nextest wrapper template and grid notices the `.profraw` files it leaves
+  (one per test, named by the test id), but still runs `cargo llvm-cov
+  nextest` once per test to get an lcov report per test. Turning the
+  profiles into traces in one pass means grid spawning `llvm-profdata merge`
+  and `llvm-cov export -format=lcov` itself, per test, against the test
+  binaries — finding the tools through `rustc --print target-libdir` and the
+  objects through `cargo nextest list`. That is a third and fourth spawned
+  tool and an object-discovery path of its own, which is why the template
+  landed without it; the saving it buys is the report export, the run itself
+  already being one invocation once the wrapper is installed.
+- **T-46 (P3, S) `per_test_profiles` counts forever.** `target/grid-profiles`
+  is never cleared, so the hint's number grows across sessions and keeps
+  firing after the wrapper is uninstalled. Left as it is: the count is a
+  hint and never a gate (the wrapper stands down under grid, so nothing
+  grid runs adds to it), and clearing the directory would delete the
+  profiles T-45 is going to ingest. Say "cumulative" in the hint, or clear
+  it at the start of the one-pass ingest, when T-45 lands.
+- **T-07 — done** (dc152d7): a verdict recorded by `grid test` for a test
+  that ran untraced carries `test:<callsign>` in the cache line's trace-id
+  column, which `stale.rs` and `weak.rs` read. What was measured: on a
+  verdict log created fresh on this branch (`.grid/cache`, 2026-09-02
+  01:20), 2042 lines, 1529 with a `test:` attribution, 513 with a trace id,
+  `unattributed_entries: 0`. That is not the 391 falling to 0 — it is a
+  store that never held an unattributed line. `attributed()` reads only
+  the `test:` prefix, and a line already in the log never gains one, so an
+  existing store keeps its old count and merely stops growing.
+- **T-08 — done** (f264a24), in part: `grid plan new [<id>] --from-diff
+  <base> [--out <file>]` drafts def and edge promises from the working diff
+  with the base pinned to the snapshot, and `grid plan lint` accepts it
+  unchanged. `--defs a.b c.d` for the tiny case is not built: the drafted
+  form covers the case that motivated it, and a second authoring path would
+  be a second thing to keep lint-clean.
 - **T-09 (P1, S) Default `since` for `suspects --closure`.** The last
   snapshot at which the test recorded `pass` (from the verdict log); say
   which one was used. (done 6dfb18c)
@@ -227,10 +265,11 @@ plan).
 
 ### Traces across machines
 
-- **T-13 (P1, M) Trace transport.** `grid trace export <dir>` / `grid
-  trace import <dir>` (content-addressed files, idempotent), so CI's
-  `.grid/traces` can travel as an artifact and local selection reads it.
-  Decay grading already handles a trace from a different snapshot.
+- **T-13 — done** (719e7f3): `grid trace export <dir>` / `grid trace import
+  <dir>`, content-addressed out and keyed by trace id in, bytes copied so a
+  round trip is byte-identical and an epoch-0 record travels as itself. An
+  import that would put different content under a held id refuses the whole
+  transport, names the id, and exits 2. CLI-only, no wire method.
 - **T-23 (P2, M) Packed trace index.** `retained()` scans one file per
   trace; past ~10k traces a membership-style packed image (marked
   `ponytail:` today).
@@ -255,12 +294,16 @@ plan).
 
 ### Correctness warts
 
-- **T-27 (P1, S) `grid test` runner output is captured then replayed.**
-  Stream it (`ponytail:` today); a 12s nextest run with no output looks
-  hung.
-- **T-28 (P1, S) `unresolved` tests from `proptest!` and other macro-
-  defined tests.** Always run — correct — but noisy (34 on this repo).
-  Name the macro in the `miss` reason so the reader knows why.
+- **T-27 — done** (0a28f74): each of the runner's two pipes is drained by
+  its own thread, written to stderr as it arrives, and kept for the verdict
+  parse. Two threads because a child that fills one pipe while grid reads
+  the other never finishes.
+- **T-28 — done** (e1b9a5a): the reason splits into `unresolved:ambiguous`,
+  `unresolved:module-charted` (the module is charted and the name is not —
+  named for the observation, since on Rust a macro defines the test and on
+  Python a decorator or a generated attribute does) and
+  `unresolved:not-charted`, from the survey's own facts. On this repo all 25
+  land in the module-charted arm, every one a `proptest!` test.
 - **T-29 (P2, S) `cargo test -- --list` fallback compiles the whole
   workspace.** Say so on stderr when nextest is absent and suggest it.
 - **T-30 (P2, M) Compat: tuple-struct members and enum variant payloads**
@@ -270,10 +313,20 @@ plan).
 
 ### Untested-live paths and platform
 
-- **T-15 (P0, S) Run the recipes for real once.** Install `cargo-llvm-cov`
-  and `pytest-cov` on one machine, run `grid test --trace --all` on this
-  repo and on a Python fixture, ingest, then `grid test` again and watch
-  replay happen. Record the numbers in README.
+- **T-15 — done** (323db0f): and it found that the traced path had never
+  worked — `cargo llvm-cov` refuses `--ignore-run-fail` with
+  `--no-fail-fast`, so every traced run reported no verdicts at all. With
+  the flag gone, re-measured after the review fixes on a store created
+  empty for the run: `just traces` on this repo is 29m 13s for 546 tests,
+  508 traces retained and 38 reports refused as all-zero — every one a
+  test that drives the real binary or daemon, cause not diagnosed; the two
+  `grid-wire::conformance` tests the earlier run called "no report" are
+  among them. `grid test` with nothing changed is 3.2s for 62 selected
+  against 29.8s for the inventory — not the 0.8s / 28 first claimed, which
+  was measured with 36 of those tests replayed on retained traces of
+  nothing. On a small Python project, 6 traces in 0.91s and a body edit
+  selecting exactly the three tests that reach it (not re-measured).
+  Numbers in README.
 - **T-16 (P2, S) State the platform.** macOS and Linux; Windows needs a
   named-pipe daemon or a `--no-daemon` mode. Say so in README.
 - **T-32 (P2, M) Python end-to-end on a real repo.** yi's Python side has
@@ -527,11 +580,13 @@ F1–F7 and F10 were fixed on that branch. What was left, and why.
 
 ## Recorded ceilings (from `ponytail:` markers in the tree)
 
-The per-test `cargo llvm-cov` loop; `Store::retained` O(traces); bytes/4
-as the token estimate; one memoized file read per body; `TokenStream::
-to_string` spacing for Rust sigs; `--since` resolving without a survey;
-runner output captured not streamed; `cargo test --list` names-only
+The per-test `cargo llvm-cov` loop (the nextest wrapper template in
+`scripts/templates/` fixes its attribution half; T-45 is the rest);
+`Store::retained` O(traces); bytes/4 as the token estimate; one memoized
+file read per body; `TokenStream::to_string` spacing for Rust sigs;
+`--since` resolving without a survey; `cargo test --list` names-only
 fallback; `uncovered` recomputed per check; the membership image's
 O(chain) rewrite; the watch session's O(tree) phases; `examples/` not
 cfg-joined; compat's tuple-struct and payload skips. Each names its
-upgrade path where it sits.
+upgrade path where it sits. Runner output is no longer one of these: it
+streams (T-27).

@@ -34,9 +34,10 @@ grid check --quick 2>&1 | head -40 >&2
 exit 2
 ```
 
-Pre-commit runs `grid check`. CI runs `grid test --trace --all` — that is
-what refreshes the traces local selection reads — plus `grid check
---compile -- --all-targets` and `grid gate <plan>` when there is a plan.
+Pre-commit runs `grid check`. CI runs `just traces-ci` (`grid test --trace
+--all`) — that is what refreshes the traces local selection reads — plus
+`grid check --compile -- --all-targets` and `grid gate <plan>` when there is
+a plan.
 
 ## Journeys
 
@@ -51,8 +52,9 @@ refactored", "tests cover it", "no API change" — become checked
 predicates.
 
 **Plan, implement, gate.** Plan mode writes a plan file (promised
-definitions with `interface: true|false`, promised edges); `grid plan
-lint`; implement; `grid drift --plan f` lists the callers nobody promised;
+definitions with `interface: true|false`, promised edges) — or `grid plan
+new --from-diff <base>` drafts one from a change already made, for pruning;
+`grid plan lint`; implement; `grid drift --plan f` lists the callers nobody promised;
 `grid gate f` holds on an unpromised interface move or a promise not made
 good. Exit 3 means the plan was not made good.
 
@@ -115,7 +117,8 @@ help` lists every verb, `grid explain` defines every word.
   retained trace always runs; a walk over budget runs everything and says
   why. Without traces `grid test` is your runner plus bookkeeping — run
   `grid test --trace --all` once (needs `cargo-llvm-cov` or `pytest-cov`)
-  and selection starts.
+  and selection starts — `grid test` says so itself, once, while the
+  trace store is empty, and `just traces` runs the install check for you.
 - **Nondeterministic, never "flake".** Same closure key, same
   environment, opposite verdict: the claim is "not the charted code". A
   race is code.
@@ -148,12 +151,70 @@ coverage json --contexts="$t" -o cov.json
 grid trace ingest --coverage-json cov.json --test "$t"
 ```
 
+`.grid/traces` is per machine. `grid trace export <dir>` copies the retained
+traces into a directory CI can hand up as an artifact, and `grid trace
+import <dir>` pours one back into a local store — content-addressed,
+idempotent both ways, and an import that would put different content under a
+trace id the store already holds refuses the whole transport and names the
+id. An imported trace decays like any other: it is graded against the chart
+it is asked about, not the one it was taken on.
+
 `grid test --trace` runs the recipe for the tests it selected; `--all`
-for the inventory. Traces decay honestly: an observation whose endpoint no
+for the inventory — one `cargo llvm-cov nextest` per test, because one
+profile cannot be attributed back to the tests that shared a process.
+`scripts/templates/` holds a nextest wrapper script and a
+`.config/nextest.toml` that fix the attribution half: one `.profraw` per
+test, named by the test id, from one nextest run. Copy them in; grid
+installs nothing, notices the files and says so, and turning them into
+traces without a second export is `docs/TODOS.md` T-45. The wrapper stands
+down under a runner grid drives (`GRID_TEST` is set), so an installed
+template and `grid test --trace` never trace the same process twice — a
+report every count of which is zero is refused as a lost profile, never
+retained as a test that reached nothing. `just traces` is that run with the tool check in front of
+it — it prints the exact install commands and stops rather than half-tracing
+the inventory; `just traces-ci` is the same run without the check, for a
+workflow that installed them itself. Traces decay honestly: an observation whose endpoint no
 longer exists in the chart asked about is demoted to heuristic with reason
 `stale-trace`, and the retained file is never rewritten.
 
-## Numbers (2026-09-02, Apple M4 Max, release, this repo: 1836 defs / 3473 edges, store warm, min of 5)
+### What the loop cost here, measured
+
+This repository, 2026-09-02, Apple M4 Max, release binary, 546 tests under
+`cargo nextest`, on a trace store created empty for the run. `just traces`
+— one `cargo llvm-cov nextest` per test — took **29m 13s** and retained
+**508 traces**; 38 reports came back with every `DA:` count zero and were
+refused as lost profiles, their verdicts kept without a trace. All 38 are
+tests that drive the real binary or daemon (`grid::conformance`, two
+`grid-wire::conformance`, one `grid-lang-py::properties` case); why their
+profile is empty is not diagnosed. Before that refusal existed, 36 of them
+were retained as traces of nothing and replayed on every later run. That is
+a CI-shaped cost, which is where the recipe belongs; the two lines in
+`docs/TODOS.md` T-45 are what would make it one nextest run.
+
+What the traces then buy, all with the build already warm:
+
+| run | selected | wall |
+|---|---|---|
+| `grid test --all` (the whole inventory) | 546 | 29.8s |
+| `grid test`, nothing changed | 62 | 3.2s |
+| `grid test`, one body edit in a leaf module (`interfere::compute`) | 201 | 22.4s |
+| `grid test`, one body edit in a crate everything depends on (`grid-chart`) | 250 | 41.1s |
+
+The unchanged case is the one an agent meets most often, and it is 9×. The
+62 it still runs are exactly the tests grid refuses to skip: 25
+`unresolved:module-charted` (every `proptest!`-generated test — the survey
+charts items and a macro produces none) and 37 `no-trace` (the refused
+reports above; the 38th is a `proptest!` case already in the first group).
+The 37 are the slow ones — each spawns the daemon — which is why 3.2s and
+not the 0.8s first claimed: that number was measured with 36 of them
+replayed on empty traces. A single edit still selects a third of the suite,
+because this repository's conformance tests spawn the real binary and a
+trace of one of those covers most of it — honest coverage, not a selection
+bug. The deep edit's wall time is mostly `cargo` rebuilding what depends on
+the crate; selection saves the running, never the building. On a suite of
+slow, independent tests the ratio is the selection ratio; here it is not.
+
+## Numbers (2026-09-02, Apple M4 Max, release, this repo: 1884 defs / 3602 edges, store warm, min of 5)
 
 | verb | measured |
 |---|---|
@@ -165,6 +226,8 @@ longer exists in the chart asked about is demoted to heuristic with reason
 | `grid scope --bodies`, 3 hops | ~20ms |
 | `grid suspects --closure` | ~4ms by snapshot id |
 | `grid interfere`, both stores warm | ~83ms |
+| `grid test`, nothing changed, 541 tests | 0.8s against 24.4s for the inventory |
+| `just traces` (one traced run per test) | 22m 16s, 538 traces retained |
 
 The declined split after the method-calls plan (`docs/plans/2026-09-01-
 method-calls.md`), same tree, previous binary against this one:

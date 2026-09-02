@@ -8,7 +8,8 @@
 //! <name>` names a test, and a retained trace carries that name. So the set of
 //! known tests is the set of names the trace store holds, and a verdict is
 //! attributed to a test through the trace id the cache line already records —
-//! no second copy of the name anywhere.
+//! no second copy of the name anywhere. A run that produced no trace has one
+//! more thing to say and says it in the same column: [`TEST_ATTRIBUTION`].
 //!
 //! For each known test, its closure key is recomputed at head and looked up:
 //!
@@ -23,6 +24,26 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use grid_wire::{DriftWarning, StaleTest, StaleTestReason};
+
+/// The namespace `grid test` files an untraced verdict under: `test:` and the
+/// test's callsign. No trace file is written and none is implied — the prefix
+/// is an *attribution*, the one thing the run knows about a verdict it
+/// recorded itself and which a coverage report would otherwise have to carry.
+pub const TEST_ATTRIBUTION: &str = "test:";
+
+/// The test a recorded verdict belongs to: the retained trace's command, or
+/// the `test:` attribution `grid test` wrote when the run produced no trace.
+///
+/// One-directional, like everything else on this path. An id that names
+/// neither is `None`, and `None` is counted unattributed rather than guessed
+/// at; an empty `test:` suffix names no test and so is no attribution.
+pub fn attributed<'a>(test_of: &BTreeMap<&'a str, &'a str>, trace_id: &'a str) -> Option<&'a str> {
+    test_of.get(trace_id).copied().or_else(|| {
+        trace_id
+            .strip_prefix(TEST_ATTRIBUTION)
+            .filter(|name| !name.is_empty())
+    })
+}
 
 /// What the enumeration found.
 pub struct Report {
@@ -71,18 +92,18 @@ pub fn tests<B: AsRef<[u8]>>(
     let mut envs: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     let mut unattributed = 0u64;
     for (_, entry) in cache.entries() {
-        let attributed = entry
+        let owner = entry
             .trace_id
             .as_deref()
-            .and_then(|id| test_of.get(id))
+            .and_then(|id| attributed(&test_of, id))
             .zip(entry.env_hash.as_deref());
-        match attributed {
+        match owner {
             Some((test, env)) => {
                 envs.entry(test).or_default().insert(env);
             }
-            // Either the verdict named no trace, or its trace is not retained,
-            // or it predates the environment column. All three mean the same
-            // thing: nobody can say which test it belongs to.
+            // Either the verdict named no trace and no test, or its trace is
+            // not retained, or it predates the environment column. All three
+            // mean the same thing: nobody can say which test it belongs to.
             None => unattributed = unattributed.saturating_add(1),
         }
     }
@@ -182,6 +203,25 @@ mod tests {
         dir
     }
 
+    /// A verdict on record with no retained trace behind it at all — the
+    /// shape `grid test` writes when the run produced no coverage report.
+    fn seeded_bare(trace_id: Option<&str>, env: Option<&str>) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut cache = grid_cache::Cache::open(crate::rpc::cache_path(dir.path())).expect("cache");
+        cache
+            .put(
+                seed_key(),
+                grid_cache::Entry {
+                    verdict: grid_cache::Verdict::Pass,
+                    recorded_at: "1970-01-01T00:00:00Z".into(),
+                    trace_id: trace_id.map(str::to_owned),
+                    env_hash: env.map(str::to_owned),
+                },
+            )
+            .expect("record");
+        dir
+    }
+
     /// Any key at all; the enumeration never looks this one up by value.
     fn seed_key() -> grid_cache::Key {
         let seg = Segment::parse(
@@ -239,5 +279,35 @@ mod tests {
             enumerate(dir.path(), &empty, |_| Some(DatumId([1; 32]))).expect("enumeration answers");
         assert!(found.stale.is_empty());
         assert_eq!(found.unattributed, 1);
+    }
+
+    /// A verdict `grid test` recorded for a test that ran untraced names its
+    /// test in the `test:` namespace, so it is enumerated and re-keyed like
+    /// any other — not counted, forever, as one nobody can attribute.
+    #[test]
+    fn a_synthetic_test_attribution_names_its_test() {
+        let dir = seeded_bare(Some("test:m.t"), Some("env-1"));
+        let empty: [Segment<Vec<u8>>; 0] = [];
+        let found =
+            enumerate(dir.path(), &empty, |_| Some(DatumId([1; 32]))).expect("enumeration answers");
+        assert_eq!(found.unattributed, 0, "the verdict names its own test");
+        assert_eq!(found.stale.len(), 1);
+        assert_eq!(found.stale[0].test, "m.t");
+    }
+
+    /// Conservatism: an entry with no attribution at all is still counted
+    /// unattributed. The `test:` namespace attributes what `grid test` knew
+    /// it was recording; it never licenses attributing everything else, and
+    /// a bare `test:` names no test either.
+    #[test]
+    fn a_verdict_with_no_attribution_at_all_is_still_unattributed() {
+        let empty: [Segment<Vec<u8>>; 0] = [];
+        for id in [None, Some("test:"), Some("trace:not-retained")] {
+            let dir = seeded_bare(id, Some("env-1"));
+            let found = enumerate(dir.path(), &empty, |_| Some(DatumId([1; 32])))
+                .expect("enumeration answers");
+            assert!(found.stale.is_empty(), "{id:?} named a test");
+            assert_eq!(found.unattributed, 1, "{id:?} was attributed to something");
+        }
     }
 }

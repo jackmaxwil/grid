@@ -1,0 +1,17 @@
+# `.config/nextest.toml` for one LLVM profile per test — a template, not
+# something grid installs. See `grid-trace-wrapper.sh` beside this file for
+# what it does and why; copy this file to `.config/nextest.toml` in your
+# repository, merging it with whatever is already there.
+#
+# `command` is resolved against the workspace root. Wrapper scripts are a
+# nextest experimental feature (0.9.143 here), which is what the
+# `experimental` key opts into; without it nextest refuses the config rather
+# than ignoring the wrapper, which is the right way round.
+experimental = ["wrapper-scripts"]
+
+[scripts.wrapper.grid-trace]
+command = "scripts/grid-trace-wrapper.sh"
+
+[[profile.default.scripts]]
+filter = "all()"
+run-wrapper = "grid-trace"

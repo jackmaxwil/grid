@@ -131,6 +131,32 @@ soak *ARGS:
 miri *ARGS:
     MIRIFLAGS=-Zmiri-strict-provenance cargo +nightly miri test -p grid-chart --test adversarial {{ARGS}}
 
+# Refresh the retained traces local test selection reads (one traced run).
+[group('test')]
+traces:
+    #!/usr/bin/env bash
+    # Tools first, and the exact install commands when they are absent: a
+    # half-traced inventory is not a refresh, it is a smaller trace store.
+    set -euo pipefail
+    missing=0
+    command -v cargo-llvm-cov >/dev/null 2>&1 || { echo "cargo install cargo-llvm-cov"; missing=1; }
+    rustup component list --installed 2>/dev/null | grep -q '^llvm-tools' || { echo "rustup component add llvm-tools-preview"; missing=1; }
+    if [ -f pyproject.toml ]; then
+      python3 -c 'import pytest_cov, coverage' 2>/dev/null || { echo "pip install pytest-cov"; missing=1; }
+    fi
+    if [ "$missing" -ne 0 ]; then
+      echo "grid: tracing needs the commands above — run them, then \`just traces\`" >&2
+      exit 2
+    fi
+    cargo build --release -p grid
+    ./target/release/grid test --trace --all
+
+# The CI form: no install check, because the workflow installs them.
+[group('test')]
+traces-ci:
+    cargo build --release -p grid
+    ./target/release/grid test --trace --all
+
 [group('build')]
 bench *ARGS:
     cargo bench --workspace {{ARGS}}

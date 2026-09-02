@@ -2,13 +2,15 @@
 //! way a survey spawns git. Grid reads their inventories and their verdict
 //! lines; it instruments nothing and ships no plugin.
 //!
-//! `ponytail:` runner output is captured and replayed to stderr after each
-//! invocation rather than streamed, because the same bytes are parsed for
-//! verdicts; a tee over the child's pipe lands when a long suite makes the
-//! silence unbearable.
+//! Runner output is streamed: each of the child's two pipes is drained by its
+//! own thread, written to stderr as it arrives, and kept — the same bytes the
+//! verdict parse reads. Two threads rather than one because a child that
+//! fills one pipe while grid reads the other never finishes, and a nextest
+//! run fills both.
 use std::collections::HashMap;
+use std::io::{Read, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::testrun::{Outcome, Runner};
 use crate::{hint, rpc};
@@ -153,33 +155,45 @@ impl Real {
     }
 
     /// The step-1 recipe, per selected test: `cargo llvm-cov nextest --lcov
-    /// -E 'test(=t)'`, then ingest as the test's trace.
+    /// -E 'test(=t)'`, then ingest as the test's trace. Flags in [`TRACED`],
+    /// where the one pair `cargo llvm-cov` refuses can be tested for.
     ///
     /// `ponytail:` one `cargo llvm-cov` invocation per test, because a
     /// single profile cannot be attributed back to the tests that shared a
-    /// process. A nextest wrapper keying `LLVM_PROFILE_FILE` by test name
-    /// makes it one invocation — nextest configuration, not grid code.
+    /// process. The nextest wrapper template in `scripts/templates/` fixes
+    /// the attribution half — one `.profraw` per test, named by the test id
+    /// — and this loop says so when it sees those files; turning them into
+    /// traces without a second export is `docs/TODOS.md` T-45.
     fn nextest_run_traced(&self, tests: &[String]) -> Result<Vec<Outcome>, String> {
         let mut outcomes = Vec::new();
+        let profiles = profile_dir(&self.root);
+        match per_test_profiles(&profiles) {
+            0 => {}
+            found => hint(&format!(
+                "grid: {found} per-test profiles under {} — the nextest wrapper is doing its \
+                 half; grid still exports one report per test (docs/TODOS.md T-45)",
+                profiles.display()
+            )),
+        }
         let lcov = self.root.join(".grid/test/coverage.lcov");
+        let runner_args = without_fail_fast(&self.args);
         for test in tests {
             // One report per test, so the previous test's must be gone
             // before this one runs: `cargo llvm-cov` writes nothing when the
             // test command fails, and reading the stale file would file the
             // last test's reach under this test's name.
             let _absent = std::fs::remove_file(&lcov);
-            let mut args: Vec<String> = vec![
-                "llvm-cov".into(),
-                "nextest".into(),
-                "--lcov".into(),
-                "--output-path".into(),
-                lcov.display().to_string(),
-                // A failing test still ran, and its reach is still its
-                // trace: without this the report is withheld on failure.
-                "--ignore-run-fail".into(),
-                "--no-fail-fast".into(),
-            ];
-            args.extend(self.args.iter().cloned());
+            let mut args: Vec<String> = TRACED
+                .iter()
+                .map(|a| {
+                    if *a == OUTPUT_PATH {
+                        lcov.display().to_string()
+                    } else {
+                        (*a).to_owned()
+                    }
+                })
+                .collect();
+            args.extend(runner_args.iter().cloned());
             args.extend(self.rollup(std::slice::from_ref(test)));
             args.push("-E".into());
             args.push(filter(std::slice::from_ref(test)));
@@ -435,6 +449,66 @@ impl Runner for Real {
     }
 }
 
+/// The placeholder [`TRACED`] carries where the report path goes, so the flag
+/// list stays one readable slice.
+const OUTPUT_PATH: &str = "<output-path>";
+
+/// The traced invocation's fixed flags.
+///
+/// `--ignore-run-fail` is load-bearing: a failing test still ran, and its
+/// reach is still its trace, so without it the report is withheld exactly
+/// when a trace is most wanted. `--no-fail-fast` must **not** appear beside
+/// it — `cargo llvm-cov` refuses the pair outright, which turned every traced
+/// run into "not reported by the runner" — and it would say nothing anyway,
+/// because one test cannot fail fast past itself.
+const TRACED: [&str; 6] = [
+    "llvm-cov",
+    "nextest",
+    "--lcov",
+    "--output-path",
+    OUTPUT_PATH,
+    "--ignore-run-fail",
+];
+
+/// The user's runner args for the traced invocation: `--no-fail-fast`
+/// dropped, and said once. `cargo llvm-cov` refuses it beside
+/// `--ignore-run-fail`, and it says nothing in a one-test run anyway —
+/// carried over from an untraced CI line, where grid itself adds it, it
+/// turned every traced test back into "not reported by the runner".
+fn without_fail_fast(args: &[String]) -> Vec<String> {
+    let kept: Vec<String> = args
+        .iter()
+        .filter(|a| *a != "--no-fail-fast")
+        .cloned()
+        .collect();
+    if kept.len() != args.len() {
+        hint(
+            "grid: --no-fail-fast dropped from the traced invocation — cargo llvm-cov refuses it \
+             with --ignore-run-fail, and one test cannot fail fast past itself",
+        );
+    }
+    kept
+}
+
+/// Where the nextest wrapper template writes one profile per test:
+/// `GRID_LLVM_PROFILE_DIR` when the environment names one, else
+/// `target/grid-profiles` — the same default the template's wrapper uses.
+fn profile_dir(root: &Path) -> PathBuf {
+    std::env::var_os("GRID_LLVM_PROFILE_DIR")
+        .map_or_else(|| root.join("target/grid-profiles"), PathBuf::from)
+}
+
+/// How many per-test profiles are sitting in `dir`. A directory that is not
+/// there holds none, which is the ordinary case: the template is a template.
+fn per_test_profiles(dir: &Path) -> usize {
+    std::fs::read_dir(dir).map_or(0, |entries| {
+        entries
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "profraw"))
+            .count()
+    })
+}
+
 /// nextest's filter for exactly these tests: `test(=a) + test(=b)`.
 /// `ponytail:` one expression per run, so a very large selection is bounded
 /// by the platform's argument length; a `--filterset-file` lands if a repo
@@ -589,7 +663,7 @@ fn python_passthrough(root: &Path, args: &[String]) -> Result<String, String> {
 }
 
 fn passthrough(program: &str, root: &Path, args: &[String]) -> Result<String, String> {
-    let out = Command::new(program)
+    let mut child = Command::new(program)
         .args(args)
         .current_dir(root)
         // The same bytes are parsed for verdicts, and a coloured `PASS` is
@@ -597,22 +671,64 @@ fn passthrough(program: &str, root: &Path, args: &[String]) -> Result<String, St
         .env("CARGO_TERM_COLOR", "never")
         .env("NO_COLOR", "1")
         .env("PY_COLORS", "0")
-        .output()
+        // Says "grid is driving" to anything in the test process's
+        // environment that would otherwise trace on its own — the nextest
+        // wrapper template stands down on it, because two tracers writing
+        // one profile to two places is a report with every count zero.
+        .env("GRID_TEST", "1")
+        // A runner grid drives is not an interactive one; a child that asks
+        // the terminal a question would hang a hook forever.
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("{program}: {e}"))?;
-    let (stdout, stderr) = (
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr),
+    // Both pipes drained at once, and to stderr as the bytes arrive: a
+    // twelve-second suite with nothing on screen looks hung, and a child
+    // that fills one pipe while grid reads the other *is* hung.
+    let draining = (
+        child.stdout.take().map(tee).transpose(),
+        child.stderr.take().map(tee).transpose(),
     );
-    // The runner's output is the user's; grid's records stay on stdout.
-    eprint!("{stdout}{stderr}");
-    if out.stdout.is_empty() && out.stderr.is_empty() && !out.status.success() {
-        return Err(format!(
-            "{program} {} exited {}",
-            args.join(" "),
-            out.status
-        ));
+    let (stdout, stderr) = match draining {
+        (Ok(stdout), Ok(stderr)) => (stdout, stderr),
+        // No drain thread is a child nobody reads, which is the hang above:
+        // ended here, and the refusal is the OS's, not the runner's.
+        (Err(e), _) | (_, Err(e)) => {
+            let _ended = child.kill();
+            let _reaped = child.wait();
+            return Err(format!("{program}: could not start a drain thread: {e}"));
+        }
+    };
+    let status = child.wait().map_err(|e| format!("{program}: {e}"))?;
+    let join = |drained: Option<std::thread::JoinHandle<String>>| {
+        drained.map_or_else(String::new, |t| t.join().unwrap_or_default())
+    };
+    let (stdout, stderr) = (join(stdout), join(stderr));
+    if stdout.is_empty() && stderr.is_empty() && !status.success() {
+        return Err(format!("{program} {} exited {}", args.join(" "), status));
     }
     Ok(format!("{stdout}\n{stderr}"))
+}
+
+/// Drain one of the child's pipes on its own thread: every chunk to stderr as
+/// it arrives, and the same bytes kept for the verdict parse. A read error
+/// ends the drain with what was read — a pipe that stops answering is the end
+/// of that stream, and the exit status is what says whether the run was one.
+/// A thread the OS refuses is an error, not a panic.
+fn tee(mut pipe: impl Read + Send + 'static) -> std::io::Result<std::thread::JoinHandle<String>> {
+    std::thread::Builder::new().spawn(move || {
+        let mut kept: Vec<u8> = Vec::new();
+        let mut buf = [0u8; 8192];
+        while let Ok(read @ 1..) = pipe.read(&mut buf) {
+            let chunk = buf.get(..read).unwrap_or_default();
+            // The runner's output is the user's; grid's records stay on
+            // stdout, and a write nobody is listening to is not an error.
+            let _unwritable = std::io::stderr().write_all(chunk);
+            kept.extend_from_slice(chunk);
+        }
+        String::from_utf8_lossy(&kept).into_owned()
+    })
 }
 
 #[cfg(test)]
@@ -635,6 +751,129 @@ mod tests {
         );
         assert_eq!(failed.len(), 1);
         assert!(!failed[0].pass);
+    }
+
+    /// The traced invocation asks for a report a failing test still gets,
+    /// and never asks for it together with `--no-fail-fast`: `cargo llvm-cov`
+    /// refuses that pair, and grid took the refusal as a runner that reported
+    /// nothing — 540 tests "not reported by the runner", every traced run,
+    /// until `just traces` was run for real.
+    #[test]
+    fn the_traced_invocation_asks_for_nothing_cargo_llvm_cov_refuses() {
+        assert!(super::TRACED.contains(&"--ignore-run-fail"));
+        assert!(
+            !super::TRACED.contains(&"--no-fail-fast"),
+            "cargo llvm-cov refuses --ignore-run-fail with --no-fail-fast: {:?}",
+            super::TRACED
+        );
+        assert!(
+            super::TRACED.contains(&super::OUTPUT_PATH),
+            "the report path has somewhere to go"
+        );
+        // And the user's own `-- --no-fail-fast`, carried over from an
+        // untraced CI line where grid itself adds it, does not bring the
+        // refused pair back: it is dropped from the traced invocation.
+        let args: Vec<String> = ["--no-fail-fast", "--profile", "ci"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        assert_eq!(
+            super::without_fail_fast(&args),
+            ["--profile", "ci"],
+            "the traced run is one test, and one test cannot fail fast past itself"
+        );
+    }
+
+    /// The per-test profiles the nextest wrapper template leaves behind are
+    /// counted where they are, and an absent directory is none of them —
+    /// the template is a template, so the ordinary tree has no such dir.
+    #[test]
+    fn per_test_profiles_are_counted_where_the_wrapper_writes_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(super::per_test_profiles(&dir.path().join("absent")), 0);
+        assert_eq!(super::per_test_profiles(dir.path()), 0);
+        // The wrapper's own naming: the test id, percent-encoded.
+        for name in ["grid%20drift%3A%3Atests%3A%3At.profraw", "x%20y.profraw"] {
+            std::fs::write(dir.path().join(name), []).expect("write");
+        }
+        std::fs::write(dir.path().join("coverage.lcov"), []).expect("write");
+        assert_eq!(super::per_test_profiles(dir.path()), 2);
+    }
+
+    /// The wrapper template stands down under a runner grid drives: grid's
+    /// own `cargo llvm-cov` is the tracer there, and a wrapper that
+    /// redirected every profile into `target/grid-profiles` left the report
+    /// grid reads with every count zero — an empty trace per test, and a
+    /// replay licensed on nothing. The rule is the wrapper's, not the user's:
+    /// following the install steps cannot arm both.
+    #[test]
+    fn the_wrapper_template_arms_nothing_under_a_runner_grid_drives() {
+        let template = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/templates/grid-trace-wrapper.sh"
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let show = ["-c", "printf %s \"${LLVM_PROFILE_FILE:-unset}\" >&2"];
+        let args: Vec<String> = [template, "/bin/sh", show[0], show[1]]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        let out = super::passthrough("/bin/sh", dir.path(), &args).expect("the wrapper ran");
+        // Left as found: unset here, or — when this very test runs under
+        // `cargo llvm-cov` — exactly the file cargo llvm-cov named.
+        let found = std::env::var("LLVM_PROFILE_FILE").unwrap_or_else(|_| "unset".to_owned());
+        assert!(
+            out.contains(&found) && !out.contains("grid-profiles"),
+            "under grid the wrapper leaves the profile where cargo llvm-cov put it ({found}): {out}"
+        );
+        assert!(
+            !dir.path().join("target/grid-profiles").exists(),
+            "and creates no profile directory of its own"
+        );
+        // On its own — the user's `cargo llvm-cov nextest --no-report` — it
+        // still names one profile per test.
+        // `env_remove`, because this test may itself be running under
+        // `grid test`, whose environment says grid is driving.
+        let own = std::process::Command::new("/bin/sh")
+            .args(&args)
+            .current_dir(dir.path())
+            .env_remove("GRID_TEST")
+            .env("NEXTEST_BINARY_ID", "fx::t")
+            .env("NEXTEST_TEST_NAME", "a")
+            .output()
+            .expect("the wrapper ran");
+        let profile = String::from_utf8_lossy(&own.stderr);
+        assert!(
+            profile.ends_with("/target/grid-profiles/fx%3A%3At%20a.profraw"),
+            "{profile}"
+        );
+    }
+
+    /// Both of the child's streams are drained while it runs, and the parse
+    /// still gets all of both. The child writes past a pipe buffer on stdout
+    /// before saying anything on stderr, so a reader that waits for the exit
+    /// — or reads one pipe to its end before starting the other — wedges here
+    /// rather than returning short. That is the failure this proves absent,
+    /// and it is why there are two threads.
+    ///
+    /// `ponytail:` `66_000` bytes because `65_536` is the largest pipe buffer
+    /// this runs on; the number is a platform bound, not a chosen size.
+    ///
+    /// The mirror is the feature, so the child's 66 KB of `o` lands on the
+    /// real stderr of every run of this suite: the drain writes to
+    /// `io::stderr()` directly, which the harness does not capture. Accepted
+    /// and said here rather than hidden behind a test-only sink.
+    #[test]
+    fn both_streams_are_drained_while_the_child_runs() {
+        let script = "head -c 66000 /dev/zero | tr '\\0' o; echo drained >&2";
+        let out = super::passthrough(
+            "/bin/sh",
+            std::path::Path::new("."),
+            &["-c".to_owned(), script.to_owned()],
+        )
+        .expect("the child ran");
+        assert_eq!(out.matches('o').count(), 66_000, "stdout is complete");
+        assert!(out.contains("drained"), "stderr is complete");
     }
 
     /// The coverage.py context is a regex: the id is escaped and anchored,

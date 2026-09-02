@@ -1,0 +1,191 @@
+//! `grid trace export <dir>` / `grid trace import <dir>` at the CLI: the
+//! records, and the exit code a refusal carries.
+//!
+//! The transport itself is proved in `grid-trace`'s own suite. What this
+//! proves is the wiring: which store the verb opens, what it prints, and that
+//! a refused import is exit 2 — bad input, because a directory and a store
+//! disagreeing about what a run did is not code diverging from a promise.
+// A test harness, not shipped code: outside a #[test] fn the workspace's
+// panic deny does not exempt it, and an unmet fixture precondition should
+// abort the run loudly rather than be threaded through a Result.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+use std::path::Path;
+use std::process::Command;
+
+use grid_trace::{ingest, Store};
+use grid_wire::{Trace, TraceEndpoint, TraceObservation};
+
+fn trace(id: &str, callee: &str) -> Trace {
+    Trace {
+        trace_id: id.to_owned(),
+        git_rev: grid_wire::GitRev("abc123".into()),
+        command: Some("tests::t".into()),
+        started_at: None,
+        snapshot: None,
+        observations: vec![TraceObservation {
+            caller: TraceEndpoint::Datum {
+                datum: grid_wire::Datum(format!("b3:{}", "1".repeat(64))),
+            },
+            callee: TraceEndpoint::Datum {
+                datum: grid_wire::Datum(callee.to_owned()),
+            },
+            count: Some(1),
+        }],
+    }
+}
+
+/// Retain `traces` in a repo root's own store, the way `grid test --trace`
+/// would have.
+fn retain(root: &Path, traces: &[(&str, &str)]) {
+    let store = Store::open(root.join(".grid/traces")).expect("store");
+    let empty: [grid_chart::Segment<Vec<u8>>; 0] = [];
+    for (id, callee) in traces {
+        let w = trace(id, callee);
+        store.put(&w, &ingest(&empty, &w)).expect("retain");
+    }
+}
+
+/// The verb, run in `root`. Returns `(code, stdout)`.
+fn grid(root: &Path, args: &[&str]) -> (i32, String) {
+    let (code, stdout, _) = grid_with_hints(root, args, false);
+    (code, stdout)
+}
+
+/// The verb with its hints on when `hints`. Returns `(code, stdout, stderr)`.
+fn grid_with_hints(root: &Path, args: &[&str], hints: bool) -> (i32, String, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_grid"))
+        .args(args)
+        .current_dir(root)
+        .env("GRID_HINTS", if hints { "1" } else { "0" })
+        .output()
+        .expect("spawn grid");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// Export is not whole-refused: a file in the directory holding other bytes
+/// under a content hash is left alone and named, and every other trace is
+/// still written. The hint must not say otherwise — "nothing was exported"
+/// was said when the `done` line beside it counted what was.
+#[test]
+fn an_export_conflict_refuses_one_file_and_says_so_truthfully() {
+    let ci = tempfile::tempdir().expect("tempdir");
+    let artifact = tempfile::tempdir().expect("tempdir");
+    let out = artifact.path().join("traces");
+    let a = format!("b3:{}", "2".repeat(64));
+    retain(ci.path(), &[("trace:one", &a)]);
+    let (code, _) = grid(ci.path(), &["trace", "export", &out.display().to_string()]);
+    assert_eq!(code, 0);
+    // The one exported file, overwritten under its own name with other bytes.
+    let exported = std::fs::read_dir(&out)
+        .expect("read")
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x == "json"))
+        .expect("one file");
+    std::fs::write(&exported, b"{}").expect("write");
+    let b = format!("b3:{}", "3".repeat(64));
+    retain(ci.path(), &[("trace:two", &b)]);
+    let (code, stdout, stderr) = grid_with_hints(
+        ci.path(),
+        &["trace", "export", &out.display().to_string()],
+        true,
+    );
+    assert_eq!(code, 2, "a refusal is bad input:\n{stdout}");
+    assert!(
+        stdout.contains("traces 1 exported · 0 unchanged · 1 refused"),
+        "{stdout}"
+    );
+    assert!(
+        !stderr.contains("nothing was exported"),
+        "one trace was exported, and the hint must not deny it:\n{stderr}"
+    );
+}
+
+#[test]
+fn traces_travel_as_a_directory_and_a_conflicting_import_is_refused() {
+    let ci = tempfile::tempdir().expect("tempdir");
+    let artifact = tempfile::tempdir().expect("tempdir");
+    let local = tempfile::tempdir().expect("tempdir");
+    let out = artifact.path().join("traces");
+    let a = format!("b3:{}", "2".repeat(64));
+    let b = format!("b3:{}", "3".repeat(64));
+    retain(ci.path(), &[("trace:one", &a), ("trace:two", &b)]);
+
+    let (code, stdout) = grid(ci.path(), &["trace", "export", &out.display().to_string()]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        stdout.contains("traces 2 exported · 0 unchanged · 0 refused"),
+        "{stdout}"
+    );
+
+    let (code, stdout) = grid(
+        local.path(),
+        &["trace", "import", &out.display().to_string()],
+    );
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        stdout.contains("traces 2 imported · 0 unchanged · 0 refused"),
+        "{stdout}"
+    );
+
+    // Idempotent: the same directory again writes nothing.
+    let (code, stdout) = grid(
+        local.path(),
+        &["trace", "import", &out.display().to_string()],
+    );
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        stdout.contains("traces 0 imported · 2 unchanged · 0 refused"),
+        "{stdout}"
+    );
+
+    // `--json` is the wire result, verbatim: the contract's own type reads
+    // it back with unknown fields denied, in the contract's own words.
+    let (code, stdout) = grid(
+        local.path(),
+        &["trace", "import", &out.display().to_string(), "--json"],
+    );
+    assert_eq!(code, 0, "{stdout}");
+    let wire: grid_wire::TraceTransportResult =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout}"));
+    assert_eq!(
+        wire,
+        grid_wire::TraceTransportResult {
+            written: Vec::new(),
+            unchanged: vec!["trace:one".into(), "trace:two".into()],
+            refused: Vec::new(),
+        }
+    );
+
+    // The far side re-ran `trace:one` and it watched something else. Two
+    // records, one id: refused, whole, and the id is on stdout.
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    retain(elsewhere.path(), &[("trace:one", &b), ("trace:three", &a)]);
+    let (code, _) = grid(
+        elsewhere.path(),
+        &["trace", "export", &out.display().to_string()],
+    );
+    assert_eq!(code, 0);
+    let (code, stdout) = grid(
+        local.path(),
+        &["trace", "import", &out.display().to_string()],
+    );
+    assert_eq!(code, 2, "a refusal is bad input:\n{stdout}");
+    assert!(
+        stdout.contains("miss    trace:one  differs from the trace already there"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("traces 0 imported"), "{stdout}");
+    // And `trace:three`, which conflicted with nothing, was not written
+    // either: the refusal is whole.
+    let held = Store::open(local.path().join(".grid/traces"))
+        .expect("store")
+        .retained()
+        .expect("read");
+    let ids: Vec<&str> = held.iter().map(|s| s.trace.trace_id.as_str()).collect();
+    assert_eq!(ids, ["trace:one", "trace:two"], "nothing was added");
+}

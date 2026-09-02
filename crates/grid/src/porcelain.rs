@@ -15,7 +15,7 @@ use grid_wire::{
 };
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "2.16.0";
+pub const VERSION: &str = "2.20.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -945,7 +945,19 @@ pub fn test_run(run: &grid_wire::TestRun) -> String {
         let why = match sel.why {
             grid_wire::TestSelectionWhy::Reached => "closure-changed",
             grid_wire::TestSelectionWhy::NoTrace => "no-trace",
-            grid_wire::TestSelectionWhy::Unresolved => "unresolved",
+            // An unresolved test always runs, which is right and says
+            // nothing; the reader still deserves to know *why* the chart
+            // cannot name it, because "the module is charted and this name
+            // is not" is a fact about the test and "nothing here is charted"
+            // is one about the survey.
+            grid_wire::TestSelectionWhy::Unresolved => match sel.unresolved {
+                Some(grid_wire::TestSelectionUnresolved::Ambiguous) => "unresolved:ambiguous",
+                Some(grid_wire::TestSelectionUnresolved::ModuleCharted) => {
+                    "unresolved:module-charted"
+                }
+                Some(grid_wire::TestSelectionUnresolved::NotCharted) => "unresolved:not-charted",
+                None => "unresolved",
+            },
             grid_wire::TestSelectionWhy::Aground => "aground",
             grid_wire::TestSelectionWhy::NotRecorded => "not-recorded",
         };
@@ -984,7 +996,8 @@ pub fn test_run(run: &grid_wire::TestRun) -> String {
 
 /// An edge arrow for a chart edge (not a change): same shape as
 /// `edge_arrow`, but nothing was added or removed — the edge *is*.
-fn chart_edge_arrow(edge: &grid_wire::Edge, name: &NameOf) -> String {
+#[must_use]
+pub fn chart_edge_arrow(edge: &grid_wire::Edge, name: &NameOf) -> String {
     let show = |d: &grid_wire::Datum| name(d).unwrap_or_else(|| format!("@{}", short(d)));
     format!(
         "{} -{}-> {}",
@@ -1212,6 +1225,42 @@ pub fn trace_ingest(result: &TraceIngestResult, total: u64) -> String {
     }
     out
 }
+/// `miss` / `done` records for a trace transport: every id the destination
+/// already holds under other bytes, then what the transport did.
+///
+/// Existing tags, as `grid test` uses existing tags: a refused id is a `miss`
+/// with its reason, and the closing `done` carries the counts. The first
+/// column of the `miss` is a trace id — a run's own name, which is what this
+/// verb addresses things by.
+#[must_use]
+pub fn trace_transport(
+    moved: &grid_trace::Moved,
+    exporting: bool,
+    dir: &std::path::Path,
+) -> String {
+    let mut out = String::new();
+    for id in &moved.conflicts {
+        record(
+            &mut out,
+            "miss",
+            &[id, "differs from the trace already there"],
+        );
+    }
+    let verb = if exporting { "exported" } else { "imported" };
+    record(
+        &mut out,
+        "done",
+        &[&format!(
+            "traces {} {verb} · {} unchanged · {} refused  {}",
+            moved.written.len(),
+            moved.unchanged.len(),
+            moved.conflicts.len(),
+            dir.display()
+        )],
+    );
+    out
+}
+
 /// The `fork` record of a trace diff: where two runs of the same test parted.
 /// Empty when they never did.
 #[must_use]
