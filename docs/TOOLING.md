@@ -128,9 +128,12 @@ full 10 000.
 Tools are installed explicitly, with `taiki-e/install-action` (prebuilt) on
 every lane that needs one — `just` everywhere, `cargo-deny`, `cargo-machete`
 and `codespell` on the guardrails lane, `cargo-nextest` on the test lane,
-`cargo-fuzz` on `fuzz-build`. That last one replaces `cargo install cargo-fuzz
---locked`, which compiled the tool from source on every pull request. The
-installs are not optional politeness: the guardrail aggregator *announces* a
+and `cargo-nextest` on the test lane. `cargo-fuzz` is the exception: the same
+action was tried for it and `fuzz-build` went red in 18 s while every other
+install-action step in that run was green, and this Forgejo build serves no job
+logs over its API, so the step went back to `cargo install cargo-fuzz --locked`
+rather than guessing (`docs/TODOS.md` T-40). The installs are not optional
+politeness: the guardrail aggregator *announces* a
 missing optional tool rather than failing on it (so a fresh clone can make
 `just check` green), which means CI has to guarantee the tools are there or the
 checks quietly stop running.

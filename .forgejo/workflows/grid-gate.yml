@@ -107,11 +107,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
-      # Prebuilt, rather than `cargo install cargo-fuzz --locked`, which compiled the tool
-      # from source on every pull request.
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-fuzz
+      # This step was `taiki-e/install-action` with `tool: cargo-fuzz` for one run, to stop
+      # compiling the tool from source on every pull request. It failed on this runner in
+      # 18 s while the same action installed `just`, `cargo-deny`, `cargo-machete` and
+      # `cargo-nextest` green on four other jobs in the same run, and this Forgejo build
+      # exposes no job logs over its API, so the cause could not be attributed. A from-
+      # source install that works beats a prebuilt one that does not; revisit with the log
+      # in hand (docs/TODOS.md T-40).
+      - run: cargo install cargo-fuzz --locked
       # rust-toolchain.toml pins 1.94.0, so `cargo` alone is stable even after
       # the nightly install; fuzz needs the nightly explicitly.
       - run: cargo +nightly fuzz build normalize

@@ -309,6 +309,14 @@ plan).
   the directory. Either generate the error enum from the contract's error
   codes as well, or leave it hand-written and let the row stand — but not
   a check that quietly means less than its name.
+- **T-40 (P2, S) `cargo-fuzz` is still compiled from source in CI.**
+  `taiki-e/install-action` was tried for it and the `fuzz-build` job went red
+  in 18 s, while the same action installed `just`, `cargo-deny`,
+  `cargo-machete` and `cargo-nextest` green on four other jobs of the same
+  run. This Forgejo build serves no job logs over its API, so the failure
+  could not be attributed and the step went back to `cargo install cargo-fuzz
+  --locked`, which has always worked here. Retry with the log in hand; the
+  prize is a few minutes off every pull request.
 - **T-39 (P2, S) The pre-commit hook gates the checkout, not the index.**
   `just precommit` runs over the working tree, so a partial `git add` is
   judged against changes that are not being committed. Left as it is
