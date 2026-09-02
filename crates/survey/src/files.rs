@@ -408,12 +408,29 @@ fn module_of_rs(path: &str, roots: &CrateRoots) -> String {
     }
 }
 
+/// Directory -> `[package] name`, as the manifests at a rev spell them.
+type Manifests = Vec<(String, String)>;
+
+/// What a rev survey wants a blob for. The two populations share one
+/// `cat-file` child, so they have to share its request queue too.
+enum Want {
+    /// A `Cargo.toml` whose `[package] name` binds this directory.
+    Manifest(String),
+    /// A source file the adapter for `Lang` claims.
+    Source(Lang),
+}
+
 /// Tracked files at a git revision, with their contents.
 ///
 /// Surveying "at a rev" has to mean *the tree at that rev*, not the working
 /// tree wearing a label. The gate compares two snapshots, and if both were
 /// really the working tree the comparison would be empty no matter what
 /// changed — so this reads blobs out of the object store rather than off disk.
+///
+/// Two git spawns, whatever the tree's size: `ls-tree` for the listing, then
+/// one `cat-file --batch` fed every path it needs. A spawn per file cost yi
+/// (18,398 tracked files) about ten seconds, and `drift`'s default base is a
+/// rev, so the flagship verb inherited it.
 ///
 /// # Errors
 /// [`SurveyError::Git`] if the rev does not resolve or git fails.
@@ -428,43 +445,168 @@ pub fn sources_at(root: &Path, rev: &str) -> Result<(Vec<SourceFile>, CrateRoots
     // a rev survey keeping vendor code the head survey drops would report
     // the difference as a mass deletion.
     let skip = ignored(root, &all)?;
-    let mut out = Vec::new();
-    let mut manifests = Vec::new();
     let mut py_roots = Vec::new();
+    let mut wanted: Vec<(String, Want)> = Vec::new();
     for path in all.into_iter().filter(|p| !skip.contains(p)) {
         let path = path.replace('\\', "/");
         if let Some(dir) = pyproject_dir(&path) {
             py_roots.push(dir.to_owned());
         }
+        // Manifests come from the same rev as the sources they name: roots
+        // are part of the state being surveyed, not of the worktree.
         if let Some(dir) = manifest_dir(&path) {
-            // Manifests come from the same rev as the sources they name:
-            // roots are part of the state being surveyed, not of the worktree.
-            let name = git(root, &["show", &format!("{rev}:{path}")])
-                .ok()
-                .and_then(|b| String::from_utf8(b).ok())
-                .as_deref()
-                .and_then(package_name);
-            if let Some(name) = name {
-                manifests.push((dir.to_owned(), name));
-            }
+            let dir = dir.to_owned();
+            wanted.push((path, Want::Manifest(dir)));
+        } else if let Some(lang) = lang_of(&path) {
+            wanted.push((path, Want::Source(lang)));
         }
-        let Some(lang) = lang_of(&path) else { continue };
-        // A blob that is not UTF-8 is not source an adapter could parse.
-        let Ok(bytes) = git(root, &["show", &format!("{rev}:{path}")]) else {
-            continue;
-        };
-        let Ok(source) = String::from_utf8(bytes) else {
-            continue;
-        };
-        out.push(SourceFile {
-            content_hash: *blake3::hash(source.as_bytes()).as_bytes(),
-            path,
-            lang,
-            source,
-        });
     }
+    let (mut out, manifests) = cat_blobs(root, rev, wanted)?;
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok((out, CrateRoots::from_manifests(manifests, py_roots)))
+}
+
+/// Read every wanted blob at `rev` through one `git cat-file --batch` child.
+///
+/// The protocol is positional: one `rev:path` request per answer, in order,
+/// so a path the rev cannot serve must consume its `<spec> missing` line and
+/// nothing else. Getting that wrong would not lose one file, it would shift
+/// every later file's bytes onto the wrong path.
+fn cat_blobs(
+    root: &Path,
+    rev: &str,
+    wanted: Vec<(String, Want)>,
+) -> Result<(Vec<SourceFile>, Manifests), SurveyError> {
+    let mut out = Vec::new();
+    let mut manifests = Vec::new();
+    if wanted.is_empty() {
+        return Ok((out, manifests));
+    }
+    let as_git = |e: std::io::Error| SurveyError::Git(e.to_string());
+    // `-z` because a path is bytes: a newline in one would otherwise be read
+    // as the end of the request.
+    let mut child = Command::new("git")
+        .args(["cat-file", "--batch", "-z"])
+        .current_dir(root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(as_git)?;
+    let mut buf = Vec::new();
+    for (path, _) in &wanted {
+        buf.extend_from_slice(rev.as_bytes());
+        buf.push(b':');
+        buf.extend_from_slice(path.as_bytes());
+        buf.push(0);
+    }
+    let stdin = child.stdin.take();
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| SurveyError::Git("git cat-file: no stdout".to_owned()))?;
+    // Feed stdin on its own thread: with both pipes on one thread, the
+    // answers fill the stdout pipe while this side is still blocked writing
+    // requests.
+    let result = std::thread::scope(|scope| {
+        scope.spawn(move || {
+            if let Some(mut stdin) = stdin {
+                let _ = std::io::Write::write_all(&mut stdin, &buf);
+            }
+        });
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut fail = None;
+        for (path, want) in wanted {
+            let mut header = Vec::new();
+            match std::io::BufRead::read_until(&mut reader, b'\n', &mut header) {
+                Ok(0) => {
+                    fail = Some(SurveyError::Git("git cat-file: answers ran out".to_owned()));
+                    break;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    fail = Some(as_git(e));
+                    break;
+                }
+            }
+            let (size, is_blob) = match batch_header(&header) {
+                Ok(Some(answer)) => answer,
+                // A path the listing named that the rev cannot serve: skip
+                // it, never fabricate it as empty.
+                Ok(None) => continue,
+                Err(e) => {
+                    fail = Some(e);
+                    break;
+                }
+            };
+            // git writes the payload plus one newline of its own.
+            let mut bytes = vec![0u8; size.saturating_add(1)];
+            if let Err(e) = std::io::Read::read_exact(&mut reader, &mut bytes) {
+                fail = Some(as_git(e));
+                break;
+            }
+            if !is_blob {
+                continue;
+            }
+            bytes.truncate(size);
+            match want {
+                Want::Manifest(dir) => {
+                    if let Some(name) = String::from_utf8(bytes)
+                        .ok()
+                        .as_deref()
+                        .and_then(package_name)
+                    {
+                        manifests.push((dir, name));
+                    }
+                }
+                // A blob that is not UTF-8 is not source an adapter could parse.
+                Want::Source(lang) => {
+                    if let Ok(source) = String::from_utf8(bytes) {
+                        out.push(SourceFile {
+                            content_hash: *blake3::hash(source.as_bytes()).as_bytes(),
+                            path,
+                            lang,
+                            source,
+                        });
+                    }
+                }
+            }
+        }
+        // Drain whatever is still queued so the writer thread is never left
+        // blocked on a full pipe while this scope waits to join it.
+        let _ = std::io::copy(&mut reader, &mut std::io::sink());
+        fail
+    });
+    let _ = child.wait();
+    match result {
+        Some(e) => Err(e),
+        None => Ok((out, manifests)),
+    }
+}
+
+/// One `git cat-file --batch` answer header: `<oid> <type> <size>`, or
+/// `<spec> missing` for an object the rev cannot serve.
+///
+/// `Ok(None)` is missing and has no payload. `Ok(Some((size, is_blob)))` has
+/// `size` payload bytes to consume whatever the type — a gitlink answers with
+/// a commit, and skipping its payload is what keeps the stream aligned.
+fn batch_header(header: &[u8]) -> Result<Option<(usize, bool)>, SurveyError> {
+    let bad = || {
+        SurveyError::Git(format!(
+            "git cat-file: unreadable answer {:?}",
+            String::from_utf8_lossy(header)
+        ))
+    };
+    let line = std::str::from_utf8(header)
+        .map_err(|_| bad())?
+        .trim_end_matches('\n');
+    let (rest, last) = line.rsplit_once(' ').ok_or_else(bad)?;
+    if last == "missing" {
+        return Ok(None);
+    }
+    let size: usize = last.parse().map_err(|_| bad())?;
+    let (_, kind) = rest.rsplit_once(' ').ok_or_else(bad)?;
+    Ok(Some((size, kind == "blob")))
 }
 
 /// Run git in `root` and return its stdout, or the failure it reported.

@@ -44,6 +44,7 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 | C30 | a weak-test finding requires all four facts — the definition's datum moved, a live trace covers it, the test's own datum held, and a pass is on record at both endpoints — is graded heuristic, and never moves the exit code; coverage from a decayed trace yields no finding and is counted | weak.rs | 10+ |
 | C31 | an aground walk's `complete_within` is a layer it fully expanded, so the answer truncated to that depth equals the unbudgeted walk's under the same filter; a walk whose first layer did not finish certifies nothing | certificate.rs walk.rs | 10+ |
 | C32 | a watch session's summed deltas equal a fresh `grid drift` after every prefix of an event sequence; an edit and its revert net to zero; an unparseable file event emits no deltas and is counted | watch.rs | 10+ |
+| C33 | a rev survey reads every blob it needs through one `git cat-file --batch` child, byte-identical to `git show` per path; a path the listing names that the rev cannot serve is skipped, never fabricated as empty, and never shifts a later answer onto the wrong file | rev_blobs.rs determinism.rs | 10+ |
 
 
 ## Maintained views
