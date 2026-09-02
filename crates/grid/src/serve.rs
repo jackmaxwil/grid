@@ -392,9 +392,25 @@ fn dispatch_query_check(
             crate::check::answer(&params, root)
                 .map(|v| encode(&v))
                 .map_err(|e| match &e {
-                    crate::check::Error::Chart(chart) => chart_error(chart),
+                    crate::check::Error::Chart(chart)
+                    | crate::check::Error::Drift(crate::drift::Error::Chart(chart)) => {
+                        chart_error(chart)
+                    }
                     crate::check::Error::UnknownTrace(_) => {
                         (WireError::UnknownTrace.code(), e.to_string())
+                    }
+                    // A section grid declined to serve — aground, an
+                    // unreadable store — is internal, as `grid.drift`
+                    // treats its own; an unreadable declaration file is the
+                    // caller's to fix.
+                    crate::check::Error::Refused(_)
+                    | crate::check::Error::Drift(
+                        crate::drift::Error::BudgetRejected(_)
+                        | crate::drift::Error::Trace(_)
+                        | crate::drift::Error::Stale(_),
+                    ) => (-32603, e.to_string()),
+                    crate::check::Error::Drift(crate::drift::Error::Covenants(_)) => {
+                        (-32602, e.to_string())
                     }
                 })
         }

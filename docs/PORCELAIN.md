@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.8.0
+version: 2.9.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -16,7 +16,7 @@ document.
 | `miss` (survey) | count, `references declined (external N, method N, internal N)` — the one record `grid survey` closes with when the resolver declined anything |
 | `def` | glyph, callsign, hash transition (`old→new` or new hash), `sig` when the interface identity also moved (absent when it held, and absent when a pre-epoch-3 snapshot means nobody can say); inside `grid gate` output, an unaccounted definition's trailing column reads `unaccounted: interface` when a def promise's `interface` claim is what holds it |
 | `ref` | callsign, datum prefix, `file:line` when the snapshot carries locations (`grid resolve` — a definition that exists, not one that changed) |
-| `orphan` | callsign, datum prefix, `file:line` — a definition with no *proven* caller (`grid orphans`); not the same as dead |
+| `orphan` | callsign, datum prefix, `file:line`, and under `--traced` a trailing `trace N` — a definition with no *proven* caller (`grid orphans`); not the same as dead, and `trace 0` is still a maybe |
 | `edit` | `@from -> @to`, rev — one patch edge in the datum's history, newest first (`grid log`) |
 | `root` | import name, directory — the map callsigns are rooted in (`grid roots`) |
 | `hot` | callsign, `cx N`, `edits M`, `file:line` — complexity × churn, descending (`grid hotspots`); a ranking, never a gate |
@@ -166,6 +166,30 @@ verdict prints first and the compile records follow; `--json` emits the
 `CompileReport` alone without a plan and the `CheckResult` with one. A tree
 with no `Cargo.toml` has no compile to wrap: one hint, exit `0`.
 
+`grid check [<base>] [<head>] [--plan <file>] [--quick] [--why]` is the
+composite — the one verb an agent runs after an edit — and prints its
+sections in gate-first order, each exactly as its own verb prints it: the
+drift section (`drift` suspects, covenant `warn`s, the closing `miss`
+counts), the compile record's `drift … uncompiled:<cfg>` records and
+`warn … cfg unknown`, the gate verdict under `--plan` (`pass`/`hold` and
+its records; with `--why`, a `path` per fulfilling promise with `hop`
+records beneath it and a `miss <def>  unexecuted` per changed definition
+the named trace never reached), stale verdicts as `miss <test>
+closure-changed|closure-rejected`, compat as `inv violated
+persisted:<type>  <rule>` or `warn <type>  compat: <rule>`; then the tail
+that ranks — `warn <test>  weak-for <def>`, `warn <def>  uncovered`, `warn
+<new>  clone-of <existing>` — the check's own `warn -  no compile record
+since @<prefix>` when `.grid/compile.json` is absent or predates the last
+survey, and finally, when no gate fired, one `done  refactor  interfaces
+held · <n> covering tests replayed pass · <m> changed defs uncovered` (or
+`<k> interfaces moved`, or `no retained traces` in place of the counts).
+Exit `3` when any gate fired — drift suspects, uncompiled callers, a `hold`,
+a stale verdict, a covenant fire, a declared compat finding — `1` when a
+section refused (aground, an unreadable store), `2` on bad input; a
+refusal prints nothing on stdout. The default base is the plan's, else
+`HEAD~1`; head defaults to `HEAD`, the worktree. `--quick` prints the drift
+section at the proven floor and the compile section only.
+
 `grid interfere <other-root> [--base <rev>]` compares two worktrees of one
 repository against their common base — the merge base of the two heads unless
 `--base` names one. A definition both sides moved is `warn <callsign>
@@ -250,7 +274,10 @@ inside an existing verb carried 2.5.0 to 2.6.0 (`grid suspects --closure`'s
 `miss`) and 2.6.0 to 2.7.0 (`grid drift --compat`'s `warn <type>  compat:
 <rule>`, its `inv violated persisted:<type>`, and its closing `miss`) and 2.7.0 to 2.8.0
 (`grid interfere`'s `warn <callsign>  both-touched` and its `drift` reason
-`interfere:<other-root>`)
+`interfere:<other-root>`) and 2.8.0 to 2.9.0 (`grid check`'s composite: the
+`done  refactor` certificate, `warn <new>  clone-of <existing>`, `warn <def>
+uncovered` outside `grid test`, its `warn -  no compile record since
+@<prefix>`, and `grid orphans --traced`'s trailing `trace N` column)
 — changing column
 order or meaning is major — and so is renaming a tag, which is what carried
 1.6.0 to 2.0.0 (`docs/plans/2026-09-01-naming.md`). The daemon reports this

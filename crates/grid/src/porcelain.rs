@@ -15,7 +15,7 @@ use grid_wire::{
 };
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "2.8.0";
+pub const VERSION: &str = "2.9.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -364,37 +364,132 @@ pub fn drift(report: &grid_wire::DriftReport) -> String {
         let refs: Vec<&str> = columns.iter().map(String::as_str).collect();
         record(&mut out, "drift", &refs);
     }
-    for stale in report.stale_tests.iter().flatten() {
-        // A stale verdict is a `miss` in the cache's own sense: the datum
-        // must be run, not looked up. The first column is the test name
-        // rather than a datum handle because a test is addressed by name
-        // everywhere else in the engine.
+    out.push_str(&stale(report.stale_tests.as_deref().unwrap_or_default()));
+    out.push_str(&weak(report.weak.as_deref().unwrap_or_default()));
+    out.push_str(&warnings(report.warnings.as_deref().unwrap_or_default()));
+    out.push_str(&compat(report.compat.as_deref().unwrap_or_default()));
+    out.push_str(&drift_unchecked(&report.unchecked));
+    out
+}
+
+/// Stale verdicts: a `miss` in the cache's own sense — the datum must be
+/// run, not looked up. The first column is the test name rather than a
+/// datum handle because a test is addressed by name everywhere else in the
+/// engine.
+#[must_use]
+pub fn stale(tests: &[grid_wire::StaleTest]) -> String {
+    let mut out = String::new();
+    for stale in tests {
         let reason = match stale.reason {
             grid_wire::StaleTestReason::ClosureChanged => "closure-changed",
             grid_wire::StaleTestReason::ClosureRejected => "closure-rejected",
         };
         record(&mut out, "miss", &[&stale.test, reason]);
     }
-    for weak in report.weak.iter().flatten() {
-        // `warn`, not `drift`: this is reported rather than refused, and it
-        // never moves the exit code. A test that proved nothing is a
-        // ranking, and grid ranks — it does not gate on a heuristic.
-        let named = weak
-            .def
-            .callsign
-            .as_ref()
-            .map_or_else(|| format!("@{}", short(&weak.def.datum)), |c| c.0.clone());
+    out
+}
+
+/// Weak tests: `warn`, not `drift` — reported rather than refused, and it
+/// never moves the exit code. A test that proved nothing is a ranking, and
+/// grid ranks; it does not gate on a heuristic.
+#[must_use]
+pub fn weak(tests: &[grid_wire::WeakTest]) -> String {
+    let mut out = String::new();
+    for weak in tests {
         record(
             &mut out,
             "warn",
-            &[&weak.test, &format!("weak-for {named}")],
+            &[&weak.test, &format!("weak-for {}", named(&weak.def))],
         );
     }
-    for warning in report.warnings.iter().flatten() {
+    out
+}
+
+/// One `warn` per reported-not-refused finding.
+#[must_use]
+pub fn warnings(rows: &[grid_wire::DriftWarning]) -> String {
+    let mut out = String::new();
+    for warning in rows {
         record(&mut out, "warn", &[&warning.subject, &warning.message]);
     }
-    out.push_str(&compat(report.compat.as_deref().unwrap_or_default()));
-    out.push_str(&drift_unchecked(&report.unchecked));
+    out
+}
+
+/// The definition's name, or its `@prefix` when the chart cannot name it.
+fn named(def: &grid_wire::DefRef) -> String {
+    def.callsign
+        .as_ref()
+        .map_or_else(|| format!("@{}", short(&def.datum)), |c| c.0.clone())
+}
+
+/// `grid check`'s ranked tail and certificate, in the order the plan lists
+/// them: `warn <def>  uncovered`, `warn <new>  clone-of <existing>`, the
+/// check's own warnings, then one `done  refactor  …` when no gate fired.
+/// Everything here ranks; the certificate states three facts and never the
+/// phrase "behavior-preserving".
+#[must_use]
+pub fn check_tail(answer: &grid_wire::CheckResult) -> String {
+    let mut out = String::new();
+    for def in answer.uncovered.iter().flatten() {
+        record(&mut out, "warn", &[&named(def), "uncovered"]);
+    }
+    for clone in answer.clones.iter().flatten() {
+        record(
+            &mut out,
+            "warn",
+            &[
+                &named(&clone.def),
+                &format!("clone-of {}", named(&clone.existing)),
+            ],
+        );
+    }
+    out.push_str(&warnings(answer.warnings.as_deref().unwrap_or_default()));
+    if let Some(cert) = answer.refactor.as_ref() {
+        let interfaces = match cert.interfaces_moved {
+            0 => "interfaces held".to_owned(),
+            n => format!("{n} interfaces moved"),
+        };
+        let coverage = match (cert.replayed_pass, cert.uncovered) {
+            (Some(replayed), Some(uncovered)) => {
+                format!(
+                    "{replayed} covering tests replayed pass · {uncovered} changed defs uncovered"
+                )
+            }
+            // No retained trace: neither count is zero, both are unknown.
+            _ => "no retained traces".to_owned(),
+        };
+        record(
+            &mut out,
+            "done",
+            &["refactor", &format!("{interfaces} · {coverage}")],
+        );
+    }
+    out
+}
+
+/// `orphan` rows with the trailing `trace N` column (`grid orphans
+/// --traced`): how many retained traces hit the definition. Zero is the
+/// workspace-level unused-`pub` question; still a maybe, never a verdict.
+#[must_use]
+pub fn orphans(rows: &[grid_wire::Orphan]) -> String {
+    let mut out = String::new();
+    for row in rows {
+        let d = &row.def;
+        let callsign = d.callsign.as_ref().map_or("", |c| c.0.as_str());
+        let at = d
+            .materialization
+            .as_ref()
+            .map(|m| format!("{}:{}", m.file, m.line))
+            .unwrap_or_default();
+        let traces = row
+            .traces
+            .map_or_else(String::new, |n| format!("trace {n}"));
+        record(
+            &mut out,
+            "orphan",
+            &[callsign, &short(&d.datum), &at, &traces],
+        );
+    }
     out
 }
 

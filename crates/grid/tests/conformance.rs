@@ -282,7 +282,7 @@ fn a_bad_request_is_an_error_response_not_a_crash() {
     // The daemon is still serving after all of that.
     assert_eq!(
         daemon.call("grid.version", &json!({}))["result"]["wire"],
-        "1.0.0"
+        "1.1.0"
     );
 }
 
@@ -1244,6 +1244,59 @@ fn check_reads_the_compile_record_over_the_socket() {
     // base == head: nothing changed, so nothing was left uncompiled.
     assert!(compile.uncompiled.is_empty());
     assert!(compile.unknown.is_empty());
+}
+
+/// Agent-loop step 9: the plan-less form over the socket. No plan means no
+/// verdict and no why; the drift section is `grid.drift`'s own report over
+/// the same endpoints, and `quick` carries drift and nothing that reads a
+/// trace or the verdict log.
+#[test]
+fn check_without_a_plan_answers_the_composite_over_the_socket() {
+    let dir = repo();
+    let daemon = Daemon::start(dir.path());
+    let params = json!({"base": {"git_rev": "HEAD~1"}, "head": {"git_rev": "HEAD"}});
+    let response = daemon.call("grid.check", &params);
+    assert!(response.get("error").is_none(), "check errored: {response}");
+    let answer: grid_wire::CheckResult =
+        serde_json::from_value(response["result"].clone()).expect("a wire CheckResult");
+    assert!(answer.verdict.is_none(), "no plan, no verdict");
+    assert!(answer.why.is_none(), "no plan, no why");
+    let drift = answer.drift.expect("the drift section is always present");
+    let standalone = daemon.call("grid.drift", &params)["result"].clone();
+    assert_eq!(
+        serde_json::to_value(&drift).expect("drift")["suspects"],
+        standalone["suspects"],
+        "the drift section is grid.drift's own"
+    );
+    assert!(
+        answer.stale.is_some() && answer.clones.is_some(),
+        "the full form reads the log and the shape column: {}",
+        response["result"]
+    );
+    assert!(
+        answer
+            .warnings
+            .is_some_and(|w| w[0].message.starts_with("no compile record since")),
+        "no record is said out loud"
+    );
+
+    let quick = daemon.call(
+        "grid.check",
+        &json!({"base": {"git_rev": "HEAD~1"}, "head": {"git_rev": "HEAD"}, "quick": true}),
+    );
+    assert!(quick.get("error").is_none(), "quick errored: {quick}");
+    let answer: grid_wire::CheckResult =
+        serde_json::from_value(quick["result"].clone()).expect("a wire CheckResult");
+    assert!(answer.drift.is_some());
+    assert!(
+        answer.stale.is_none()
+            && answer.weak.is_none()
+            && answer.clones.is_none()
+            && answer.uncovered.is_none()
+            && answer.refactor.is_none(),
+        "quick reads no trace or verdict log: {}",
+        quick["result"]
+    );
 }
 
 /// A trace the log does not hold is the contract's unknown-trace error, not an

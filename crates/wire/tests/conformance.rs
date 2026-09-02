@@ -90,7 +90,7 @@ fn every_contract_example_roundtrips() {
         }
     }
     assert_eq!(
-        example_count, 23,
+        example_count, 24,
         "one example per method, per the contract corpus"
     );
 }

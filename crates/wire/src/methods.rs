@@ -219,12 +219,17 @@ pub type TodoResult = TodoList;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CheckParams {
-    pub plan: PlanId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<PlanId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<SnapshotOrRev>,
     pub head: SnapshotOrRev,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace: Option<TraceId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compile: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quick: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

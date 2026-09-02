@@ -69,6 +69,27 @@ pub struct Changed {
     pub after: Option<DatumId>,
 }
 
+/// `C` from a diff: datum-level, base side. A move keeps its datum and an
+/// addition has no base side; both are outside the set by construction.
+#[must_use]
+pub fn changed_of(diff: &grid_wire::Diff) -> Vec<Changed> {
+    diff.defs
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.action,
+                grid_wire::DefChangeAction::Removed | grid_wire::DefChangeAction::Modified
+            )
+        })
+        .filter_map(|d| {
+            Some(Changed {
+                before: DatumId::parse(&d.before.as_ref()?.0)?,
+                after: d.after.as_ref().and_then(|after| DatumId::parse(&after.0)),
+            })
+        })
+        .collect()
+}
+
 /// The callsign a runner's test id maps to, by the frontend's spelling.
 ///
 /// nextest ids are `<binary-id> <name>`: `pkg` (lib), `pkg::bin/x` (bin),

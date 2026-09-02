@@ -60,7 +60,7 @@ mod exit {
 }
 
 const PITCH: &str = "what your code promises vs what it does";
-const WIRE_VERSION: &str = "1.0.0";
+const WIRE_VERSION: &str = "1.1.0";
 const ENGINE_VERSION: &str = concat!("grid ", env!("CARGO_PKG_VERSION"));
 
 /// Teaching output. Machines read stdout only, so every hint goes to stderr,
@@ -96,7 +96,7 @@ fn help() {
          uses <name> [--relation r]   proven inbound edges\n  \
          scope <pattern> [--depth N]  context pack around an edit\n  \
          scope <p> --bodies N         the same, with the text and its horizon\n  \
-         orphans [--under p]          no proven caller (not the same as dead)\n  \
+         orphans [--under p] [--traced]  no proven caller (not the same as dead); --traced adds trace N\n  \
          hotspots [--under p]         complexity x churn, descending\n  \
          roots                        import name -> directory map\n  \
          log <name>                   a definition's history in identity space\n  \
@@ -105,7 +105,8 @@ fn help() {
          gate <plan> [head]           promise vs delta; exit 3 on hold\n  \
          plan lint <file>             validate a promise file\n  \
          todo <plan>                  the promise as a worklist\n  \
-         check --plan <p> [--why]     gate verdict, and why it says so\n  \
+         check [base] [head] [--quick]  everything the change did that nobody checked; exit 3\n  \
+         check --plan <p> [--why]     the same, plus the gate verdict and why it says so\n  \
          check --compile [-- args]    wrap cargo check; the callers it did not compile; exit 3\n  \
          cache lookup|record ...      test verdicts keyed by identity closure\n  \
          edit apply <file>            compare-and-swap edits by datum\n  \
@@ -1502,70 +1503,102 @@ fn relation_named(name: &str) -> Option<grid_wire::Relation> {
     serde_json::from_value(serde_json::Value::String(name.to_owned())).ok()
 }
 
-/// `grid orphans [--lang <py|rs|ts|js>] [--under <path>]` — definitions
-/// with no proven inbound edge. The header states the evidence honestly:
-/// *no proven
-/// caller* — public API, tests, and macro-reached code all look like this,
-/// and none of them is dead.
+const ORPHANS_USAGE: &str =
+    "usage: grid orphans [--lang <py|rs|ts|js>] [--under <path>] [--traced]";
+
+/// `grid orphans [--lang <py|rs|ts|js>] [--under <path>] [--traced]` —
+/// definitions with no proven inbound edge. The header states the evidence
+/// honestly: *no proven caller* — public API, tests, and macro-reached code
+/// all look like this, and none of them is dead. `--traced` adds how many
+/// retained traces hit each one; `trace 0` is the workspace-level unused
+/// question, and still a maybe.
 fn orphans(args: &[&str], json: bool) -> u8 {
     let mut lang = None;
     let mut under = None;
+    let mut traced = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         if *arg == "--lang" {
             let Some(want) = it.next().and_then(|w| {
                 serde_json::from_value(serde_json::Value::String((*w).to_owned())).ok()
             }) else {
-                hint("usage: grid orphans [--lang <py|rs|ts|js>] [--under <path>]");
+                hint(ORPHANS_USAGE);
                 return exit::BAD_INPUT;
             };
             lang = Some(want);
         }
         if *arg == "--under" {
             let Some(path) = it.next() else {
-                hint("usage: grid orphans [--lang <py|rs|ts|js>] [--under <path>]");
+                hint(ORPHANS_USAGE);
                 return exit::BAD_INPUT;
             };
             under = Some(*path);
         }
+        if *arg == "--traced" {
+            traced = true;
+        }
     }
-    match rpc::orphans(root(), lang, under) {
+    let rows = if traced {
+        rpc::orphans_traced(root(), lang, under).map(|rows| {
+            if json {
+                return emit_json(&rows);
+            }
+            print!("{}", porcelain::orphans(&rows));
+            exit::OK
+        })
+    } else {
+        rpc::orphans(root(), lang, under).map(|rows| {
+            if json {
+                return emit_json(&rows);
+            }
+            print!("{}", porcelain::refs_as(&rows, "orphan"));
+            exit::OK
+        })
+    };
+    match rows {
         Err(e) => {
             hint(&format!("grid: {e}"));
             exit::BAD_INPUT
         }
-        Ok(rows) => {
-            if json {
-                return emit_json(&rows);
+        Ok(code) => {
+            if !json {
+                hint("grid: no proven caller — not the same as dead (public API, tests, macro-reached code all match)");
             }
-            hint("grid: no proven caller — not the same as dead (public API, tests, macro-reached code all match)");
-            print!("{}", porcelain::refs_as(&rows, "orphan"));
-            exit::OK
+            code
         }
     }
 }
 
-const CHECK_USAGE: &str = "usage: grid check --plan <plan> [<head-rev>] [--why] [--trace <id>] [--compile [-- <cargo check args>]]\n       grid check --compile [-- <cargo check args>]";
+const CHECK_USAGE: &str = "usage: grid check [<base>] [<head>] [--plan <plan>] [--quick] [--why] [--trace <id>] [--compile [-- <cargo check args>]]\n       grid check --compile [-- <cargo check args>]";
 
-/// `grid check --plan <plan> [<head-rev|snap:id>] [--why] [--trace <id>]` —
-/// is this change ok: the gate verdict, and under `--why` the reasoning —
-/// a path per fulfilling promise, the surplus it did not promise, and what
-/// changed without being run.
+/// `grid check [<base>] [<head>] [--plan <plan>] [--quick] [--why]` —
+/// everything the change did that nobody checked: drift suspects, the
+/// compile record's uncompiled callers, adherence when a plan is named,
+/// stale verdicts, covenant fires and declared compat findings gate (exit
+/// 3); weak tests, uncovered definitions, clone-of and undeclared compat
+/// findings rank. When nothing gates, one `done  refactor` record states the
+/// three facts a refactor claim rests on. `--why` adds, under a plan, a path
+/// per fulfilling promise and what changed without being run. `--quick` is
+/// drift plus the compile record and nothing that reads a trace or the
+/// verdict log — the `PostToolUse` form.
 ///
-/// The verdict is the gate's, so the exit code is the gate's too: hold is 3,
-/// divergence. A reviewer and CI reading the same answer cannot disagree
-/// about whether the promise was kept.
+/// A section that refuses refuses the whole check with its reason: exit 1
+/// when grid could not stand behind an answer (aground, an unreadable
+/// store), 2 when the input was wrong. Never a report with a section quietly
+/// missing.
 fn check_verb(args: &[&str], json: bool) -> u8 {
     let mut plan = None;
-    let mut head = None;
+    let mut positional: Vec<&str> = Vec::new();
     let mut trace = None;
     let mut why = false;
+    let mut quick = false;
     let mut compile = None;
     let mut rest = args;
     while let Some((arg, tail)) = rest.split_first() {
         rest = tail;
         match *arg {
             "--why" => why = true,
+            "--quick" => quick = true,
             "--compile" => compile = Some(Vec::new()),
             "--" => {
                 let Some(cargo_args) = compile.as_mut() else {
@@ -1593,21 +1626,29 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
                 hint(&format!("grid: unknown flag `{other}`\n{CHECK_USAGE}"));
                 return exit::BAD_INPUT;
             }
-            other if head.is_none() => head = Some(snapshot_or_rev(other)),
+            other if positional.len() < 2 => positional.push(other),
             other => {
-                hint(&format!("grid: unexpected argument `{other}`"));
+                hint(&format!(
+                    "grid: unexpected argument `{other}`\n{CHECK_USAGE}"
+                ));
                 return exit::BAD_INPUT;
             }
         }
     }
+    if trace.is_some() && plan.is_none() {
+        hint(&format!(
+            "grid: --trace names the run a plan's coverage is read from and needs --plan\n{CHECK_USAGE}"
+        ));
+        return exit::BAD_INPUT;
+    }
     // `--compile` wraps the compile and writes the record first; with a
     // plan the check then reads it, without one the record's own report is
-    // the whole answer.
+    // the whole answer — the mode use case 3 runs, unchanged.
     let mut compiled = None;
     if let Some(cargo_args) = compile {
-        if head.is_some() {
+        if !positional.is_empty() {
             hint(&format!(
-                "grid: --compile checks the worktree against {COMPILE_BASE}; a head rev does not apply\n{CHECK_USAGE}"
+                "grid: --compile checks the worktree against {COMPILE_BASE}; endpoints do not apply\n{CHECK_USAGE}"
             ));
             return exit::BAD_INPUT;
         }
@@ -1616,21 +1657,33 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
             Err(code) => return code,
         }
     }
-    let Some(plan) = plan else {
-        // No plan: the report over drift's default endpoints, on its own.
-        let Some(record) = compiled else {
-            hint(CHECK_USAGE);
-            return exit::BAD_INPUT;
-        };
-        return compile_report(&record, json);
-    };
+    if plan.is_none() {
+        if let Some(record) = compiled.as_ref() {
+            return compile_report(record, json);
+        }
+    }
     let params = grid_wire::methods::CheckParams {
         plan,
-        head: head.unwrap_or_else(|| snapshot_or_rev("HEAD")),
+        base: positional.first().map(|b| snapshot_or_rev(b)),
+        head: positional
+            .get(1)
+            .map_or_else(|| snapshot_or_rev("HEAD"), |h| snapshot_or_rev(h)),
         trace,
         compile: compiled.is_some().then_some(true),
+        quick: quick.then_some(true),
     };
     match check::answer(&params, root()) {
+        // Grid could not stand behind a section: a walk over fuel, a store
+        // that would not open. Internal, and never a report without it.
+        Err(
+            e @ (check::Error::Refused(_)
+            | check::Error::Drift(
+                drift::Error::BudgetRejected(_) | drift::Error::Trace(_) | drift::Error::Stale(_),
+            )),
+        ) => {
+            hint(&format!("grid: {e}"));
+            exit::INTERNAL
+        }
         Err(e) => {
             hint(&format!("grid: {e}"));
             exit::BAD_INPUT
@@ -1639,15 +1692,10 @@ fn check_verb(args: &[&str], json: bool) -> u8 {
     }
 }
 
-/// Print a check's answer and compute its exit. A proven caller the
-/// compile never saw diverges exactly as a hold does; a cfg nobody can
-/// decide only warns.
+/// Print a check's answer and compute its exit: 3 exactly when a gating
+/// section fired, the same predicate that withholds the refactor certificate.
 fn check_emit(pack: &grid_wire::CheckResult, why: bool, json: bool) -> u8 {
-    let uncompiled = pack
-        .compile
-        .as_ref()
-        .is_some_and(|c| !c.uncompiled.is_empty());
-    let code = if pack.verdict.gate == grid_wire::GateVerdictGate::Hold || uncompiled {
+    let code = if check::gated(pack) {
         exit::DIVERGENCE
     } else {
         exit::OK
@@ -1660,16 +1708,9 @@ fn check_emit(pack: &grid_wire::CheckResult, why: bool, json: bool) -> u8 {
             failure => failure,
         };
     }
-    // Without `--why` the answer is the verdict alone — the same records
-    // `grid gate` prints, from the same computation — plus the compile
-    // report when one was asked for.
-    if why {
-        print!("{}", check::porcelain(pack, &namer()));
-    } else {
-        print!("{}", porcelain::verdict(&pack.verdict, &namer()));
-        if let Some(compile) = pack.compile.as_ref() {
-            print!("{}", porcelain::compile(compile));
-        }
+    print!("{}", check::porcelain(pack, &namer(), why));
+    if code == exit::DIVERGENCE {
+        hint("grid: something this change did was not checked — the records above say what; `grid explain <word>` says why it gates");
     }
     code
 }

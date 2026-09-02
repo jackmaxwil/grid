@@ -764,11 +764,53 @@ pub struct TodoListFraction {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CheckResult {
-    pub verdict: GateVerdict,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<GateVerdict>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<CheckWhy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift: Option<DriftReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compile: Option<CompileReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale: Option<Vec<StaleTest>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weak: Option<Vec<WeakTest>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncovered: Option<Vec<DefRef>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clones: Option<Vec<CloneFinding>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compat: Option<Vec<CompatFinding>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refactor: Option<RefactorCertificate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<DriftWarning>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloneFinding {
+    pub def: DefRef,
+    pub existing: DefRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RefactorCertificate {
+    pub interfaces_moved: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replayed_pass: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncovered: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Orphan {
+    pub def: DefRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traces: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -542,6 +542,48 @@ pub fn orphans(
     Ok(out)
 }
 
+/// `grid orphans --traced` — the same rows, each with how many retained
+/// traces hit the definition as caller or callee. `trace 0` beside "no
+/// proven caller" is the workspace-level unused-`pub` question rustc cannot
+/// ask (it checks per crate); still heuristic — `pub` in a published crate
+/// stays a maybe.
+///
+/// # Errors
+/// [`chart_provider::Error`] if the store or the trace store cannot be
+/// opened — an unreadable trace store is not zero traces.
+pub fn orphans_traced(
+    root: &std::path::Path,
+    lang: Option<grid_wire::Lang>,
+    under: Option<&str>,
+) -> Result<Vec<grid_wire::Orphan>, chart_provider::Error> {
+    let rows = orphans(root, lang, under)?;
+    let traces = trace_dir(root)
+        .and_then(grid_trace::Store::open)
+        .and_then(|store| store.retained())
+        .map_err(|e| chart_provider::Error::Config(e.to_string()))?;
+    // ponytail: one pass over every retained trace's hops per call; index
+    // the store by datum when a repo holds enough traces for this to show.
+    let mut hits: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    for stored in &traces {
+        let seen: std::collections::BTreeSet<grid_chart::DatumId> = stored
+            .hops
+            .iter()
+            .flat_map(|(caller, callee)| [*caller, *callee])
+            .collect();
+        for datum in seen {
+            let count = hits.entry(datum.to_string()).or_default();
+            *count = count.saturating_add(1);
+        }
+    }
+    Ok(rows
+        .into_iter()
+        .map(|def| grid_wire::Orphan {
+            traces: Some(hits.get(&def.datum.0).copied().unwrap_or(0)),
+            def,
+        })
+        .collect())
+}
+
 /// One hotspot row: a definition scored by complexity times churn.
 #[derive(Debug, serde::Serialize)]
 pub struct Hotspot {
@@ -1149,27 +1191,7 @@ pub fn test_plan_timed(
         SnapshotId(head_epoch.snapshot_id().as_str().to_owned()),
         head_epoch.segments(),
     );
-    // `C`: datum-level, base side. A move keeps its datum and an addition
-    // has no base side; both are outside the set by construction.
-    let changed: Vec<crate::testplan::Changed> = diff
-        .defs
-        .iter()
-        .filter(|d| {
-            matches!(
-                d.action,
-                grid_wire::DefChangeAction::Removed | grid_wire::DefChangeAction::Modified
-            )
-        })
-        .filter_map(|d| {
-            Some(crate::testplan::Changed {
-                before: grid_chart::DatumId::parse(&d.before.as_ref()?.0)?,
-                after: d
-                    .after
-                    .as_ref()
-                    .and_then(|after| grid_chart::DatumId::parse(&after.0)),
-            })
-        })
-        .collect();
+    let changed = crate::testplan::changed_of(&diff);
     let traces = trace_dir(root)
         .and_then(grid_trace::Store::open)
         .and_then(|store| store.retained())
