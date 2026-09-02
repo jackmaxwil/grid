@@ -660,6 +660,12 @@ pub struct ScopePack {
     pub invariants: Vec<Invariant>,
     pub anchors: Vec<Anchor>,
     pub churn: Vec<ScopePackChurnItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bodies: Option<Vec<PackText>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sigs: Option<Vec<PackText>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horizon: Option<PackHorizon>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -667,6 +673,24 @@ pub struct ScopePack {
 pub struct ScopePackChurnItem {
     pub datum: Datum,
     pub edits: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackText {
+    pub def: DefRef,
+    pub hop: u64,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackHorizon {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bodies_complete_within: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sigs_complete_within: Option<u64>,
+    pub approx_tokens: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

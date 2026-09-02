@@ -210,3 +210,43 @@ fn a_sig_is_never_a_shared_constant() {
     sigs.dedup();
     assert_eq!(sigs.len(), total, "distinct interfaces need distinct sigs");
 }
+
+/// `sig_text` renders the *same* claim the sig identity hashes, as source:
+/// the erasure is visible, the body is gone, and every shape the extractor
+/// charts is covered — including a method, whose source does not parse as a
+/// free item.
+#[test]
+fn sig_text_erases_patterns_and_drops_the_body() {
+    let text = grid_lang_rs::sig_text("pub fn f(count: u32) -> u32 { count + 1 }").expect("a fn");
+    assert!(text.contains("pub fn f"), "{text}");
+    assert!(
+        text.contains('_'),
+        "the parameter pattern is erased: {text}"
+    );
+    assert!(
+        !text.contains("count + 1"),
+        "the body is not interface: {text}"
+    );
+
+    let method =
+        grid_lang_rs::sig_text("    pub fn fill(&mut self, buf: &mut [u8]) -> usize { 0 }")
+            .expect("an impl method, indented off its impl block");
+    assert!(method.contains("& mut self"), "{method}");
+    assert!(!method.contains("buf"), "{method}");
+
+    let declared = grid_lang_rs::sig_text("fn poll(&self, waker: &Waker) -> bool;")
+        .expect("a trait method declaration");
+    assert!(declared.contains("poll"), "{declared}");
+
+    let ty = grid_lang_rs::sig_text("pub struct P { pub x: u32 }").expect("a struct");
+    assert!(
+        ty.contains("pub x"),
+        "a type's fields are its interface: {ty}"
+    );
+
+    assert_eq!(
+        grid_lang_rs::sig_text("let x = 1;"),
+        None,
+        "not a definition"
+    );
+}

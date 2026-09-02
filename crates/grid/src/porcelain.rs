@@ -5,6 +5,8 @@
 //! `grep '^edge  miss'` is the explanation and `awk` is the parser. Nothing
 //! here writes to stderr: hints are the caller's business.
 
+use std::fmt::Write as _;
+
 use grid_gate::lint::{relation_name, render_edge};
 use grid_wire::methods::{CacheRecordResult, TraceIngestResult};
 use grid_wire::{
@@ -13,7 +15,7 @@ use grid_wire::{
 };
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "2.4.0";
+pub const VERSION: &str = "2.5.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -835,6 +837,73 @@ pub fn scope(pack: &grid_wire::ScopePack, name: &NameOf) -> String {
     edge_records(&mut out, &edges, name);
     for inv in &pack.invariants {
         record(&mut out, "inv", &["standing", &inv.id]);
+    }
+    out
+}
+
+/// Render a scope pack that carries text: a document, not records. Headers
+/// name what each block is and how far out it sits (`## <callsign>
+/// <file:line>  (body, hop k)`, `## sig <callsign>  <file:line>  (hop k)`),
+/// and one `# horizon:` line closes it with the depth each tier is complete
+/// to and the token estimate. PORCELAIN.md's text-mode paragraph: the prose
+/// is the answer here and `--json` is the record form.
+///
+/// The horizon line is unconditional. A pack that packed nothing still says
+/// so — a bounded answer whose bound is missing is worse than no answer.
+#[must_use]
+pub fn scope_document(pack: &grid_wire::ScopePack) -> String {
+    let mut out = String::new();
+    let at = |t: &grid_wire::PackText| {
+        t.def
+            .materialization
+            .as_ref()
+            .map_or_else(|| "-".to_owned(), |m| format!("{}:{}", m.file, m.line))
+    };
+    let name = |t: &grid_wire::PackText| {
+        t.def
+            .callsign
+            .as_ref()
+            .map_or_else(|| t.def.datum.0.clone(), |c| c.0.clone())
+    };
+    for text in pack.bodies.iter().flatten() {
+        let _ = writeln!(
+            out,
+            "## {}  {}  (body, hop {})",
+            name(text),
+            at(text),
+            text.hop
+        );
+        out.push_str(&text.text);
+        out.push('\n');
+    }
+    for text in pack.sigs.iter().flatten() {
+        let _ = writeln!(
+            out,
+            "## sig  {}  {}  (hop {})",
+            name(text),
+            at(text),
+            text.hop
+        );
+        out.push_str(&text.text);
+        if !text.text.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    if let Some(h) = &pack.horizon {
+        let hops = |n: Option<u64>| match n {
+            None => "none".to_owned(),
+            Some(1) => "1 hop".to_owned(),
+            Some(n) => format!("{n} hops"),
+        };
+        let _ = writeln!(
+            out,
+            "# horizon: bodies complete through {}, sigs through {}, ≈{} tokens (bytes/4)",
+            hops(h.bodies_complete_within),
+            h.sigs_complete_within
+                .map_or_else(|| "none".to_owned(), |n| n.to_string()),
+            h.approx_tokens
+        );
     }
     out
 }

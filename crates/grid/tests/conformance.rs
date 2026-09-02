@@ -717,6 +717,65 @@ fn scope_example_shape_is_served_over_the_socket() {
     assert_eq!(pack.in_edges.len(), 1, "sweep reaches helper: {pack:?}");
 }
 
+/// The tiered pack is served over the socket with the contract's shape: text
+/// tiers keyed by hop and a horizon that bounds them. The fields are additive,
+/// so a request that names neither `bodies` nor `sigs` gets the pack it always
+/// got and none of them (C39).
+#[test]
+fn scope_serves_tiers_and_a_horizon_over_the_socket() {
+    let dir = repo_with_an_unused_import();
+    let daemon = Daemon::start(dir.path());
+    daemon.call("grid.survey.run", &json!({}));
+
+    let plain = daemon.call("grid.scope", &json!({ "callsigns": ["pkg.util.**"] }));
+    assert!(plain["result"].get("bodies").is_none(), "{plain}");
+    assert!(plain["result"].get("horizon").is_none(), "{plain}");
+
+    let response = daemon.call(
+        "grid.scope",
+        &json!({ "callsigns": ["pkg.util.helper"], "bodies": 1, "sigs": 2 }),
+    );
+    assert!(response.get("error").is_none(), "scope errored: {response}");
+    let pack: grid_wire::ScopePack =
+        serde_json::from_value(response["result"].clone()).expect("a wire ScopePack");
+    let bodies = pack.bodies.expect("bodies");
+    assert!(
+        bodies.iter().any(|t| t.hop == 0
+            && t.def
+                .callsign
+                .as_ref()
+                .is_some_and(|c| c.0 == "pkg.util.helper")
+            && t.text.contains("return 1")),
+        "the root's body is the source the worktree holds: {bodies:?}"
+    );
+    assert!(
+        bodies.iter().all(|t| t.hop <= 1),
+        "nothing past the body tier: {bodies:?}"
+    );
+    let sigs = pack.sigs.expect("sigs");
+    assert!(
+        sigs.iter()
+            .all(|t| t.hop == 2 && !t.text.contains("return")),
+        "the sig tier is headers only, at the hops past the bodies: {sigs:?}"
+    );
+    let horizon = pack.horizon.expect("horizon");
+    assert_eq!(horizon.bodies_complete_within, Some(1));
+    assert_eq!(horizon.sigs_complete_within, Some(2));
+
+    // A budget under the roots' own body drops the body layer whole and says
+    // so: sigs at hop 0, no bodies, and a horizon that admits it.
+    let starved = daemon.call(
+        "grid.scope",
+        &json!({ "callsigns": ["pkg.util.helper"], "bodies": 1, "sigs": 2, "budget": 4 }),
+    );
+    let pack: grid_wire::ScopePack =
+        serde_json::from_value(starved["result"].clone()).expect("a wire ScopePack");
+    assert!(pack.bodies.is_some_and(|b| b.is_empty()), "no partial body");
+    let horizon = pack.horizon.expect("horizon");
+    assert_eq!(horizon.bodies_complete_within, None, "bodies: none");
+    assert_eq!(horizon.sigs_complete_within, Some(0), "sigs: 0");
+}
+
 #[test]
 fn todo_is_the_gate_verdict_as_a_worklist_over_the_socket() {
     let contract = contract();
@@ -1251,6 +1310,9 @@ mod conservatism {
             &["resolve", "sweep"],
             &["uses", "helper"],
             &["scope", "pkg.util.**"],
+            // Text mode: the headers and the horizon line are grid's own
+            // words even though the blocks between them are the repo's.
+            &["scope", "pkg.util.helper", "--bodies", "1", "--sigs", "2"],
             &["orphans"],
             &["hotspots"],
             &["roots"],

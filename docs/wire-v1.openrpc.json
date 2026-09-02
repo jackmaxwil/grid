@@ -14,7 +14,7 @@
   },
   "x-porcelain": {
     "doc": "packages/grid/docs/PORCELAIN.md",
-    "version": "2.4.0",
+    "version": "2.5.0",
     "description": "Normative grammar for human-facing stdout records. --json emits wire results verbatim; the porcelain version is reported by grid.version."
   },
   "methods": [
@@ -27,7 +27,7 @@
         {
           "name": "current versions",
           "params": [],
-          "result": { "name": "version", "value": { "wire": "1.0.0", "engine": "grid 0.1.0", "porcelain": "2.4.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
+          "result": { "name": "version", "value": { "wire": "1.0.0", "engine": "grid 0.1.0", "porcelain": "2.5.0", "snapshot": "snap:b3:77e177e177e177e177e177e177e177e177e177e177e177e177e177e177e177e1" } }
         }
       ],
       "result": {
@@ -299,12 +299,16 @@
     },
     {
       "name": "grid.scope",
-      "summary": "Context pack for a planned edit: signatures and handles (not bodies), edges in and out, in-scope invariants, open anchors, churn. Token cost proportional to blast radius.",
+      "summary": "Context pack for a planned edit: signatures and handles (not bodies), edges in and out, in-scope invariants, open anchors, churn. With bodies or sigs, the text itself as well \u2014 in whole hop layers under a token budget, closed by a horizon naming the depth each tier is complete to. Token cost proportional to blast radius.",
       "paramStructure": "by-name",
       "params": [
         { "name": "callsigns", "required": true, "schema": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/CallsignPattern" } } },
         { "name": "depth", "required": false, "schema": { "type": "integer", "minimum": 1, "default": 1 } },
-        { "name": "snapshot", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } }
+        { "name": "snapshot", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotOrRev" } },
+        { "name": "bodies", "required": false, "schema": { "type": "integer", "minimum": 0, "default": 1, "description": "Pack body text for hops 0..=bodies. Naming either this or sigs turns the text tiers on, and the walk runs at least max(bodies, sigs) hops." } },
+        { "name": "sigs", "required": false, "schema": { "type": "integer", "minimum": 0, "default": 3, "description": "Pack sig text for hops (bodies+1)..=sigs. Raised to bodies when smaller: a body already carries its own sig." } },
+        { "name": "budget", "required": false, "schema": { "type": "integer", "minimum": 0, "description": "Approximate token ceiling (bytes/4). Spent in whole hop layers, farthest first: a layer that does not fit is dropped whole and the horizon stops at the previous one; a body layer that does not fit is demoted to its sigs before it is dropped. Never a partial layer, because a certificate over a partial layer is the lie complete_within exists to prevent." } },
+        { "name": "since", "required": false, "schema": { "$ref": "#/components/schemas/SnapshotOrRev", "description": "Keep only definitions whose datum or sig moved since this snapshot \u2014 the delta map a returning agent reads instead of the repo. Resolved against epochs the store already retains; grid.scope never surveys." } }
       ],
       "examples": [
         {
@@ -1094,7 +1098,30 @@
               "additionalProperties": false
             },
             "description": "Edit-frequency signal: edit count per definition in scope."
-          }
+          },
+          "bodies": { "type": "array", "items": { "$ref": "#/components/schemas/PackText" }, "description": "Body text for every definition within horizon.bodies_complete_within hops, ordered by hop then callsign. Absent unless the request asked for bodies or sigs." },
+          "sigs": { "type": "array", "items": { "$ref": "#/components/schemas/PackText" }, "description": "Sig text for every definition past the body tier and within horizon.sigs_complete_within hops, ordered by hop then callsign. Absent unless the request asked for bodies or sigs." },
+          "horizon": { "$ref": "#/components/schemas/PackHorizon", "description": "The depth each tier is complete to. Present exactly when bodies and sigs are: text without a horizon is a bounded answer nobody can bound." }
+        },
+        "additionalProperties": false
+      },
+      "PackText": {
+        "type": "object",
+        "required": ["def", "hop", "text"],
+        "properties": {
+          "def": { "$ref": "#/components/schemas/DefRef" },
+          "hop": { "type": "integer", "minimum": 0, "description": "Hops from the nearest root of the pack's walk; 0 is a definition a pattern named." },
+          "text": { "type": "string", "description": "The definition's source lines for a body, the frontend's rendered signature for a sig. Read from the worktree when the pack is built, so a file edited since the survey packs what the file says now." }
+        },
+        "additionalProperties": false
+      },
+      "PackHorizon": {
+        "type": "object",
+        "required": ["approx_tokens"],
+        "properties": {
+          "bodies_complete_within": { "type": "integer", "minimum": 0, "description": "Every definition within this many hops has its body in the pack. Absent when no body layer fit the budget \u2014 not even the roots' \u2014 so the pack certifies no body depth at all." },
+          "sigs_complete_within": { "type": "integer", "minimum": 0, "description": "Every definition within this many hops has at least its sig in the pack. Absent when not even the roots' sigs fit." },
+          "approx_tokens": { "type": "integer", "minimum": 0, "description": "Approximate token count of the packed text: bytes/4. Grid runs no tokenizer, so this is an estimate and every rendering states it as one." }
         },
         "additionalProperties": false
       },

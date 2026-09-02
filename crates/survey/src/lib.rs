@@ -133,6 +133,19 @@ pub fn definitions(lang: Lang, source: &str) -> Result<Vec<Definition>, ParseErr
     }
 }
 
+/// The sig text of one definition's own source, as the frontend for `lang`
+/// renders it: everything a caller can observe without the body, spelled as
+/// source. The same frontend seam [`definitions`] sits on — a language with
+/// no frontend answers `None`, which is *unknown*, never an empty signature.
+#[must_use]
+pub fn sig_text(lang: Lang, source: &str) -> Option<String> {
+    match lang {
+        Lang::Py => grid_lang_py::sig_text(source),
+        Lang::Rs => grid_lang_rs::sig_text(source),
+        Lang::Ts | Lang::Js => None,
+    }
+}
+
 /// The imports and references the frontend `lang` names finds in `source`.
 ///
 /// # Errors

@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.4.0
+version: 2.5.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -138,6 +138,23 @@ always exits `0`; `grid drift` is the verb that holds. A file event the
 frontend cannot parse emits no deltas at all and says so on stderr, because
 a file grid cannot read is not a file with nothing in it.
 
+## Text-mode output
+
+Two verbs answer in prose rather than records, because their answer *is*
+prose: `grid explain <word>` and `grid scope --bodies`/`--sigs`. Their stdout
+is a document — `## <callsign>  <file:line>  (body, hop k)` and `## sig
+<callsign>  <file:line>  (hop k)` headers, each followed by the text, closed
+by one `# horizon: bodies complete through <N|none>, sigs through <M|none>,
+≈<T> tokens (bytes/4)` line that names the depth each tier is complete to.
+The record grammar above does not apply to those lines and no consumer should
+parse them as records: `--json` is the record form, and for `scope` it is the
+`ScopePack`'s additive `bodies`, `sigs` and `horizon`. The budget is spent in
+whole hop layers, farthest first, so the horizon is never a claim about a
+layer that was cut in half; a body layer that will not fit is demoted to its
+sigs before it is dropped, and a pack that packed nothing still prints its
+horizon line. Without `--bodies` and `--sigs`, `grid scope` prints the same
+`ref`/`edge`/`inv` records it always has.
+
 ## Glyphs
 
 `+` added · `-` removed · `~` modified · `>` moved
@@ -174,7 +191,9 @@ tags a new verb's meanings, which carried 2.1.0 to 2.2.0 (`grid test`'s
 `hit`/`miss` addressed by test id, and its `done` line) and 2.2.0 to 2.3.0
 (`grid check --compile`'s `drift` reason `uncompiled:<cfg>` and its `warn`)
 and 2.3.0 to 2.4.0 (`grid gate`'s `def` record, trailing `unaccounted:
-interface` when a def promise's `interface` claim is why it holds)
+interface` when a def promise's `interface` claim is why it holds). Adding a
+text-mode output is minor too, which carried 2.4.0 to 2.5.0 (`grid scope
+--bodies`'s document and its `# horizon:` line)
 — changing column
 order or meaning is major — and so is renaming a tag, which is what carried
 1.6.0 to 2.0.0 (`docs/plans/2026-09-01-naming.md`). The daemon reports this

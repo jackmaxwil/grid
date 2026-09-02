@@ -91,6 +91,7 @@ fn help() {
          resolve <name|file|f:line>   where it is; a bare file lists its defs\n  \
          uses <name> [--relation r]   proven inbound edges\n  \
          scope <pattern> [--depth N]  context pack around an edit\n  \
+         scope <p> --bodies N         the same, with the text and its horizon\n  \
          orphans [--under p]          no proven caller (not the same as dead)\n  \
          hotspots [--under p]         complexity x churn, descending\n  \
          roots                        import name -> directory map\n  \
@@ -993,34 +994,61 @@ fn miss(name: &str) -> String {
     msg
 }
 
-/// `grid scope <callsign-pattern>... [--depth N]` — the context pack around
-/// an intended edit: what matches, what touches it, what rules reach it.
-/// Bodies are deliberately absent; the agent pulls those itself.
+/// `grid scope <callsign-pattern>... [--depth N] [--bodies N] [--sigs M]
+/// [--budget T] [--since S]` — the context pack around an intended edit: what
+/// matches, what touches it, what rules reach it. Without `--bodies`/`--sigs`
+/// the text is deliberately absent and the agent pulls it itself; with them
+/// the pack carries bodies to one depth and signatures to a further one, under
+/// a token budget spent in whole layers, closed by a horizon.
 fn scope(args: &[&str], json: bool) -> u8 {
+    const USAGE: &str =
+        "usage: grid scope <pattern>... [--depth N] [--bodies N] [--sigs M] [--budget T] [--since <snapshot|rev>]";
     let mut patterns = Vec::new();
-    let mut depth = None;
+    let (mut depth, mut bodies, mut sigs, mut budget) = (None, None, None, None);
+    let mut since = None;
     let mut rest = args;
     while let Some((arg, tail)) = rest.split_first() {
-        if *arg == "--depth" {
+        let number = |slot: &mut Option<u64>| {
             let Some(n) = tail.first().and_then(|n| n.parse::<u64>().ok()) else {
-                hint("usage: grid scope <pattern>... [--depth N]");
-                return exit::BAD_INPUT;
+                return false;
             };
-            depth = Some(n);
-            rest = &tail[1..];
-            continue;
+            *slot = Some(n);
+            true
+        };
+        let taken = match *arg {
+            "--depth" => number(&mut depth),
+            "--bodies" => number(&mut bodies),
+            "--sigs" => number(&mut sigs),
+            "--budget" => number(&mut budget),
+            "--since" => {
+                since = tail.first().map(|s| snapshot_or_rev(s));
+                since.is_some()
+            }
+            _ => {
+                patterns.push(grid_wire::CallsignPattern((*arg).to_string()));
+                rest = tail;
+                continue;
+            }
+        };
+        if !taken {
+            hint(USAGE);
+            return exit::BAD_INPUT;
         }
-        patterns.push(grid_wire::CallsignPattern((*arg).to_string()));
-        rest = tail;
+        rest = &tail[1..];
     }
     if patterns.is_empty() {
-        hint("usage: grid scope <pattern>... [--depth N]");
+        hint(USAGE);
         return exit::BAD_INPUT;
     }
+    let tiers = bodies.is_some() || sigs.is_some();
     let params = grid_wire::methods::ScopeParams {
         callsigns: patterns,
         depth,
         snapshot: None,
+        bodies,
+        sigs,
+        budget,
+        since,
     };
     match rpc::scope(&params, root()) {
         Err(e) => {
@@ -1031,12 +1059,25 @@ fn scope(args: &[&str], json: bool) -> u8 {
             if json {
                 return emit_json(&pack);
             }
-            print!("{}", porcelain::scope(&pack, &namer()));
+            if pack.horizon.is_some() {
+                // Text mode: prose on stdout, closed by its own horizon line.
+                print!("{}", porcelain::scope_document(&pack));
+            } else {
+                print!("{}", porcelain::scope(&pack, &namer()));
+            }
             // The pack's horizon, said out loud. `scope` walks a fixed number
             // of layers and spends no fuel, so it is complete to exactly that
             // depth and to nothing beyond — a reader who cannot tell those
             // apart cannot use a bounded answer.
-            let hops = depth.unwrap_or(DEFAULT_SCOPE_DEPTH);
+            let hops = if tiers {
+                // Asking for text asks for the hops it lives at, so the walk
+                // is at least as deep as the outermost tier.
+                depth
+                    .unwrap_or(DEFAULT_SCOPE_DEPTH)
+                    .max(sigs.unwrap_or(3).max(bodies.unwrap_or(1)))
+            } else {
+                depth.unwrap_or(DEFAULT_SCOPE_DEPTH)
+            };
             hint(&format!(
                 "grid: scope complete through {hops} hop{} — nothing further was walked",
                 if hops == 1 { "" } else { "s" }

@@ -15,6 +15,7 @@ mod sig;
 pub use cfg::{eval_cfg, CfgEnv};
 pub use extract::definitions;
 pub use refs::references;
+pub use sig::sig_text;
 
 use grid_datum::{Definition, FileRefs, ParseError};
 

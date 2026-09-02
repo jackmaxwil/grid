@@ -157,3 +157,29 @@ fn a_sig_is_never_a_shared_constant() {
     sigs.dedup();
     assert_eq!(sigs.len(), total, "distinct interfaces need distinct sigs");
 }
+
+/// `sig_text` renders the header the sig identity encodes, as source: the
+/// parameter names, annotations and defaults a caller depends on, and nothing
+/// of the body. A method arrives indented off its class and must still parse.
+#[test]
+fn sig_text_is_the_header_and_never_the_body() {
+    let text = grid_lang_py::sig_text("def f(a: int, b: str = 'x') -> bool:\n    return True\n")
+        .expect("a def");
+    assert_eq!(text, "def f(a: int, b: str = 'x') -> bool:");
+
+    let method = grid_lang_py::sig_text("    def fill(self, buf):\n        return 0\n")
+        .expect("a method, indented off its class");
+    assert_eq!(method, "def fill(self, buf):");
+
+    let cls = grid_lang_py::sig_text("class P(Base):\n    x: int = 1\n").expect("a class");
+    assert_eq!(cls, "class P(Base):");
+
+    let wrapped =
+        grid_lang_py::sig_text("def g(\n    a: int,\n    b: int,\n) -> int:\n    return a\n")
+            .expect("a multi-line header");
+    assert!(wrapped.starts_with("def g("), "{wrapped}");
+    assert!(wrapped.ends_with(':'), "{wrapped}");
+    assert!(!wrapped.contains("return"), "{wrapped}");
+
+    assert_eq!(grid_lang_py::sig_text("x = 1\n"), None, "not a definition");
+}

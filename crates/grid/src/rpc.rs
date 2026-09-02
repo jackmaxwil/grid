@@ -360,7 +360,7 @@ pub fn matching(root: &std::path::Path, pattern: &str) -> Result<usize, chart_pr
     let chart = ChartDelta::open(root)?;
     Ok(live_defs(&chart)
         .into_iter()
-        .filter(|(_, callsign, _, _)| grid_gate::pattern::matches(pattern, callsign))
+        .filter(|(_, callsign, _, _, _)| grid_gate::pattern::matches(pattern, callsign))
         .count())
 }
 
@@ -380,7 +380,7 @@ pub fn nearest(
     let chart = ChartDelta::open(root)?;
     let mut scored: Vec<(usize, usize, String)> = live_defs(&chart)
         .into_iter()
-        .map(|(_, callsign, _, _)| {
+        .map(|(_, callsign, _, _, _)| {
             (
                 edit_distance(&wanted, &tail(&callsign)),
                 edit_distance(name, &callsign),
@@ -1221,21 +1221,41 @@ pub fn scope(
     let all = live_defs(&chart);
     let matched: Vec<String> = all
         .iter()
-        .filter(|(_, callsign, _, _)| {
+        .filter(|(_, callsign, _, _, _)| {
             params
                 .callsigns
                 .iter()
                 .any(|p| grid_gate::pattern::matches(&p.0, callsign))
         })
-        .map(|(datum, _, _, _)| datum.clone())
+        .map(|(datum, _, _, _, _)| datum.clone())
         .collect();
-    let in_scope = expand(&chart, matched, params.depth.unwrap_or(0));
+    // Asking for text asks for the hops the text lives at: a `--sigs 3` pack
+    // over a zero-hop walk would certify three hops it never walked. An
+    // explicit `--depth` past the tiers still widens the def and edge sections.
+    let tiers = params.bodies.is_some() || params.sigs.is_some();
+    let bodies_n = params.bodies.unwrap_or(1);
+    // A body carries its own sig, so a sig tier below the body tier is not a
+    // narrower answer, only a confusing certificate.
+    let sigs_m = params.sigs.unwrap_or(3).max(bodies_n);
+    let depth = if tiers {
+        params.depth.unwrap_or(0).max(sigs_m)
+    } else {
+        params.depth.unwrap_or(0)
+    };
+    let mut layers = expand(&chart, matched, depth);
+    if let Some(since) = params.since.as_ref() {
+        let moved = moved_since(&chart, since)?;
+        for layer in &mut layers {
+            layer.retain(|datum| moved.contains(datum));
+        }
+    }
+    let in_scope: Vec<String> = layers.iter().flatten().cloned().collect();
 
     let defs: Vec<grid_wire::DefRef> = all
         .iter()
-        .filter(|(datum, _, _, _)| in_scope.contains(datum))
+        .filter(|(datum, _, _, _, _)| in_scope.contains(datum))
         .map(
-            |(datum, callsign, lang, materialization)| grid_wire::DefRef {
+            |(datum, callsign, lang, materialization, _)| grid_wire::DefRef {
                 datum: grid_wire::Datum(datum.clone()),
                 callsign: Some(grid_wire::Callsign(callsign.clone())),
                 lang: *lang,
@@ -1270,6 +1290,13 @@ pub fn scope(
         })
         .collect();
 
+    let (bodies, sigs, horizon) = if tiers {
+        let packed = pack_text(root, &all, &layers, bodies_n, sigs_m, params.budget);
+        (Some(packed.bodies), Some(packed.sigs), Some(packed.horizon))
+    } else {
+        (None, None, None)
+    };
+
     Ok(ScopeResult {
         snapshot,
         defs,
@@ -1278,7 +1305,266 @@ pub fn scope(
         invariants,
         anchors: Vec::new(),
         churn: Vec::new(),
+        bodies,
+        sigs,
+        horizon,
     })
+}
+
+/// Every live datum whose definition moved since `since` — the head side of
+/// every change a membership diff reports. A sig move implies a datum move, so
+/// "datum or sig moved" is exactly this set; a definition that was removed has
+/// no head side and is not in the live chart to pack anyway.
+fn moved_since(
+    chart: &ChartDelta,
+    since: &SnapshotOrRev,
+) -> Result<std::collections::HashSet<String>, chart_provider::Error> {
+    // ponytail: resolved against retained epochs, never surveyed — `scope` is
+    // a read, and a survey inside it would cost more than the whole pack. A
+    // rev nobody has surveyed is `NoSnapshotForRev`, which says so.
+    let base = chart.epoch_of(since)?;
+    let head = chart.head();
+    let diff = grid_chart::diff(
+        SnapshotId(base.snapshot_id().as_str().to_owned()),
+        base.segments(),
+        SnapshotId(head.snapshot_id().as_str().to_owned()),
+        head.segments(),
+    );
+    Ok(diff
+        .defs
+        .iter()
+        .filter_map(|d| Some(d.after.as_ref()?.0.clone()))
+        .collect())
+}
+
+/// The text tiers and the certificate over them.
+struct Packed {
+    bodies: Vec<grid_wire::PackText>,
+    sigs: Vec<grid_wire::PackText>,
+    horizon: grid_wire::PackHorizon,
+}
+
+/// One definition's renderable text at one hop: its body as the worktree
+/// holds it, and the sig its frontend renders from that body.
+struct Renderable {
+    def: grid_wire::DefRef,
+    callsign: String,
+    body: String,
+    sig: Option<String>,
+}
+
+/// One `Renderable` per definition in each hop layer, layers ordered by hop
+/// and definitions inside a layer by callsign — so the pack is a function of
+/// the chart's content and not of walk order (C2).
+fn renderables(
+    root: &std::path::Path,
+    all: &[LiveDef],
+    layers: &[Vec<String>],
+    bodies_n: u64,
+    sigs_m: u64,
+    budget: Option<u64>,
+) -> Vec<Vec<Renderable>> {
+    let by_datum: std::collections::HashMap<&str, &LiveDef> =
+        all.iter().map(|d| (d.0.as_str(), d)).collect();
+    // ponytail: one read per file, memoized across the pack — the plan's cost
+    // row is a file read per body, and a hot definition's file is read once.
+    let mut files: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+    let mut per_hop: Vec<Vec<Renderable>> = Vec::new();
+    for layer in layers.iter().take(
+        usize::try_from(sigs_m)
+            .unwrap_or(usize::MAX)
+            .saturating_add(1),
+    ) {
+        let hop = u64::try_from(per_hop.len()).unwrap_or(u64::MAX);
+        let mut here: Vec<Renderable> = Vec::new();
+        for datum in layer {
+            let Some((_, callsign, lang, materialization, line_end)) =
+                by_datum.get(datum.as_str()).copied()
+            else {
+                continue;
+            };
+            // No location is no body: a definition grid cannot point at is not
+            // one it can quote. It stays in `defs`, where a handle is enough.
+            let (Some(loc), Some(line_end)) = (materialization.as_ref(), *line_end) else {
+                continue;
+            };
+            let Some(body) = body_at(root, &mut files, &loc.file, loc.line, u64::from(line_end))
+            else {
+                continue;
+            };
+            // The body is the sig's input, so the sig costs one parse and no
+            // extra read. Skipped for a body layer when no budget can demote
+            // it — nothing would ever ask for it.
+            let sig = (hop > bodies_n || budget.is_some())
+                .then(|| lang.and_then(|lang| grid_survey::sig_text(lang, &body)))
+                .flatten();
+            here.push(Renderable {
+                def: grid_wire::DefRef {
+                    datum: grid_wire::Datum(datum.clone()),
+                    callsign: Some(grid_wire::Callsign(callsign.clone())),
+                    lang: *lang,
+                    signature: None,
+                    cfg: None,
+                    materialization: materialization.clone(),
+                },
+                callsign: callsign.clone(),
+                body,
+                sig,
+            });
+        }
+        here.sort_by(|a, b| a.callsign.cmp(&b.callsign));
+        per_hop.push(here);
+    }
+    per_hop
+}
+
+/// Bodies for hops `0..=bodies_n`, sig text for the hops past that up to
+/// `sigs_m`, spent against `budget` in whole layers, and the certificate that
+/// says how far each tier is complete.
+///
+/// The budget is spent farthest layer first, and a body layer that will not
+/// fit is demoted to its own sigs before it is dropped: a sig where a body was
+/// asked for is a smaller answer, while half a body is a wrong one. Nothing
+/// here truncates a layer, which is what lets the horizon be believed (C31).
+fn pack_text(
+    root: &std::path::Path,
+    all: &[LiveDef],
+    layers: &[Vec<String>],
+    bodies_n: u64,
+    sigs_m: u64,
+    budget: Option<u64>,
+) -> Packed {
+    let per_hop = renderables(root, all, layers, bodies_n, sigs_m, budget);
+    // Byte cost per hop, bodies and sigs, taken once: the budget search reads
+    // this table and never the text again.
+    let weight: Vec<(u64, u64)> = per_hop
+        .iter()
+        .map(|here| {
+            let sum = |f: fn(&Renderable) -> Option<&String>| {
+                here.iter()
+                    .map(|d| u64::try_from(f(d).map_or(0, String::len)).unwrap_or(u64::MAX))
+                    .fold(0u64, u64::saturating_add)
+            };
+            (sum(|d| Some(&d.body)), sum(|d| d.sig.as_ref()))
+        })
+        .collect();
+    let cost = |b: Option<u64>, s: Option<u64>| -> u64 {
+        weight
+            .iter()
+            .enumerate()
+            .map(|(hop, (body, sig))| {
+                let k = u64::try_from(hop).unwrap_or(u64::MAX);
+                if b.is_some_and(|b| k <= b) {
+                    *body
+                } else if s.is_some_and(|s| k <= s) {
+                    *sig
+                } else {
+                    0
+                }
+            })
+            .fold(0u64, u64::saturating_add)
+    };
+
+    // Layers past the walk are empty and cost nothing, so the search runs over
+    // the populated range and the certificate reports the requested depth when
+    // nothing had to be given up: a hop the walk ran and found nothing at is
+    // complete, vacuously but truly.
+    let top = u64::try_from(per_hop.len().saturating_sub(1)).unwrap_or(u64::MAX);
+    let (start_b, start_s) = (bodies_n.min(top), sigs_m.min(top));
+    let (mut b, mut s) = (Some(start_b), Some(start_s));
+    if let Some(budget) = budget {
+        // Each step drops one layer or demotes one, so twice the layer count
+        // is a bound, not a hope.
+        for _ in 0..=top.saturating_mul(2).saturating_add(4) {
+            if cost(b, s) / 4 <= budget {
+                break;
+            }
+            match (b, s) {
+                (_, None) => break,
+                (Some(bb), Some(ss)) if ss > bb => s = Some(ss.saturating_sub(1)),
+                (Some(0), Some(_)) => b = None,
+                (Some(bb), Some(_)) => b = Some(bb.saturating_sub(1)),
+                (None, Some(0)) => s = None,
+                (None, Some(ss)) => s = Some(ss.saturating_sub(1)),
+            }
+        }
+    }
+    let untouched = b == Some(start_b) && s == Some(start_s);
+    let (reported_b, reported_s) = if untouched {
+        (Some(bodies_n), Some(sigs_m))
+    } else {
+        (b, s)
+    };
+
+    let mut bodies = Vec::new();
+    let mut sigs = Vec::new();
+    for (hop, here) in per_hop.into_iter().enumerate() {
+        let k = u64::try_from(hop).unwrap_or(u64::MAX);
+        let body_layer = b.is_some_and(|b| k <= b);
+        let sig_layer = !body_layer && s.is_some_and(|s| k <= s);
+        for d in here {
+            if body_layer {
+                bodies.push(grid_wire::PackText {
+                    def: d.def,
+                    hop: k,
+                    text: d.body,
+                });
+            } else if sig_layer {
+                if let Some(text) = d.sig {
+                    sigs.push(grid_wire::PackText {
+                        def: d.def,
+                        hop: k,
+                        text,
+                    });
+                }
+            }
+        }
+    }
+    Packed {
+        bodies,
+        sigs,
+        horizon: grid_wire::PackHorizon {
+            bodies_complete_within: reported_b,
+            sigs_complete_within: reported_s,
+            // ponytail: bytes/4 as the token estimate — grid ships no
+            // tokenizer and will not add one; every rendering states the
+            // number as an approximation, and a real count is the upgrade if
+            // a caller ever needs the budget to be exact rather than safe.
+            approx_tokens: cost(b, s) / 4,
+        },
+    }
+}
+
+/// Source lines `[line, line_end]` of one file in the worktree, 1-based and
+/// inclusive — the definition's body as the tree holds it *now*, which is what
+/// an agent is about to edit. A file the survey named and the tree no longer
+/// has yields nothing rather than a fabricated body.
+fn body_at(
+    root: &std::path::Path,
+    files: &mut std::collections::HashMap<String, Option<String>>,
+    file: &str,
+    line: u64,
+    line_end: u64,
+) -> Option<String> {
+    let source = files
+        .entry(file.to_owned())
+        .or_insert_with(|| std::fs::read_to_string(root.join(file)).ok())
+        .as_deref()?;
+    let skip = usize::try_from(line.saturating_sub(1)).unwrap_or(usize::MAX);
+    let take =
+        usize::try_from(line_end.saturating_sub(line).saturating_add(1)).unwrap_or(usize::MAX);
+    let mut text: String = source
+        .lines()
+        .skip(skip)
+        .take(take)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if text.is_empty() {
+        return None;
+    }
+    text.push('\n');
+    Some(text)
 }
 
 type LiveDef = (
@@ -1286,29 +1572,31 @@ type LiveDef = (
     String,
     Option<grid_wire::Lang>,
     Option<grid_wire::DefRefMaterialization>,
+    Option<u32>,
 );
 
-/// Every definition in the live epoch: (datum, callsign, lang, location),
-/// in segment order — which is content order, so everything derived from it
-/// is deterministic by construction (C2).
+/// Every definition in the live epoch: (datum, callsign, lang, location, the
+/// location's last line), in segment order — which is content order, so
+/// everything derived from it is deterministic by construction (C2). The last
+/// line rides along because a body is the source lines `[line, line_end]`,
+/// and only the segment knows where a definition ends.
 fn live_defs(chart: &ChartDelta) -> Vec<LiveDef> {
     let mut all = Vec::new();
     for segment in chart.head().segments() {
         for ord in 0..segment.def_count() {
             let ord = grid_chart::Ordinal(ord);
             if let (Some(datum), Some(callsign)) = (segment.datum(ord), segment.callsign(ord)) {
-                let materialization =
-                    segment
-                        .location(ord)
-                        .map(|loc| grid_wire::DefRefMaterialization {
-                            file: loc.path.to_owned(),
-                            line: u64::from(loc.line),
-                        });
+                let loc = segment.location(ord);
+                let materialization = loc.as_ref().map(|loc| grid_wire::DefRefMaterialization {
+                    file: loc.path.to_owned(),
+                    line: u64::from(loc.line),
+                });
                 all.push((
                     datum.to_string(),
                     callsign.to_owned(),
                     segment.lang(ord),
                     materialization,
+                    loc.map(|loc| loc.line_end),
                 ));
             }
         }
@@ -1316,10 +1604,18 @@ fn live_defs(chart: &ChartDelta) -> Vec<LiveDef> {
     all
 }
 
-/// The matched set plus `depth` BFS layers over edges in both directions.
-/// Depth zero is the definitions the patterns name, no neighbours — the
-/// pack's edges still say what touches them.
-fn expand(chart: &ChartDelta, matched: Vec<String>, depth: u64) -> Vec<String> {
+/// The matched set plus `depth` BFS layers over edges in both directions, one
+/// entry per hop: layer 0 is the definitions the patterns name, layer k those
+/// first reached in k hops. The walk stops as soon as a layer comes back
+/// empty — every hop past that is empty too, and a caller asking for a depth
+/// past the graph should not pay a segment scan per hop for the privilege. A
+/// hop the walk ran and found nothing at is *complete*, not unvisited, which
+/// is the distinction the pack's horizon rests on.
+///
+/// Flattened, this is exactly the order the pre-tier `scope` walked in, so the
+/// pack a request without `bodies`/`sigs` gets is byte-identical to before.
+fn expand(chart: &ChartDelta, matched: Vec<String>, depth: u64) -> Vec<Vec<String>> {
+    let mut layers = vec![matched.clone()];
     let mut in_scope = matched;
     let mut frontier = in_scope.clone();
     for _ in 0..depth {
@@ -1345,10 +1641,14 @@ fn expand(chart: &ChartDelta, matched: Vec<String>, depth: u64) -> Vec<String> {
                 }
             }
         }
+        if next.is_empty() {
+            break;
+        }
         in_scope.extend(next.iter().cloned());
+        layers.push(next.clone());
         frontier = next;
     }
-    in_scope
+    layers
 }
 
 /// The chart edges touching a datum set, from the set's perspective: an

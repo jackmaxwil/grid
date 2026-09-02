@@ -168,6 +168,14 @@ pub struct ScopeParams {
     pub depth: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<SnapshotOrRev>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bodies: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sigs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<SnapshotOrRev>,
 }
 
 pub type ScopeResult = ScopePack;
