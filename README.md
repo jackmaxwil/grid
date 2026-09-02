@@ -12,7 +12,10 @@ Languages: Rust and Python today. TS/JS next (`swc`-based frontend planned).
 One binary, no daemon required, no build integration, no config. Discovery
 is `git ls-files` minus your ignore rules — vendored code behind a
 `.gitignore` line is never charted, committed or not. Survey of this repo
-(~1000 defs): ~38ms.
+(~1700 defs): ~80–120ms release (81ms warm per the most recent measurement,
+up to ~120ms cold) — not the ~38ms this file used to say; the number grew
+as the declined-reference split, method-call refs, and per-def cfg facts
+landed on top of the walk.
 
 ## Why a developer wants it
 
@@ -39,20 +42,49 @@ do not establish resolves to nothing, and the refusal is counted and visible.
 
 ## Why an agent wants it
 
-An agent's loop is locate → read → edit → verify. Grid serves each step
-with exact, machine-checkable answers instead of grep guesses:
+An agent's loop is locate → edit → verify. Grid serves each step with an
+exact, machine-checkable answer instead of a grep guess, and the surface
+collapses to three verbs plus two hooks:
 
-- Locate: `grid resolve`, `grid uses`, `grid scope` return callsigns,
-  datums, and `file:line` — `--json` on every verb for the wire result.
-- Read less: `grid scope X` is the context pack around an edit — the
-  definition, its proven callers and callees, the rules that reach it.
-- Edit safely: `grid edit apply` is compare-and-swap by identity. The edit
+- **Locate** — `grid scope <pattern> --bodies N --sigs M` is the context
+  pack before an edit: the definition's body, its proven neighbourhood out
+  to M hops as signatures, and a `horizon` line stating exactly how far
+  each tier is complete to. A budget that does not fit drops a whole hop,
+  never truncates a body — so the horizon can be believed.
+- **Edit** — `grid edit apply` is compare-and-swap by identity. The edit
   names the datum it read; if the definition moved since, the edit is a
   typed conflict, never a splice against wrong bytes.
-- Verify: `grid gate` checks the change against the promise; `grid cache`
-  keys test verdicts by identity closure, so unchanged code needs no rerun.
-- Cheap enough to call every turn: ~38ms per survey, idempotent by
-  construction (unchanged tree → same snapshot id, no write).
+- **Verify** — `grid test` runs what the change can reach and replays the
+  rest from the verdict cache; `grid check [base] [head] [--plan f]
+  [--quick]` is the one call and one exit code for everything else grid
+  can find about the change — drift, uncompiled callers, plan adherence,
+  stale and weak coverage, clone-of, deserialize compatibility — gated
+  findings first, a ranked tail that never moves the exit.
+
+Two hooks turn that into standing configuration (documented, not shipped
+as code — Claude Code hooks are the user's own):
+
+- PostToolUse → `grid check --quick` (drift plus the last compile record)
+- pre-commit → `grid check`
+- CI → `grid test --trace --all`, which is what refreshes the traces
+  local selection reads
+
+A compiler owns types: on a Rust-only repo, `cargo check` already catches
+a proven caller of a moved signature, and Rust test time is mostly compile
+time. What grid adds there is narrower than "game-changing" and is true —
+test selection at the binary level (skipping links, where Rust's test time
+goes), callers a compile skipped (`#[cfg(test)]`, feature gates),
+attribution without rerunning, semantic interference between worktrees,
+deserialize compatibility across snapshots, and plan adherence. Where
+there is no compiler (Python, later TS), the graph carries the weight a
+type checker would — per-definition test selection, unused code,
+attribution, and the observed-edge fill all matter more.
+
+Cheap enough to call every turn: idempotent by construction (unchanged
+tree → same snapshot id, no write). `grid check --quick` on this repo
+measures ~141ms and the full form ~204ms — both dominated by the worktree
+survey a PostToolUse hook must re-run to see the edit it fires on, stated
+honestly rather than rounded down to the original design ceiling.
 
 ## Build
 
@@ -96,6 +128,8 @@ grid survey                 # chart the worktree; idempotent
 grid                        # what changed vs the promise (the everyday verb)
 grid uses TagContract       # proven inbound edges, cross-language
 grid resolve validate       # unique-suffix lookup -> callsign, datum, file:line
+grid check --quick          # drift plus the last compile record, one exit code
+grid test                   # run what the change can reach; replay the rest
 grid explain grade          # any word or id in grid output, explained
 ```
 
@@ -117,12 +151,14 @@ Shell out; parse `--json` or the porcelain columns. The socket
 The intended loop:
 
 ```bash
-grid survey                                  # once per turn; ~38ms
+grid survey                                  # once per turn; ~80-120ms release
 grid plan lint plan.json                     # promise the delta up front
-grid scope Reaper.sweep --depth 2            # context pack before editing
+grid scope Reaper.sweep --bodies 1 --sigs 2  # context pack before editing, with its horizon
 grid edit apply edits.json                   # CAS by datum; conflicts are typed
 grid cache lookup test $ENV $(grid ...)      # what actually needs rerunning
 grid gate plan.json                          # did the change match the promise
+grid check --plan plan.json                  # or the one composite call above, gate-first
+grid test                                    # run what the change can reach; replay the rest
 ```
 
 Rules of the road: trust the refusals — an empty answer means "cannot
@@ -198,6 +234,36 @@ otherwise. `uncovered` (a changed definition no selected test reaches) and
 the claim is "not the charted code", never "flake") are reported and never
 move the exit code. `--trace` needs `cargo llvm-cov` or `pytest-cov`; when
 they are absent it says so and runs untraced.
+
+### `grid check`: everything the change did that nobody checked
+
+```bash
+grid check                          # since the last recorded base, against the worktree
+grid check --quick                  # drift plus the last compile record only — no trace, verdict or source read
+grid check --plan plan.json         # plus the gate verdict against the promised delta
+grid check --plan plan.json --why   # plus the fulfilling paths and open anchors
+grid check --compile                # a mode of the same verb: wrap cargo check, record what it did not compile
+```
+
+One call, one exit code, for every finding grid can make about a change.
+Any of these gates the exit to 3: drift suspects; the compile record's
+uncompiled callers (when `.grid/compile.json` names the snapshot this
+check surveyed); a failed gate verdict under `--plan`; stale verdicts; a
+fired covenant; a compat finding on a type marked `persisted`. A ranked
+tail never moves the exit: weak-for, uncovered, clone-of, undeclared
+compat. When nothing gates:
+
+```
+done  refactor  interfaces held · 12 covering tests replayed pass · 0 changed defs uncovered
+```
+
+`--quick` is the proven floor plus the last compile record — no trace
+store, verdict log, or source read — built for a PostToolUse hook that
+fires on every edit. On this repo `grid check --quick` measures ~141ms and
+the full form ~204ms, both dominated by the worktree survey the check must
+re-run to see the edit; the original < 50ms / < 200ms design ceilings do
+not hold at that cost, and the numbers are stated rather than rounded down
+to them.
 
 ## Architecture
 

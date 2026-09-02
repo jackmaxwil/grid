@@ -173,3 +173,7 @@ reach validation and nothing else (C1).
 Normalization stability is a compatibility surface (implementation plan,
 Risks): the canonical bytes are prefixed `grid-datum/v1`, so a parser upgrade
 that moves normalization is a declared epoch bump, never a silent re-hash.
+
+- Agent loop (steps 0–10): no new packages; `grid` gained path dependencies
+  on `grid-lang-rs` (step 3, the cfg evaluator beside the sig canonicalizer)
+  and `blake3` (step 2, `env_hash`), both already in the TCB.
