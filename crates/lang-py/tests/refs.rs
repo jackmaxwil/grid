@@ -298,3 +298,49 @@ fn an_annotated_parameter_is_a_receiver_hint_and_nothing_else_is() {
         vec![None, Some(vec!["Foo".into()])]
     );
 }
+
+/// Conservatism: a parameter's annotation is the receiver hint only until
+/// the name is bound again. A rebinding by assignment, a `for`, a `with`, a
+/// comprehension, a walrus, a lambda parameter, an `except ... as`, or a
+/// nested definition of the same name leaves the call untyped — what the
+/// call reaches after that is whatever was bound, which no annotation says.
+#[test]
+fn a_rebound_parameter_loses_its_hint() {
+    assert_eq!(
+        hints("def f(x: Foo):\n    x = Bar()\n    x.m()\n"),
+        vec![None]
+    );
+    assert_eq!(
+        hints("def f(x: Foo, xs):\n    return [x.m() for x in xs]\n"),
+        vec![None]
+    );
+    assert_eq!(
+        hints("def f(x: Foo, xs):\n    for x in xs:\n        x.m()\n"),
+        vec![None]
+    );
+    assert_eq!(
+        hints("def f(x: Foo):\n    with open() as x:\n        x.m()\n"),
+        vec![None]
+    );
+    assert_eq!(
+        hints("def f(x: Foo):\n    if (x := Bar()):\n        x.m()\n"),
+        vec![None]
+    );
+    assert_eq!(
+        hints("def f(x: Foo):\n    return lambda x: x.m()\n"),
+        vec![None]
+    );
+    assert_eq!(
+        hints("def f(x: Foo):\n    try:\n        pass\n    except E as x:\n        x.m()\n"),
+        vec![None]
+    );
+    assert_eq!(
+        hints("def f(x: Foo):\n    def x():\n        pass\n    x.m()\n"),
+        vec![None]
+    );
+    // The hint is read at the call: a call before the rebinding keeps it.
+    assert_eq!(
+        hints("def f(x: Foo):\n    x.m()\n    x = Bar()\n    x.m()\n"),
+        vec![Some(vec!["Foo".into()]), None]
+    );
+}

@@ -99,6 +99,18 @@ impl Scan {
         });
     }
 
+    /// `name` is bound again inside the enclosing function: from here on a
+    /// call through it reaches whatever was bound, which no annotation
+    /// says, so the parameter's hint is dropped.
+    ///
+    /// ponytail: a `match` capture and an in-function `import` are not
+    /// walked as bindings; the pattern visitors are the upgrade.
+    fn rebind(&mut self, name: &str) {
+        if let Some(params) = self.params.last_mut() {
+            params.remove(name);
+        }
+    }
+
     /// `x.m(...)` where `x` is a parameter of the enclosing function
     /// annotated with a name: the annotation is the receiver hint. Python's
     /// binding rules do not fix the call from it — a subclass may override
@@ -194,6 +206,7 @@ impl Visitor for Scan {
         // Defaults and annotations evaluate in the *enclosing* scope, so they
         // are walked before the scope changes.
         self.visit_arguments(*node.args);
+        self.rebind(node.name.as_str());
         self.params.push(params);
         self.nested(node.name.as_str(), false, |s| {
             for stmt in node.body {
@@ -207,6 +220,7 @@ impl Visitor for Scan {
         self.decorators(node.name.as_str(), node.decorator_list);
         let params = annotated_params(&node.args);
         self.visit_arguments(*node.args);
+        self.rebind(node.name.as_str());
         self.params.push(params);
         self.nested(node.name.as_str(), false, |s| {
             for stmt in node.body {
@@ -218,6 +232,7 @@ impl Visitor for Scan {
 
     fn visit_stmt_class_def(&mut self, node: ast::StmtClassDef) {
         self.decorators(node.name.as_str(), node.decorator_list);
+        self.rebind(node.name.as_str());
         self.nested(node.name.as_str(), true, |s| {
             for base in node.bases {
                 if let Some(path) = dotted(&base) {
@@ -282,6 +297,38 @@ impl Visitor for Scan {
     // these overrides every call inside a comprehension, a default argument,
     // a keyword argument, a `with` header or a `match` arm would be invisible.
 
+    // A comprehension binds its targets before its element is read — the
+    // reverse of the generated walk's order, which would read `x.m()` under
+    // the binding the `for x` then replaces.
+    fn visit_expr_list_comp(&mut self, node: ast::ExprListComp) {
+        for g in node.generators {
+            self.visit_comprehension(g);
+        }
+        self.visit_expr(*node.elt);
+    }
+
+    fn visit_expr_set_comp(&mut self, node: ast::ExprSetComp) {
+        for g in node.generators {
+            self.visit_comprehension(g);
+        }
+        self.visit_expr(*node.elt);
+    }
+
+    fn visit_expr_generator_exp(&mut self, node: ast::ExprGeneratorExp) {
+        for g in node.generators {
+            self.visit_comprehension(g);
+        }
+        self.visit_expr(*node.elt);
+    }
+
+    fn visit_expr_dict_comp(&mut self, node: ast::ExprDictComp) {
+        for g in node.generators {
+            self.visit_comprehension(g);
+        }
+        self.visit_expr(*node.key);
+        self.visit_expr(*node.value);
+    }
+
     fn visit_comprehension(&mut self, node: ast::Comprehension) {
         self.visit_expr(node.target);
         self.visit_expr(node.iter);
@@ -337,7 +384,36 @@ impl Visitor for Scan {
         for target in &node.targets {
             self.self_field_write(target);
         }
-        self.generic_visit_stmt_assign(node);
+        // The value is read under the binding the targets then replace.
+        self.visit_expr(*node.value);
+        for target in node.targets {
+            self.visit_expr(target);
+        }
+    }
+
+    /// A name in a store or delete position is bound again — by `=`, a
+    /// `for`, a `with ... as`, a comprehension target, a walrus, a `del`.
+    fn visit_expr_name(&mut self, node: ast::ExprName) {
+        if !matches!(node.ctx, ast::ExprContext::Load) {
+            self.rebind(node.id.as_str());
+        }
+    }
+
+    fn visit_expr_lambda(&mut self, node: ast::ExprLambda) {
+        self.visit_arguments(*node.args);
+        // A lambda's body is its own function: its parameters are its own
+        // and unannotated, and the enclosing ones are read at call time —
+        // the same empty frame a nested `def` gets.
+        self.params.push(HashMap::new());
+        self.visit_expr(*node.body);
+        self.params.pop();
+    }
+
+    fn visit_excepthandler_except_handler(&mut self, node: ast::ExceptHandlerExceptHandler) {
+        if let Some(name) = &node.name {
+            self.rebind(name.as_str());
+        }
+        self.generic_visit_excepthandler_except_handler(node);
     }
 
     fn visit_stmt_aug_assign(&mut self, node: ast::StmtAugAssign) {
