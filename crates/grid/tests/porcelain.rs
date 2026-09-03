@@ -1662,6 +1662,55 @@ fn a_fresh_checkout_seeds_churn_from_git_history() {
     );
 }
 
+/// The `edits` column is published (`docs/PORCELAIN.md`, the `hot` row), and a
+/// rename accrues no file churn on either the old path or the new one.
+///
+/// The count is what makes the churn command a choice rather than a
+/// preference: the cheapest `git log` form that lists paths, `--name-only`,
+/// prints a rename as its new name and would add one to every renamed path's
+/// column without anyone editing that code.
+#[test]
+fn a_rename_accrues_no_file_churn() {
+    let dir = repo();
+    let git = |args: &[&str]| {
+        let ok = Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .env("GIT_AUTHOR_NAME", "grid")
+            .env("GIT_AUTHOR_EMAIL", "grid@example.invalid")
+            .env("GIT_COMMITTER_NAME", "grid")
+            .env("GIT_COMMITTER_EMAIL", "grid@example.invalid")
+            .output()
+            .expect("run git")
+            .status
+            .success();
+        assert!(ok, "git {args:?} failed");
+    };
+    // `a.py` becomes `c.py` with its bytes untouched, so the only commit that
+    // names the new path is the rename itself.
+    git(&["mv", "a.py", "c.py"]);
+    git(&["commit", "-qm", "move a to c"]);
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+
+    let out = grid(dir.path(), &["hotspots", "--limit", "10"]);
+    assert_eq!(code(&out), 0);
+    let text = stdout(&out);
+    let edits = |callsign: &str| {
+        let line = text
+            .lines()
+            .find(|l| columns(l).get(1) == Some(&callsign))
+            .unwrap_or_else(|| panic!("a row for {callsign}:\n{text}"));
+        let c = columns(line);
+        let i = c
+            .iter()
+            .position(|w| *w == "edits")
+            .expect("an edits column");
+        c[i + 1].to_owned()
+    };
+    assert_eq!(edits("c.a"), "0", "a renamed path accrues nothing:\n{text}");
+    assert_eq!(edits("b.b"), "1", "an added path still counts:\n{text}");
+}
+
 /// Wire epoch 1 renamed the retained-trace directory. The rename happens once,
 /// on the first grid invocation, and it is a `rename(2)`: what was retained is
 /// what is there afterwards, byte for byte. Retained traces are user data.
