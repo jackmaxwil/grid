@@ -102,6 +102,34 @@ fn incremental_equals_full_after_editing_one_file() {
     assert_eq!(warm.reread, 1, "the unedited file came from the cache");
 }
 
+/// The cache is bounded by the tree, not by the session.
+///
+/// A `Cache` lives as long as whatever holds it. The CLI surveys once and
+/// exits, but the daemon's chart and a `grid watch` session hold one for
+/// hours — and it is keyed by content hash, so before this every save of every
+/// file added an entry that nothing ever removed. What a survey must leave
+/// behind is what that survey read.
+#[test]
+fn a_survey_leaves_only_its_own_files_in_the_cache() {
+    let dir = repo(&[("pkg/caller.py", CALLER), ("pkg/util.py", UTIL)]);
+    let mut cache = Cache::new();
+    run(dir.path(), &mut cache).expect("cold survey");
+    assert_eq!(cache.len(), 2, "one entry per source file");
+
+    // Three more saves of the same file, the way a session accumulates them.
+    for body in ["    return 2\n", "    return 3\n", "    return 4\n"] {
+        let source = format!("def helper():\n{body}");
+        write(dir.path(), &[("pkg/util.py", &source)]);
+        readd(dir.path());
+        run(dir.path(), &mut cache).expect("warm survey");
+    }
+    assert_eq!(
+        cache.len(),
+        2,
+        "the cache holds the tree, not every version of it the session saw"
+    );
+}
+
 #[test]
 fn incremental_equals_full_with_an_inline_module_anchor() {
     // The re-anchored `use super::x` is a per-file fact and rides the cache;
