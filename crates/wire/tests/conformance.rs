@@ -124,3 +124,28 @@ fn mutated_example_fails() {
         "missing required key must be rejected"
     );
 }
+
+// C47's blind spot, closed by a test rather than an emitter: errors.rs is
+// hand-written and the drift gate cannot see it, so the contract's own
+// `components.errors` block is what decides whether it is still current.
+#[test]
+fn every_contract_error_code_decodes() {
+    use grid_wire::errors::WireError;
+    let c = contract();
+    let declared = c["components"]["errors"]
+        .as_object()
+        .expect("contract must declare components.errors");
+    assert_eq!(declared.len(), 8, "contract must declare 8 wire errors");
+    for (name, e) in declared {
+        let code = i32::try_from(e["code"].as_i64().expect("code is an integer"))
+            .expect("code fits in i32");
+        let w = WireError::from_code(code)
+            .unwrap_or_else(|| panic!("{name} ({code}) decodes to no WireError variant"));
+        assert_eq!(w.code(), code, "{name} must round-trip its code");
+        assert_eq!(
+            w.message(),
+            e["message"].as_str().expect("message is a string"),
+            "{name} must carry the contract's own message"
+        );
+    }
+}

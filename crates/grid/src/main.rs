@@ -66,7 +66,7 @@ mod exit {
     pub const STALE: u8 = 4;
 }
 
-const WIRE_VERSION: &str = "1.1.0";
+const WIRE_VERSION: &str = grid_wire::WIRE_VERSION;
 const ENGINE_VERSION: &str = concat!("grid ", env!("CARGO_PKG_VERSION"));
 
 /// Teaching output. Machines read stdout only, so every hint goes to stderr,

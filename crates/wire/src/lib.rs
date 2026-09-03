@@ -8,6 +8,11 @@ pub mod errors;
 pub mod methods;
 
 use serde::{Deserialize, Serialize};
+
+/// The contract's `info.version`. One constant with three consumers, so
+/// the daemon and its clients cannot disagree about which wire they speak.
+pub const WIRE_VERSION: &str = "1.1.0";
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Datum(pub String);

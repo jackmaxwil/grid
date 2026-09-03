@@ -13,7 +13,7 @@
     "config_prefix": "All env vars and config keys use GRID_ / grid. prefixes"
   },
   "x-porcelain": {
-    "doc": "packages/grid/docs/PORCELAIN.md",
+    "doc": "docs/PORCELAIN.md",
     "version": "2.26.0",
     "description": "Normative grammar for human-facing stdout records. --json emits wire results verbatim; the porcelain version is reported by grid.version."
   },
