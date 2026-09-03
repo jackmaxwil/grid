@@ -2,6 +2,8 @@
 # walk's own verdict, `unparseable` a valid variant (yi's allowlist carries it too), `readd`
 # a fixture function name, `caf` and `ba`/`nd` hex fragments in committed test vectors.
 # `implementor` is the Rust Reference's own spelling, used in a lang-rs comment.
+# The two generated Python files are skipped for the reason ./crates/wire/src is: they
+# reproduce the contract's prose verbatim, so a word there is the contract's to fix.
 [codespell]
-skip = ./target,./.git,./Cargo.lock,./.grid,./docs/research,./crates/wire/src
+skip = ./target,./.git,./Cargo.lock,./.grid,./docs/research,./crates/wire/src,./clients/python/grid_client/schemas.py,./clients/python/grid_client/methods.py
 ignore-words-list = datum,datums,crate,ba,nd,aground,unparseable,readd,caf,re-declared,ser,fo,inout,implementor

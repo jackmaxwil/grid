@@ -3,7 +3,7 @@
 Grid charts every definition in a repository with a content-derived identity
 and every relationship it can prove, then answers questions about them: where
 a definition lives, who calls it, what changed since a snapshot, whether a
-diff matches what a plan promised. One Rust binary, twelve crates, no server
+diff matches what a plan promised. One Rust binary, thirteen crates, no server
 and no model.
 
 Authority order: `docs/ASSURANCE.md` is the law — the claim-to-evidence table
@@ -47,7 +47,7 @@ race, not your diff.
 
 # Architecture
 
-Twelve crates under `crates/`, all in the default build. Naming law: folder
+Thirteen crates under `crates/`, all in the default build. Naming law: folder
 `x/` is crate `grid-x`, and `crates/grid/` is the binary — enforced by
 `scripts/guardrails/check_manifests.py`.
 

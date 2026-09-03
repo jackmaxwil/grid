@@ -60,9 +60,12 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 | C46 | `self::` and `super::` inside an inline module anchor against that module in `use` declarations and paths — `self::x` is the module's `x`, `super::x` climbs one inline module per `super` and then the file's own module path; a shadowed name resolves to the inline module's item, never the file's; a file with no inline module extracts byte-identically to before | refs.rs rust_edges.rs determinism.rs | 10+ |
 | C50 | a tracked file a frontend claims that its parser rejects, or that is not UTF-8, is charted as nothing and named by the survey (`unparseable` / `unreadable`, on stdout and in the wire snapshot) — never as a file with nothing in it; a definition absent at head only because its file was not read is held out of the drift walk and reported as a `warn`, never as a suspect and never as exit 3; and an incremental survey answers the same as a cold one for such a file | unread.rs drift.rs watch.rs | 10+ |
 | C51 | an empty answer is an answer about a chart: a read verb with no published snapshot, an `--under` prefix no charted definition sits below, and a `scope` pattern matching nothing all refuse with exit 2, the reason, and an empty stdout, and a `--budget` with no tier to bind on is refused rather than ignored; `--json` renders each of those as the same refusal and never as an empty success | refusals.rs porcelain.rs | 10+ |
-| C47 | every file `scripts/gen-wire.py` writes — `crates/wire/src/lib.rs` and `methods.rs` — is byte-identical to what it writes from `docs/wire-v1.openrpc.json` and `rustfmt` then normalizes, so a hand edit to a generated file and a contract change whose regeneration was never run both fail the gate rather than shipping as a wire the daemon and its callers disagree about; `errors.rs` is hand-written and outside the generator's reach, and this row says so rather than claiming a coverage it does not have; the check regenerates into a scratch tree and never writes the working tree at all, and its own `--selfcheck` renames a wire method to prove the comparison is not blind | check_wire_drift.py | 1+ |
+| C47 | every file `scripts/gen-wire.py` writes — `crates/wire/src/lib.rs` and `methods.rs`, and `clients/python/grid_client/schemas.py` and `methods.py` — is byte-identical to what it writes from `docs/wire-v1.openrpc.json`, the Rust after `rustfmt` normalizes it and the Python exactly as emitted, there being no Python formatter in the TCB; so a hand edit to a generated file and a contract change whose regeneration was never run both fail the gate rather than shipping as a wire the daemon and its two clients disagree about; `errors.rs` is hand-written and outside the generator's reach, and this row says so rather than claiming a coverage it does not have; the check regenerates into a scratch tree and never writes the working tree at all, and its own `--selfcheck` renames a wire method and requires drift in every committed file that spells one, which is read off those files rather than listed, so a language added later is covered the day it lands | check_wire_drift.py | 1+ |
 | C48 | N publishers into one store at once — the CLI beside the daemon, parallel surveys in one tree — leave a store that opens, reopens every snapshot published, and holds every one of them in the membership image; the publish window is one exclusive `flock` and every temp name is per process and per call | concurrent.rs | 11+ |
 | C49 | a damaged chart — bytes that contradict the manifest — is refused by every read verb with one exit code (2) and the command and tree that recover it, is never served, and is dropped and re-surveyed cold by `grid survey`, which says what it dropped | damaged_store.rs store.rs | 11+ |
+| C52 | a response is matched to its request by id and never by arrival, so a line carrying another id is a fault rather than an answer; a truncated line, a foreign id, a double-bodied response and a foreign wire major are each a typed refusal naming what was wrong, and every socket or protocol fault poisons the connection so a later call refuses rather than writing a second time; an unknown error code keeps the integer it arrived as, and a walk that ran aground is a result with its frontier, never an error | protocol.rs client_response | 12+ |
+| C53 | a typed client call returns what the CLI's `--json` prints for the same question — `grid.version`, `grid.resolve`, `grid.delta`, `grid.drift` and `grid.scope`, compared with the `stats` object convention 4 excludes from the comparison surface and with nothing else excluded, so the only thing between the two answers is the daemon's framing and the client's encode, id match and decode; every method the contract names is answered over the real socket except the ones the ratchet still lists, and a listed method that starts being answered fails the test rather than sitting in it, so the list only shrinks; the same pinned walk answers the same thing twice through the client; and a contract change whose regeneration was never run fails the gate rather than shipping as a wire the clients and the daemon disagree about | client.rs check_wire_drift.py | 12+ |
+| C54 | the Python client depends on CPython's standard library alone, and the gate refuses the first line that changes that — a dependency, an extra or a lockfile anywhere under `clients/` fails the manifest check rather than being reviewed; it refuses a daemon whose wire major differs from the contract's before making any second call, and every malformed response line is a protocol fault disjoint from the daemon's own errors, so `except GridError` cannot swallow a desynced socket; every row of that fault table is the row `crates/client/tests/protocol.rs` defends, down to an error code too wide for the Rust client's `i32` and a lone surrogate escape, so a line one client calls the daemon's answer the other cannot call a desync; and the Rust fuzzer's corpus is replayed through the same decoder shape rather than through a second fuzzer, on the day that rung produces an input | test_protocol.py test_corpus.py check_manifests.py | 12+ |
 
 
 ## What CI does and does not run
@@ -72,6 +75,21 @@ An evidence token of the form `ci:<job>` names a job in
 resolves it there. Forgejo is the only estate: the GitHub remote's push URL is
 `no_push`, so a job that exists only in a `.github/` workflow runs nowhere and
 is not evidence.
+
+**C54's corpus replay has no inputs yet, and its row no longer claims it
+rejects them.** `clients/python/tests/test_corpus.py` replays
+`fuzz/corpus/client_response/` through the Python decoder, and that directory
+does not exist: the 60-second `cargo +nightly fuzz run client_response` the SDK
+wave ran found no crash in 11,388,479 executions, only minimized artifacts are
+committed, and no CI job runs a fuzzer — `fuzz-build` compiles the four targets
+and stops. So the test skips on every clean checkout and in every CI run, and
+the clause it defends now says "on the day that rung produces an input" rather
+than asserting a replay that has never happened. What the fault table does
+defend is asserted directly, row by row, on both sides. Committing a
+hand-written corpus was rejected: it would duplicate the table and make the
+test's own claim — that these are the inputs the rung found — untrue. Running
+the fuzzer long enough to produce one is a row in `docs/TODOS.md`, not a line
+of prose here.
 
 **C3 has no CI evidence and its row no longer claims any.** The Kani harnesses
 in `crates/walk/src/proofs.rs` and `crates/chart/src/proofs.rs` are real and
@@ -145,6 +163,24 @@ Every dependency in `Cargo.lock` gets a line here saying why it is in the TCB.
   `serde_json` becomes a *build* dependency of `grid` (the explain corpus is
   generated from the wire contract at build time); it has been in the TCB
   since Wave 1, so the lockfile gains no package.
+- Wave 12 (`client`): no new packages. `grid-client` is `grid-wire`,
+  `serde_json` and std — the socket, the framing and the id correlation are
+  `std::os::unix::net` and `std::io`, and the typed surface is one generic
+  function over the generated `Method` trait, so there is no table to carry
+  and no runtime to pull in. `tempfile` is a dev-dependency, already in the
+  TCB since Wave 1.
+  The Python client under `clients/python` adds nothing to `Cargo.lock`
+  because it is not in the workspace, and adds nothing to a lockfile of its
+  own because it has none: its TCB is CPython's standard library — `json`,
+  `socket`, `pathlib` — and `pyproject.toml` declares `dependencies = []`.
+  Where the Rust half of the law is a review rule (a package entering
+  `Cargo.lock` is visible in the diff of every pull request), the Python half
+  is mechanical, because there is no lockfile diff to read: C54's
+  `check_manifests.py` fails on the first dependency, the first extra, and on
+  `uv.lock`, `poetry.lock`, `requirements*.txt` or `Pipfile*` appearing
+  anywhere under `clients/`. `mypy` is a binary on `PATH` and not a
+  dependency — the only kind of tool this repository adds.
+
 - Wave 8 (`trace`): no new dependencies. A trace is ingested through
   `grid-chart`'s own resolver (the `grid.resolve` rule, so a trace names
   datums the same way every other verb does), retention is one `std::fs`

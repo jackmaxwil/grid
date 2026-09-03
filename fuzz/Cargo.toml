@@ -15,6 +15,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 grid-chart = { path = "../crates/chart" }
 grid-lang-py = { path = "../crates/lang-py" }
+grid-client = { path = "../crates/client" }
 
 [[bin]]
 name = "normalize"
@@ -33,6 +34,13 @@ bench = false
 [[bin]]
 name = "segment"
 path = "fuzz_targets/segment.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_response"
+path = "fuzz_targets/client_response.rs"
 test = false
 doc = false
 bench = false

@@ -192,6 +192,7 @@ dependencies = [
  "grid-cache",
  "grid-chart",
  "grid-chart-io",
+ "grid-client",
  "grid-gate",
  "grid-lang-rs",
  "grid-survey",
@@ -231,6 +232,15 @@ dependencies = [
  "grid-chart",
  "grid-wire",
  "memmap2",
+ "tempfile",
+]
+
+[[package]]
+name = "grid-client"
+version = "0.1.0"
+dependencies = [
+ "grid-wire",
+ "serde_json",
  "tempfile",
 ]
 

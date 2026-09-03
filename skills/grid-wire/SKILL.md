@@ -5,8 +5,9 @@ description: Change grid's external vocabulary — the OpenRPC contract, the gen
 
 # Changing the wire
 
-`crates/wire/src` is **generated**. `docs/wire-v1.openrpc.json` is the source
-of truth and `scripts/gen-wire.py` writes the Rust from it.
+`crates/wire/src` is **generated**, and so is half of `clients/python/grid_client`.
+`docs/wire-v1.openrpc.json` is the source of truth and `scripts/gen-wire.py`
+writes both from it in one run.
 `check_wire_drift.py` regenerates into a scratch copy, formats it, and fails
 the gate unless the committed tree is byte-identical — so a hand edit to a
 generated file is caught, and so is a contract change whose regeneration was
@@ -17,8 +18,12 @@ never run.
 1. Edit `docs/wire-v1.openrpc.json`. Add the example alongside the schema:
    `crates/wire/tests/conformance.rs` round-trips every example through the
    generated types byte-canonically, so an example is the test.
-2. `just wire` — runs the generator and `cargo fmt`. Never edit
-   `crates/wire/src` directly, and never format only the generated files.
+2. `just wire` — runs the generator and `cargo fmt`. One run writes four
+   files: `crates/wire/src/lib.rs` and `methods.rs`, and the Python client's
+   `clients/python/grid_client/schemas.py` and `methods.py`. Never edit any of
+   them directly, and never format only the generated files. The two Python
+   files are compared byte-for-byte as the generator emits them — there is no
+   Python formatter in the TCB — so never run one over them.
 3. `cargo test -p grid-wire`, then `just check`. The conformance suite in
    `crates/grid/tests/conformance.rs` answers over the real socket, not
    in-process: a method the daemon claims must actually be reachable (C10).

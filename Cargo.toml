@@ -12,6 +12,7 @@ members = [
     "crates/walk",
     "crates/gate",
     "crates/wire",
+    "crates/client",
     "crates/grid",
 ]
 
