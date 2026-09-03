@@ -125,8 +125,77 @@ struct Located {
     datum: String,
 }
 
+/// The definitions this request could be addressing, and the crate roots the
+/// write path needs.
+///
+/// The chart already holds every definition's callsign and the file it
+/// materializes in, so it can say which files could answer a target — and
+/// only those are read and parsed. What the chart must not be trusted for is
+/// the *datum*, which is as old as the last survey: the candidate files are
+/// re-parsed here so the compare-and-swap runs against the bytes on disk.
+/// That is what keeps C15 true of a file edited since the survey — its
+/// definitions have moved, the fresh parse says so, and the edit conflicts.
+///
+/// Conservatism: a definition the chart has never seen — written since the
+/// last survey — is not a candidate, so a target naming one is refused as
+/// unknown instead of resolved. Refusing is the safe direction and the
+/// recovery is the survey the rest of grid already asks for. A store holding
+/// no snapshot falls back to reading the whole tree, which is what every one
+/// of these requests used to do.
+fn locate(
+    params: &EditApplyParams,
+    root: &Path,
+) -> Result<(Vec<Located>, grid_survey::files::CrateRoots), Error> {
+    let Some(files) = candidate_files(params, root) else {
+        return locate_all(root);
+    };
+    let roots = grid_survey::files::crate_roots(root).map_err(|e| Error::Io(e.to_string()))?;
+    let mut out = Vec::new();
+    for file in files {
+        let (Some(lang), Ok(source)) = (
+            grid_survey::files::lang_of(&file),
+            std::fs::read_to_string(root.join(&file)),
+        ) else {
+            continue;
+        };
+        let module = grid_survey::files::module_of(lang, &file, &roots);
+        for def in grid_survey::extract(lang, &source).defs {
+            out.push(Located {
+                span: whole_lines(&source, def.span),
+                file: file.clone(),
+                callsign: format!("{module}.{}", def.callsign),
+                datum: def.datum.as_str().to_string(),
+            });
+        }
+    }
+    Ok((out, roots))
+}
+
+/// The files the live chart says could hold a definition this request names,
+/// in path order — or `None` when there is no chart to ask.
+fn candidate_files(
+    params: &EditApplyParams,
+    root: &Path,
+) -> Option<std::collections::BTreeSet<String>> {
+    let chart = crate::chart_provider::ChartDelta::open(root).ok()?;
+    chart.current()?;
+    let mut files = std::collections::BTreeSet::new();
+    for spec in &params.edits {
+        let (name, _) = split_target(&spec.target);
+        let locator = grid_wire::Locator::Callsign {
+            callsign: grid_wire::Callsign(name.to_owned()),
+        };
+        for hit in chart.resolve(&locator) {
+            if let Some(at) = hit.materialization {
+                files.insert(at.file);
+            }
+        }
+    }
+    Some(files)
+}
+
 /// Every definition in the tree, in `git ls-files` order then span order.
-fn locate_all(root: &Path) -> Result<Vec<Located>, Error> {
+fn locate_all(root: &Path) -> Result<(Vec<Located>, grid_survey::files::CrateRoots), Error> {
     let (sources, roots) =
         grid_survey::files::sources(root).map_err(|e| Error::Io(e.to_string()))?;
     let mut out = Vec::new();
@@ -141,7 +210,7 @@ fn locate_all(root: &Path) -> Result<Vec<Located>, Error> {
             });
         }
     }
-    Ok(out)
+    Ok((out, roots))
 }
 
 /// Split `name@prefix` into its parts; a bare `name` has no prefix, and a
@@ -200,7 +269,7 @@ struct Splice {
 /// that already exist, overlapping edits, results that do not parse. A
 /// stale `base_datum` is *not* an error — it comes back as a conflict item.
 pub fn apply(params: &EditApplyParams, root: &Path) -> Result<Outcome, Error> {
-    let defs = locate_all(root)?;
+    let (defs, roots) = locate(params, root)?;
     let plan = plan(params, &defs, root)?;
     if !plan.conflicts.is_empty() {
         return Ok(Outcome {
@@ -211,7 +280,7 @@ pub fn apply(params: &EditApplyParams, root: &Path) -> Result<Outcome, Error> {
             edits: Vec::new(),
         });
     }
-    build_and_write(plan, root)
+    build_and_write(plan, root, &roots)
 }
 
 /// A fully validated request: the splices per file, the creations, and
@@ -305,8 +374,11 @@ fn escapes(root: &Path, path: &str) -> bool {
 /// Phases 2 and 3 — build every post-image in memory, prove it parses, then
 /// write. A file with no planned splice is never opened for writing, so a
 /// refused request is byte-identical to no request.
-fn build_and_write(plan: Plan<'_>, root: &Path) -> Result<Outcome, Error> {
-    let roots = grid_survey::files::crate_roots(root).map_err(|e| Error::Io(e.to_string()))?;
+fn build_and_write(
+    plan: Plan<'_>,
+    root: &Path,
+    roots: &grid_survey::files::CrateRoots,
+) -> Result<Outcome, Error> {
     let mut writes: Vec<(String, String)> = Vec::new();
     let mut applied: Vec<(usize, Datum)> = Vec::new();
     let mut details: Vec<(usize, EditDetail)> = Vec::new();
@@ -330,7 +402,7 @@ fn build_and_write(plan: Plan<'_>, root: &Path) -> Result<Outcome, Error> {
 
         let lang = grid_survey::files::lang_of(&file)
             .ok_or_else(|| Error::BrokenResult(format!("{file}: no frontend claims this file")))?;
-        let module = grid_survey::files::module_of(lang, &file, &roots);
+        let module = grid_survey::files::module_of(lang, &file, roots);
         let new_defs = grid_survey::definitions(lang, &image)
             .map_err(|e| Error::BrokenResult(format!("{file}: {e}")))?;
         for (splice, start) in list.iter().zip(&new_starts) {
@@ -362,7 +434,7 @@ fn build_and_write(plan: Plan<'_>, root: &Path) -> Result<Outcome, Error> {
         // — for a config bootstrap that is nothing, which is the honest list.
         let mut defined = false;
         if let Some(lang) = grid_survey::files::lang_of(&path) {
-            let module = grid_survey::files::module_of(lang, &path, &roots);
+            let module = grid_survey::files::module_of(lang, &path, roots);
             for def in grid_survey::definitions(lang, &spec.new_text)
                 .map_err(|e| Error::BrokenResult(format!("{path}: {e}")))?
             {

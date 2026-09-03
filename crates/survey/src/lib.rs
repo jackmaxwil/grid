@@ -85,6 +85,10 @@ pub struct FileFacts {
 /// Content-addressed, so it is correct across renames for free: moving a file
 /// changes its module path but not its bytes, and the module path is applied
 /// after the cache, not before it.
+///
+/// Bounded by the tree and not by the session: every survey drops the entries
+/// its own file set did not name, so a caller that holds one for hours does
+/// not accumulate a version of every file it ever saw.
 pub type Cache = HashMap<[u8; 32], FileFacts>;
 
 /// What one survey found.
@@ -331,6 +335,23 @@ fn extract_all<'s>(
         });
         per_file.push((file, facts));
     }
+    // The bound. Keyed by content hash and never evicted, the cache grew by
+    // one entry per hash a process had ever seen: harmless for the CLI, which
+    // surveys once and exits, and unbounded for the two things that hold a
+    // `Cache` for hours — the daemon's `rpc::Chart` and a `grid watch`
+    // session, where every save of every file adds an entry nothing removes.
+    // After a survey it holds exactly what that survey saw, so its size is the
+    // tree's rather than the session's.
+    //
+    // Cost: content that leaves and comes back — an undo, a branch switched
+    // away from and back — is re-parsed instead of replayed, at one file's
+    // parse per file that returns (0.85 ms for the median source file in this
+    // repository, 9.64 ms for the largest). `run_at` and `run` share the cache
+    // and evict only what genuinely differs between the rev and the worktree,
+    // because an unchanged file has the same content hash read from either.
+    let live: std::collections::HashSet<[u8; 32]> =
+        sources.iter().map(|f| f.content_hash).collect();
+    cache.retain(|hash, _| live.contains(hash));
     (per_file, reread)
 }
 

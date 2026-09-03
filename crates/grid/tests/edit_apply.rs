@@ -381,3 +381,87 @@ fn a_creation_through_a_symlinked_directory_is_refused() {
         target.display()
     );
 }
+
+/// C15 over a store that has been surveyed.
+///
+/// Every test above runs against a store nobody charted, so all of them take
+/// the whole-tree scan. With a chart present `edit apply` resolves its target
+/// through it and parses only the files it points at — a second path, and the
+/// claim is about the verb rather than about one of its paths. The mistake
+/// this is built to catch is trusting the chart's *datum*, which is as old as
+/// the last survey: a compare-and-swap decided from it lets a stale base
+/// through the moment anything is edited between the survey and the apply.
+#[test]
+fn a_charted_store_refuses_everything_the_scan_refuses() {
+    const ZERO: &str = "b3:0000000000000000000000000000000000000000000000000000000000000000";
+    let dir = repo();
+    std::fs::write(dir.path().join("a.py"), "def a():\n    return 1\n").expect("write");
+    git(dir.path(), &["add", "a.py"]);
+    assert_eq!(code(&grid(dir.path(), &["survey"], "")), 0);
+    let base = current_datum(dir.path());
+    let read = |name: &str| std::fs::read_to_string(dir.path().join(name)).expect("read");
+
+    // One edit lands, which leaves the chart a survey behind. The base the
+    // chart still holds must now lose.
+    let first = edit_request("util.helper", Some(&base), "def helper():\n    return 2\n");
+    assert_eq!(code(&grid(dir.path(), &["edit", "apply", "-"], &first)), 0);
+    let landed = read("util.py");
+    let stale = edit_request("util.helper", Some(&base), "def helper():\n    return 3\n");
+    let out = grid(dir.path(), &["edit", "apply", "-"], &stale);
+    assert_eq!(
+        code(&out),
+        4,
+        "a stale coordinate is exit 4; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout(&out).contains("conflict"), "{}", stdout(&out));
+    assert_eq!(
+        read("util.py"),
+        landed,
+        "a conflicted request writes nothing"
+    );
+
+    // A replacement that would not parse, still refused before any write.
+    let broken = edit_request(
+        "util.helper",
+        Some(&current_datum(dir.path())),
+        "def helper(:\n",
+    );
+    let out = grid(dir.path(), &["edit", "apply", "-"], &broken);
+    assert_eq!(code(&out), 2);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("parse"));
+    assert_eq!(read("util.py"), landed);
+
+    // One conflict in a two-edit request lands neither half.
+    let a_before = read("a.py");
+    let request = serde_json::json!({"edits": [
+        {"target": "util.helper", "base_datum": current_datum(dir.path()), "new_text": "def helper():\n    return 4\n"},
+        {"target": "a.a", "base_datum": ZERO, "new_text": "def a():\n    return 5\n"},
+    ]})
+    .to_string();
+    assert_eq!(
+        code(&grid(dir.path(), &["edit", "apply", "-"], &request)),
+        4
+    );
+    assert_eq!(read("util.py"), landed);
+    assert_eq!(read("a.py"), a_before);
+
+    // Containment: a creation through a symlinked directory leaves the tree.
+    let outside = tempfile::tempdir().expect("tempdir");
+    let escaped = outside.path().join("escaped.py");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).expect("symlink");
+    let request = edit_request("link/escaped.py", None, "def escaped():\n    return 3\n");
+    let out = grid(dir.path(), &["edit", "apply", "-"], &request);
+    assert_eq!(
+        code(&out),
+        2,
+        "a path that leaves the tree is bad input; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !escaped.exists(),
+        "grid wrote {} — outside the repository, through a symlink",
+        escaped.display()
+    );
+}

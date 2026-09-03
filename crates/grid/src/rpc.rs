@@ -829,7 +829,7 @@ pub struct Hotspot {
 pub enum ChurnSource {
     /// The grid patch log: identity-level, rename-proof.
     Edits,
-    /// `git log --numstat`, file-level: every def in a file inherits its
+    /// `git log --raw`, file-level: every def in a file inherits its
     /// file's commit count. Coarser, but honest on a fresh checkout.
     GitFiles,
     /// Neither exists; the ranking is complexity alone.
@@ -949,12 +949,21 @@ pub fn hotspots(
     Ok((out, source))
 }
 
-/// Commits touching each file, from `git log --numstat`.
+/// Commits touching each file, from `git log --raw`.
 /// ponytail: capped at the last 1000 commits — churn is a ranking input,
 /// and deep history stops changing the order long before it stops costing.
+///
+/// `--raw`, not `--numstat`: the added/deleted totals this function discards
+/// are the expensive half (347.6 ms ± 6.4 against 98.4 ± 2.9 here).
+///
+/// Differential: `--name-only` is cheaper again and was not taken — it prints
+/// a rename as its new name alone, and `edits` is a published column. `--raw`
+/// spells a rename `R<score>`, so it skips one exactly where `{a => b}` did;
+/// the two forms agree count for count over 1000 commits on this repository
+/// and on `~/Development/yi`, where `--name-only` moves 35 paths and 28.
 fn git_file_churn(root: &std::path::Path) -> std::collections::HashMap<String, u64> {
     let out = std::process::Command::new("git")
-        .args(["log", "--numstat", "--format=", "-n", "1000"])
+        .args(["log", "--raw", "--format=", "-n", "1000"])
         .current_dir(root)
         .output();
     let Ok(out) = out else {
@@ -965,13 +974,18 @@ fn git_file_churn(root: &std::path::Path) -> std::collections::HashMap<String, u
     }
     let mut churn = std::collections::HashMap::new();
     for line in String::from_utf8_lossy(&out.stdout).lines() {
-        // "added\tdeleted\tpath"; a rename spells "{a => b}/c" and is left
-        // uncounted — an omission, never a wrong attribution.
+        // ":<mode> <mode> <sha> <sha> <status>\tpath", plus a second path for
+        // a rename or a copy. Those two statuses are left uncounted — an
+        // omission, never a wrong attribution.
         let mut parts = line.split('\t');
-        let (Some(_), Some(_), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
+        let (Some(meta), Some(path)) = (parts.next(), parts.next()) else {
             continue;
         };
-        if path.contains("=>") {
+        if !meta.starts_with(':') {
+            continue;
+        }
+        let status = meta.rsplit(' ').next().unwrap_or("");
+        if status.starts_with('R') || status.starts_with('C') {
             continue;
         }
         *churn.entry(path.to_owned()).or_insert(0) += 1;
