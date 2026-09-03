@@ -641,8 +641,8 @@ streams (T-27).
 
 - **T-55 (medium)** `crates/grid/src/main.rs` and `crates/grid/src/rpc.rs`
   are the two files every branch grows, and the shrink-only ledger has been
-  raised deliberately four times in two days — 2088 to 2507 for `main.rs`,
-  1964 to 2193 for `rpc.rs`. Each raise was honest and stated, and the
+  raised deliberately five times in three days — 2088 to 2507 for `main.rs`,
+  1964 to 2205 for `rpc.rs`. Each raise was honest and stated, and the
   pattern is still a ratchet that never ratchets. `main.rs` is verb dispatch,
   usage text and argument parsing for thirty verbs; `rpc.rs` is the method
   handlers behind them. Splitting either by verb family (chart reads, plan
@@ -655,33 +655,44 @@ streams (T-27).
 Measured on the merged tree at `06a82a7`, Apple M4 Max, release, warm
 store, hyperfine unless stated. The five fixes the review ranked first are
 landed on `perf/review`; these three were measured and not taken, because
-each changes a shape rather than a schedule.
+each changes a shape rather than a schedule. **All three landed on
+`fix/costs` (forge #52), re-measured on `4dd761f` — the numbers below are the
+review's and the later ones are in the commit bodies.** T-56 landed
+differently than it was written; the deviation is recorded under its row.
 
-- **T-56 (small)** `grid hotspots` spends 292ms ± 10 in `git log --numstat
-  --format= -n 1000` (`rpc::git_file_churn`) to count commits per path; it
-  never reads the numbers. `git log --name-only` gives the same count in
-  59ms ± 1, but not the same count for a renamed path — `numstat` prints
-  `{old => new}` and the code skips it, `name-only` prints the new name and
-  counts it — so it moves a published (heuristic) column. The number-
-  preserving form is a memo of the churn map under `.grid/` keyed by the
-  HEAD sha, computed once per commit; that is a new derived file with an
-  invalidation rule, and `grid_cache::Cache` is a closure cache, not a
-  place for it. Not taken here for that reason.
-- **T-57 (medium)** `grid edit apply` proves its compare-and-swap by
+- **T-56 (small, landed)** `grid hotspots` spent 292ms ± 10 in `git log
+  --numstat --format= -n 1000` (`rpc::git_file_churn`) to count commits per
+  path and never read the numbers. `git log --name-only` gives the same count
+  in 59ms ± 1 but not for a renamed path — `numstat` prints `{old => new}`
+  and the code skips it, `name-only` prints the new name and counts it — so
+  it moves a published (heuristic) column.
+
+  **Landed differently than written.** The row proposed a memo of the churn
+  map under `.grid/` keyed by the HEAD sha, and rejected `name-only` for the
+  count. Neither was needed: `git log --raw` is the third form. It compares
+  trees rather than diffing content, and it spells a rename `R<score>`, so
+  the same skip that leaves a rename uncounted lands in the same places. Over
+  the last 1000 commits it agrees with `--numstat` path for path and count
+  for count on this repository (273 paths, 1395 counted commits) and on
+  `~/Development/yi` (816, 2968), while `--name-only` disagrees on 35 paths
+  and on 28. So no new derived file and no invalidation rule: the memo is not
+  owed, and `grid_cache::Cache` stays a closure cache.
+  `crates/grid/tests/porcelain.rs::a_rename_accrues_no_file_churn` is the
+  test that tells the two cheap forms apart.
+- **T-57 (medium, landed)** `grid edit apply` proved its compare-and-swap by
   `edit::locate_all`: discovery (two git spawns) and then `grid_survey::
   extract` for every file on one thread, no cache — 264.5ms ± 14 to refuse
   a stale `base_datum`, the same to succeed, on a tree the chart already
-  holds every datum and span of. `build_and_write` then runs `crate_roots`
-  and discovers again. The write path gets slower with the tree while the
-  read path does not. The fix is `ChartDelta::open` + `locate` for the
-  candidate, one parse of the target file to prove the datum is current
-  (so a file edited since the last survey still conflicts, C15), and the
-  full scan only when the store holds no snapshot; ~40 lines, but it
-  changes what `edit apply` reads, so it wants the `edit_apply.rs`
-  conservatism cases run red first, not a perf branch.
-- **T-58 (small)** `grid_survey::Cache` never evicts: one `FileFacts` per
-  content hash ever seen, and a resident `rpc::Chart` or `watch::Session`
-  adds one per save of a file and drops none. Not a speed problem (a hit
-  clones in 1.9ms for the whole tree); a resource one for the session the
-  incremental-survey plan builds on, which inherits it. `retain` the
-  hashes the survey just saw, after `extract_all`; five lines.
+  holds every datum and span of. `build_and_write` then ran `crate_roots`
+  and discovered again. Landed as written: `ChartDelta::open` plus a
+  candidate lookup, a parse of only the files the chart names, and the full
+  scan when the store holds no snapshot. The conservatism cases now run over
+  a charted store as well as an unsurveyed one, because none of the nine
+  tests already in `edit_apply.rs` surveys and so none of them exercised the
+  new path.
+- **T-58 (small, landed)** `grid_survey::Cache` never evicted: one
+  `FileFacts` per content hash ever seen, and a resident `rpc::Chart` or
+  `watch::Session` added one per save of a file and dropped none. Landed as
+  written — a `retain` of the hashes the survey just saw, at the end of
+  `extract_all`. The bound is the tree; it costs one file's parse (0.85ms
+  median here) for content that leaves and comes back.
