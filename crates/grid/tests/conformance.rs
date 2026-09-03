@@ -267,6 +267,61 @@ fn gate_check_answers_with_a_verdict_the_contract_accepts() {
 }
 
 #[test]
+fn a_second_daemon_refuses_a_socket_a_live_one_is_serving() {
+    let dir = repo();
+    let live = Daemon::start(dir.path());
+
+    // Incident: `serve` unlinked the path unconditionally before binding, so a
+    // second daemon took the name while the first went on serving an unnamed
+    // inode nothing could reach — two writers over one store, reported as
+    // success by both. Bind cannot detect this; only a connection can.
+    // Spawned rather than `output()`ed, and polled: a daemon that *takes* the
+    // socket serves forever, so the regression's shape is a hang, and a test
+    // that hangs is worse evidence than one that fails. Two seconds is far
+    // beyond the refusal path, which does one connect and one write.
+    let mut second = Command::new(env!("CARGO_BIN_EXE_grid"))
+        .arg("serve")
+        .arg(&live.socket)
+        .current_dir(dir.path())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run a second grid serve");
+    let mut status = None;
+    for _ in 0..40 {
+        if let Some(done) = second.try_wait().expect("poll the second daemon") {
+            status = Some(done);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let Some(status) = status else {
+        let _ = second.kill();
+        let _ = second.wait();
+        panic!("the second daemon is still running: it took the socket instead of refusing");
+    };
+    let mut stderr = String::new();
+    if let Some(mut pipe) = second.stderr.take() {
+        use std::io::Read as _;
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+
+    assert_eq!(
+        status.code(),
+        Some(2),
+        "a live socket is bad input, not a takeover: {stderr}"
+    );
+    assert!(
+        stderr.contains("already served by a live daemon"),
+        "the refusal says why: {stderr}"
+    );
+    // The first daemon still owns the name and still answers on it.
+    assert_eq!(
+        live.call("grid.version", &json!({}))["result"]["wire"],
+        json!(grid_wire::WIRE_VERSION)
+    );
+}
+
+#[test]
 fn a_bad_request_is_an_error_response_not_a_crash() {
     let dir = repo();
     let daemon = Daemon::start(dir.path());

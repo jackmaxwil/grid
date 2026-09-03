@@ -41,9 +41,27 @@ pub fn main(args: &[&str]) -> u8 {
             }
         }
     }
-    // A socket file left by a dead daemon would make bind fail forever.
-    // Removing it is safe: bind below is what proves nobody is listening.
-    let _ = std::fs::remove_file(&path);
+    // Incident: this unlinked the path unconditionally, under a comment
+    // claiming that bind proved nobody was listening. Bind proves no such
+    // thing. Unlinking a live daemon's socket and binding a fresh one leaves
+    // the first process serving an unnamed inode it can never be reached on
+    // again while the second owns the name — two daemons, one store, and a
+    // silent theft rather than an error. Only a connection distinguishes a
+    // corpse from a listener, so one is attempted before anything is removed.
+    match UnixStream::connect(&path) {
+        Ok(_) => {
+            hint(&format!(
+                "grid: {} is already served by a live daemon",
+                path.display()
+            ));
+            hint("hint: stop it, or serve on another path (GRID_SOCKET)");
+            return exit::BAD_INPUT;
+        }
+        // Absent, or a socket file whose daemon is gone: safe to clear.
+        Err(_) => {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 
     let listener = match UnixListener::bind(&path) {
         Ok(l) => l,
