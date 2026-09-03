@@ -1565,19 +1565,29 @@ fn help_lists_every_verb() {
     assert_eq!(code(&out), 0);
     let err = String::from_utf8_lossy(&out.stderr);
     for verb in [
-        "survey", "resolve", "uses", "scope", "orphans", "hotspots", "log", "gate", "plan",
-        "check", "covenant", "cache", "edit", "trace", "roots",
+        "version",
+        "survey [<rev>]",
+        "resolve",
+        "uses",
+        "scope",
+        "orphans",
+        "hotspots",
+        "log",
+        "gate",
+        "plan new",
+        "check",
+        "covenant",
+        "cache",
+        "edit",
+        "trace",
+        "roots",
     ] {
         assert!(err.contains(verb), "`{verb}` missing from help:\n{err}");
     }
-    // `bisect` always refuses until retained history exists, and a verb that
-    // can only refuse is worse than an absent one: it answers, unlisted.
-    assert!(!err.contains("bisect"), "bisect is listed:\n{err}");
-    assert_eq!(
-        code(&grid(dir.path(), &["bisect"])),
-        2,
-        "bisect still answers"
-    );
+    // `bisect` was unlisted while it could only refuse. It answers over the
+    // retained chain now, and a verb that answers and is not offered is the
+    // same defect as one offered that cannot.
+    assert!(err.contains("bisect"), "bisect is not listed:\n{err}");
 }
 
 #[test]
@@ -1880,5 +1890,385 @@ fn a_coverage_path_is_attributed_to_the_longest_charted_suffix() {
         callees,
         vec![&expected[0]["datum"]],
         "the lines ran in b/a/x.py, so the observation is b.a.x.g: {record}"
+    );
+}
+
+/// The output contract's flat promise: `--json` on every verb is the wire
+/// result verbatim (`docs/PORCELAIN.md`). A verb that prints porcelain — or
+/// prose — under `--json` breaks every caller that pipes it to `jq`, and it
+/// breaks silently: the exit code is still 0.
+///
+/// Conservatism: the sweep runs every answering verb, not the two that were
+/// found wrong, so the next verb to grow a hand-rolled print is caught here
+/// rather than by whoever pipes it.
+#[test]
+fn every_verb_answers_json_with_json() {
+    let dir = repo_with_a_call();
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    assert_eq!(code(&grid(dir.path(), &["plan", "new", "demo"])), 0);
+    // Every verb that answers, with arguments that make it answer rather than
+    // refuse: a refusal writes no stdout at all, which is a different rule.
+    let calls: &[&[&str]] = &[
+        &["version"],
+        &["survey"],
+        &["diff"],
+        &["drift"],
+        &["resolve", "extra"],
+        &["uses", "extra"],
+        &["scope", "pkg.util.**"],
+        &["orphans"],
+        &["hotspots"],
+        &["roots"],
+        &["log", "extra"],
+        &["covenant", "--list"],
+        &["invariant", "--list"],
+        &["explain", "datum"],
+        &["explain", "leadline"],
+        &["plan", "show", "plan:demo"],
+        &["plan", "lint", "plan:demo"],
+        &["plan", "new", "second"],
+        &["todo", "plan:demo"],
+        &["check"],
+    ];
+    let mut offenders = Vec::new();
+    for args in calls {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let out = grid(dir.path(), &argv);
+        let text = stdout(&out);
+        if serde_json::from_str::<serde_json::Value>(text.trim()).is_err() {
+            offenders.push(format!(
+                "  grid {} --json -> {}",
+                args.join(" "),
+                text.lines().next().unwrap_or("(nothing)")
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "--json is not the wire result:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// `GRID_HINTS=0` means "do not teach me unasked". It cannot mean "refuse to
+/// answer when I ask": a scripted `grid help` in a hints-off environment
+/// printed nothing at all, exit 0, which reads as a binary with no verbs.
+#[test]
+fn help_answers_even_with_hints_off() {
+    let dir = repo();
+    let out = Command::new(env!("CARGO_BIN_EXE_grid"))
+        .args(["help"])
+        .current_dir(dir.path())
+        .env("GRID_HINTS", "0")
+        .output()
+        .expect("run grid");
+    assert_eq!(out.status.code(), Some(0));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("survey"), "help said nothing:\n{err}");
+    // The banner is a hint — unasked teaching — and stays silenced.
+    let bare = Command::new(env!("CARGO_BIN_EXE_grid"))
+        .current_dir(dir.path())
+        .env("GRID_HINTS", "0")
+        .output()
+        .expect("run grid");
+    assert!(
+        !String::from_utf8_lossy(&bare.stderr).contains("what your code promises"),
+        "the banner is still a hint"
+    );
+}
+
+/// `--help` is a request for help wherever it appears. Parsed as a positional
+/// it becomes a name: `grid survey --help` *ran the survey*, and `grid resolve
+/// --help` looked for a definition called `--help`.
+#[test]
+fn a_help_flag_is_never_a_name() {
+    let dir = repo();
+    for verb in [
+        "survey", "resolve", "uses", "diff", "log", "gate", "explain",
+    ] {
+        let out = grid(dir.path(), &[verb, "--help"]);
+        assert_eq!(code(&out), 0, "grid {verb} --help must answer with help");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("verbs:"),
+            "grid {verb} --help did not print the verb list:\n{err}"
+        );
+        assert!(
+            stdout(&out).is_empty(),
+            "grid {verb} --help wrote records to stdout"
+        );
+    }
+}
+
+/// A verb that takes a revision knows no flags, so an unknown one reached git
+/// as a revision and reported git's error for a grid usage mistake:
+/// `grid survey --nonsense` answered `git: error: unknown option`.
+#[test]
+fn a_flag_where_a_rev_belongs_is_refused_by_grid_not_git() {
+    let dir = repo();
+    for verb in ["survey", "diff"] {
+        let out = grid(dir.path(), &[verb, "--nonsense"]);
+        assert_eq!(code(&out), 2, "grid {verb} --nonsense must be bad input");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("unknown flag") && !err.contains("git:"),
+            "grid {verb} --nonsense blamed git:\n{err}"
+        );
+    }
+}
+
+/// A word the usage line offers is a word the binary accepts. `--relation
+/// imports` was advertised by `grid uses`'s own usage line and rejected with
+/// exit 2; five of the twelve relations the chart has were never offered.
+///
+/// The test reads the offer out of the binary and feeds each word back, so
+/// the usage line cannot drift from the contract in either direction.
+#[test]
+fn every_relation_the_usage_offers_is_one_uses_accepts() {
+    let dir = repo_with_a_call();
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let usage = String::from_utf8_lossy(
+        &grid(
+            dir.path(),
+            &["uses", "extra", "--relation", "nosuchrelation"],
+        )
+        .stderr,
+    )
+    .into_owned();
+    let offered: Vec<String> = usage
+        .rsplit_once('<')
+        .and_then(|(_, tail)| tail.split_once('>'))
+        .map(|(inner, _)| inner.split('|').map(str::to_owned).collect())
+        .unwrap_or_default();
+    assert!(offered.len() > 1, "no relation offer in usage:\n{usage}");
+    let mut rejected = Vec::new();
+    for word in &offered {
+        let out = grid(dir.path(), &["uses", "extra", "--relation", word]);
+        if code(&out) != 0 {
+            rejected.push(word.clone());
+        }
+    }
+    assert!(
+        rejected.is_empty(),
+        "`grid uses` offers relations it rejects: {}\nusage:\n{usage}",
+        rejected.join(", ")
+    );
+    // And the offer is the whole contract, not a subset of it: every relation
+    // the wire defines is a word a caller can filter on.
+    let contract = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/wire-v1.openrpc.json"
+    ))
+    .expect("read contract");
+    let spec: serde_json::Value = serde_json::from_str(&contract).expect("parse contract");
+    let all: Vec<String> = spec["components"]["schemas"]["Relation"]["enum"]
+        .as_array()
+        .expect("Relation enum")
+        .iter()
+        .map(|v| v.as_str().expect("a string").to_owned())
+        .collect();
+    let missing: Vec<&String> = all.iter().filter(|r| !offered.contains(r)).collect();
+    assert!(
+        missing.is_empty(),
+        "relations the chart has and the usage never offers: {missing:?}"
+    );
+}
+
+/// Every record tag the grammar declares is a word `grid explain` answers.
+///
+/// `grid explain` is the one thing a caller staring at an unfamiliar record
+/// has, and four of PORCELAIN's own tags — `root`, `hot`, `hop`, `fork` — had
+/// no answer, along with `not-recorded` and `unattributed`, the two words you
+/// meet exactly when you are stuck.
+///
+/// Conservatism: the tags come out of PORCELAIN.md's own table rather than a
+/// list here, so a record added to the grammar without a vocabulary row fails
+/// this test instead of a reader.
+#[test]
+fn every_record_tag_is_a_word_explain_answers() {
+    let grammar = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/PORCELAIN.md"
+    ))
+    .expect("read PORCELAIN.md");
+    // The record table's rows are ``| `tag` | columns |``; a tag cell may hold
+    // two spellings (``` `done` / `todo` ```) and a parenthetical scope.
+    let tags: Vec<String> = grammar
+        .lines()
+        .filter(|l| l.starts_with("| `"))
+        .filter_map(|l| l.split('|').nth(1))
+        .flat_map(|cell| {
+            cell.split('/')
+                .filter_map(|t| t.trim().split(' ').next())
+                .filter_map(|t| t.trim().strip_prefix('`')?.strip_suffix('`'))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(tags.len() > 15, "no record tags parsed out of PORCELAIN.md");
+    let dir = repo();
+    let mut unanswered: Vec<String> = Vec::new();
+    // Plus the two words a caller meets when a verb refuses to skip work.
+    for tag in tags
+        .iter()
+        .map(String::as_str)
+        .chain(["not-recorded", "unattributed"])
+    {
+        if code(&grid(dir.path(), &["explain", tag])) != 0 {
+            unanswered.push(tag.to_owned());
+        }
+    }
+    unanswered.dedup();
+    assert!(
+        unanswered.is_empty(),
+        "the grammar emits words `grid explain` cannot define: {}",
+        unanswered.join(", ")
+    );
+}
+
+/// A plan id and a plan filename are the same plan. `grid plan new x.json`
+/// wrote `.grid/plans/x.json.json`, so the record's two columns named
+/// different things and `grid plan lint x.json` refused what `plan new` had
+/// just written.
+#[test]
+fn a_plan_named_with_its_extension_is_the_plan_it_wrote() {
+    let dir = repo();
+    let out = grid(dir.path(), &["plan", "new", "x.json"]);
+    assert_eq!(code(&out), 0);
+    let record = stdout(&out);
+    let c = columns(record.lines().next().expect("a record"));
+    assert_eq!(c[0], "todo");
+    assert!(
+        c[2].ends_with(&format!("{}.json", c[1].trim_start_matches("plan:"))),
+        "the record's columns name different plans: {record}"
+    );
+    assert!(
+        !c[2].contains(".json.json"),
+        "the extension was applied twice: {record}"
+    );
+    assert!(
+        dir.path().join(c[2]).is_file(),
+        "the record names a file that is not there: {record}"
+    );
+    // And the name it printed is a name the next verb in the loop accepts.
+    for spec in ["x.json", "x", "plan:x"] {
+        assert_eq!(
+            code(&grid(dir.path(), &["plan", "lint", spec])),
+            0,
+            "`grid plan lint {spec}` refuses the plan `grid plan new x.json` wrote"
+        );
+    }
+}
+
+/// Seed the retained patch log and the datum-outcome log `grid bisect`
+/// searches: an ordered chain whose verdicts turn from pass to fail at the
+/// third datum. This is the shape `grid edit apply` and `grid cache record
+/// --trace` write between them.
+fn seed_patch_history(dir: &Path, test: &str) -> String {
+    let datum = |n: u8| format!("b3:{n:064x}");
+    let jsonl = |rows: Vec<serde_json::Value>| {
+        rows.iter()
+            .map(|r| serde_json::to_string(r).expect("json"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    };
+    let log = jsonl(
+        (0..4)
+            .map(|n| json!({ "from": datum(n), "to": datum(n + 1) }))
+            .collect(),
+    );
+    let outcomes = jsonl(
+        (0..5)
+            .map(|n| json!({ "datum": datum(n), "test": test, "fails": n >= 3 }))
+            .collect(),
+    );
+    std::fs::create_dir_all(dir.join(".grid")).expect("mkdir");
+    std::fs::write(dir.join(".grid/log"), log).expect("write log");
+    std::fs::write(dir.join(".grid/outcomes"), outcomes).expect("write outcomes");
+    datum(3)
+}
+
+/// `grid bisect` answers in the grammar PORCELAIN declares for it: one `hit`
+/// for the culprit, then a `done` carrying the measured `steps` and
+/// `cache_hits`. It emitted a bare `culprit` line instead — a record tag the
+/// grammar does not define, which no consumer of `grid suspects` output could
+/// read even though the two verbs answer the same question.
+#[test]
+fn bisect_answers_in_the_grammar_it_declares() {
+    let dir = repo();
+    let culprit = seed_patch_history(dir.path(), "t");
+    let out = grid(dir.path(), &["bisect", "t"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = stdout(&out);
+    let mut lines = text.lines();
+    let hit = columns(lines.next().expect("a hit record"));
+    assert_eq!(hit[0], "hit");
+    assert_eq!(hit[1], culprit);
+    let done = lines.next().expect("a done record");
+    assert_eq!(columns(done)[0], "done");
+    assert!(
+        done.contains("steps ") && done.contains("cache_hits "),
+        "the done record carries no measured search: {text}"
+    );
+    // An empty history is still bad input with no stdout, not an empty success.
+    let bare = repo();
+    let refused = grid(bare.path(), &["bisect", "t"]);
+    assert_eq!(code(&refused), 2);
+    assert!(stdout(&refused).is_empty());
+}
+
+/// A snapshot has one display name, and it is `@rev`.
+///
+/// It had two. `grid survey` printed `@<rev>` from the manifest, while every
+/// record rendered from a bare `SnapshotId` printed the first seven hex of the
+/// manifest's own blake3 under the same `@` sigil — a name shaped exactly like
+/// a git sha that is not one, and not a rev anybody could check out. One
+/// snapshot answered to `@8fcfcb3` and to `@95798a6` in the same session.
+///
+/// The rev is not recoverable from an id alone, so the id is printed as the id
+/// (`snap:` + prefix). What it must never do is wear the shape of a rev.
+#[test]
+fn a_snapshot_id_shown_in_place_of_a_rev_never_wears_a_revs_shape() {
+    let dir = repo();
+    let out = grid(dir.path(), &["survey"]);
+    assert_eq!(code(&out), 0);
+    let surveyed = columns(stdout(&out).lines().next().expect("a record"))[1].to_owned();
+    assert!(
+        surveyed.starts_with('@'),
+        "survey displays @rev: {surveyed}"
+    );
+
+    // A plan based on a snapshot id, which is the shape a gate verdict and a
+    // `todo` record render from.
+    let id = "snap:b3:8fcfcb3c0000000000000000000000000000000000000000000000000000abcd";
+    let plan = json!({
+        "plan_id": "plan:ids",
+        "base": { "snapshot": id },
+        "delta": { "defs": [], "edges": [] },
+    });
+    std::fs::create_dir_all(dir.path().join(".grid/plans")).expect("mkdir");
+    std::fs::write(
+        dir.path().join(".grid/plans/ids.json"),
+        serde_json::to_string(&plan).expect("json"),
+    )
+    .expect("write");
+
+    let shown = grid(dir.path(), &["plan", "show", "plan:ids"]);
+    assert_eq!(code(&shown), 0);
+    let base = columns(stdout(&shown).lines().next().expect("a record"))[2].to_owned();
+    assert!(
+        !base.starts_with('@'),
+        "a snapshot id is displayed as a rev would be: {base}"
+    );
+    assert!(
+        base.starts_with("snap:") && id.contains(base.trim_start_matches("snap:")),
+        "a snapshot id must still be the id it abbreviates: {base}"
     );
 }

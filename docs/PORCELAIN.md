@@ -1,11 +1,12 @@
 # Grid porcelain grammar
 
-version: 2.24.0
+version: 2.26.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
 carries hints and banners (`GRID_HINTS=0` disables); machines read stdout
-only. `--json` emits the wire result verbatim and is not covered by this
+only. `GRID_HINTS=0` silences teaching, never an answer the caller asked
+for: `grid help` and `grid <verb> --help` print whatever the switch says. `--json` emits the wire result verbatim and is not covered by this
 document.
 
 ## Records
@@ -31,7 +32,7 @@ document.
 | `covenant` | pattern A, pattern B, `via` word — one declared covenant (`grid covenant`) |
 | `delta` | `+` or `-`, then a `drift` record's columns — one signed change to the suspect set (`grid watch`) |
 | `miss` | callsign, reason |
-| `pass` / `hold` | plan id, snapshot id (first record of gate output) |
+| `pass` / `hold` | plan id, snapshot id (first record of gate output) — `@rev` when the snapshot's manifest is at hand, and `snap:<7 hex>` when only the id is, never `@` over a manifest hash: `@` means a rev somebody can check out |
 | `warn` | callsign, message |
 | `conflict` | callsign, hash transition |
 | `done` / `todo` | promise fraction / promise record |
@@ -46,10 +47,13 @@ the `via` evidence text, then the callsign and `file:line` the chart the
 ranking was taken over gives the datum — `-` each when it no longer holds it
 — so a row can be handed to `grid explain` or `grid resolve` as printed. The
 datum stays first: it is the identity across time, the callsign is the name
-today. `grid bisect` — answerable but unlisted, since it
-always refuses until retained history exists — emits one `hit` record for the
-culprit when known, followed by a `done` record carrying measured `steps` and
-`cache_hits`. Neither verb turns missing retained history into an empty
+today. `grid bisect` emits one `hit` record for the
+culprit when known — datum handle, then the word `culprit` where a `suspects`
+ranking puts its score — followed by a `done` record carrying measured `steps`
+and `cache_hits`. It refuses whenever the retained chain is too short to
+straddle the failure, which is every repository that has run neither `grid
+edit apply` nor `grid cache record` against a named test; that is the empty
+case, not a verb that cannot answer. Neither verb turns missing retained history into an empty
 success: insufficient history is bad input (exit `2`) with the explanation on
 stderr and no stdout records. Seeded test fixtures exercise this grammar but
 are not production-history claims.

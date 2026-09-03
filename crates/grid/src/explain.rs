@@ -12,24 +12,34 @@ use crate::{exit, hint};
 include!(concat!(env!("OUT_DIR"), "/explain.rs"));
 
 /// `grid explain <token>`.
-pub fn main(args: &[&str]) -> u8 {
+pub fn main(args: &[&str], json: bool) -> u8 {
     let Some(token) = args.first() else {
         hint("usage: grid explain <word|record|@datum-prefix>");
         return exit::BAD_INPUT;
     };
     if let Some(prefix) = token.strip_prefix('@') {
-        return explain_handle(prefix);
+        return explain_handle(prefix, json);
     }
     // A retired word answers with the word that replaced it. The alias is
     // checked first: the wire contract may still carry a schema of the old
     // name, and the former-names table is the curated answer.
     if let Some((old, now)) = former(token) {
         if let Some(answer) = lookup(now) {
+            if json {
+                return crate::emit_json(&serde_json::json!({
+                    "token": token, "answer": answer, "now": now,
+                }));
+            }
             println!("{token} — formerly `{old}`, now `{now}`: {answer}");
             return exit::OK;
         }
     }
     if let Some(answer) = lookup(token) {
+        if json {
+            return crate::emit_json(&serde_json::json!({
+                "token": token, "answer": answer,
+            }));
+        }
         println!("{token} — {answer}");
         return exit::OK;
     }
@@ -60,7 +70,7 @@ fn former(token: &str) -> Option<(&'static str, &'static str)> {
 }
 
 /// `grid explain @<prefix>` — what the chart calls the datum the prefix pins.
-fn explain_handle(prefix: &str) -> u8 {
+fn explain_handle(prefix: &str, json: bool) -> u8 {
     let chart = match crate::chart_provider::ChartDelta::open(std::path::Path::new(".")) {
         Ok(chart) => chart,
         Err(e) => {
@@ -91,6 +101,17 @@ fn explain_handle(prefix: &str) -> u8 {
             exit::BAD_INPUT
         }
         matches => {
+            if json {
+                let rows: Vec<serde_json::Value> = matches
+                    .iter()
+                    .map(|(callsign, datum)| {
+                        serde_json::json!({ "callsign": callsign, "datum": datum })
+                    })
+                    .collect();
+                return crate::emit_json(&serde_json::json!({
+                    "token": format!("@{prefix}"), "matches": rows,
+                }));
+            }
             for (callsign, datum) in matches {
                 println!("@{prefix} = {callsign}  ({datum})");
             }

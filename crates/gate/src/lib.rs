@@ -424,12 +424,19 @@ fn reasons(
     out
 }
 
-/// `SnapshotOrRev` displayed the way porcelain shows it.
+/// A `SnapshotId` abbreviated for porcelain: `snap:b3:<64 hex>` -> `snap:<7
+/// hex>`.
+///
+/// Incident: this printed `@<7 hex>` and its comment called that "the surveyed
+/// rev's short form". It is the manifest's own blake3, not a rev — nothing can
+/// check it out — so one snapshot answered to two `@` names in a session, the
+/// gate's `@8fcfcb3` and the survey's `@95798a6`. `@` is reserved for the rev
+/// (ONTOLOGY: a snapshot is "displayed as `@rev`"), which an id alone cannot
+/// recover, so an id is printed as an id.
 #[must_use]
 pub fn snapshot_display(id: &SnapshotId) -> String {
-    // snap:b3:<64 hex> -> @<7 hex>, the surveyed rev's short form.
     id.0.rsplit(':').next().map_or_else(
         || id.0.clone(),
-        |hex| format!("@{}", &hex[..hex.len().min(7)]),
+        |hex| format!("snap:{}", &hex[..hex.len().min(7)]),
     )
 }
