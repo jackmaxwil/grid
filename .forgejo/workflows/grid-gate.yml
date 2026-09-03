@@ -223,8 +223,11 @@ jobs:
   # its human override producer for the case where a grid bug blocks a grid
   # fix.
   self-gate:
-    # A grid PR carries a plan; a push to main carries none, so this job
-    # only means something on pull requests.
+    # Grid gates grid, on the promise the branch itself makes: a pull request
+    # that carries a plan is checked against it, one that carries none has
+    # nothing here to check. A push to main is neither, which is why this job
+    # only runs on pull requests — and why a green push run is a weaker claim
+    # than a green pull-request run (docs/TOOLING.md).
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -237,22 +240,32 @@ jobs:
         with:
           shared-key: test
       - name: grid gates grid
-        # No `ls`: the step shell is `bash -e -o pipefail`, so a glob that
-        # matches nothing reaches GNU ls as a literal, ls exits 2, and the
-        # script dies at the assignment — before the guard below can speak.
-        # grid charts .rs/.py/.pyi (survey::files::lang_of); a diff naming
-        # none of them has no delta to gate, so it needs no plan.
+        # Incident: this job failed on every pull request in the repository's
+        # history, markdown-only ones included, because *any* plan file
+        # existing was the trigger — it gated each branch against
+        # `.grid/plans/`'s alphabetically first entry, a promise belonging to
+        # work already merged, whose base snapshot a fresh CI store has never
+        # held. A red check that cannot be green teaches people to skip it.
+        # The plans that mean something here are the ones this branch carries.
         run: |
-          set -- .grid/plans/*.json
-          src=$(git diff --name-only "origin/$BASE...HEAD" |
-                grep -cE '\.(rs|py|pyi)$' || true)
-          if [ -f "$1" ]; then
-            cargo run -q -p grid -- gate "$1" HEAD
-          elif [ "$src" = 0 ]; then
-            echo "no charted source in the diff: nothing for grid to gate"
-          else
-            echo "no plan: a grid PR that changes source carries one in .grid/plans/"
-            exit 1
+          plans=$(git diff --name-only --diff-filter=d "origin/$BASE...HEAD" \
+                  -- '.grid/plans/*.json')
+          if [ -z "$plans" ]; then
+            echo "this branch carries no plan: nothing it promised to gate"
+            exit 0
           fi
+          # A plan pins its base as a snapshot id and not as the rev that
+          # produced it, deliberately (crates/grid/src/plan.rs: the promise is
+          # about *this* base, and a rev label would resolve to whatever that
+          # rev means later). A fresh CI store holds no snapshot at all, so
+          # the base is surveyed here before the gate reads it: C2 makes a
+          # clean rev's survey reproduce the very id the plan recorded. A plan
+          # drafted against a dirty worktree carries a `worktree_diff_hash`
+          # that no other machine can reproduce, and it is meant to fail here.
+          cargo run -q -p grid -- survey "origin/$BASE" >/dev/null
+          for plan in $plans; do
+            echo "gating $plan"
+            cargo run -q -p grid -- gate "$plan" HEAD
+          done
         env:
           BASE: ${{ github.base_ref }}
