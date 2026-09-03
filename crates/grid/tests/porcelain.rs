@@ -1882,3 +1882,61 @@ fn a_coverage_path_is_attributed_to_the_longest_charted_suffix() {
         "the lines ran in b/a/x.py, so the observation is b.a.x.g: {record}"
     );
 }
+
+/// The output contract's flat promise: `--json` on every verb is the wire
+/// result verbatim (`docs/PORCELAIN.md`). A verb that prints porcelain — or
+/// prose — under `--json` breaks every caller that pipes it to `jq`, and it
+/// breaks silently: the exit code is still 0.
+///
+/// Conservatism: the sweep runs every answering verb, not the two that were
+/// found wrong, so the next verb to grow a hand-rolled print is caught here
+/// rather than by whoever pipes it.
+#[test]
+fn every_verb_answers_json_with_json() {
+    let dir = repo_with_a_call();
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    assert_eq!(code(&grid(dir.path(), &["plan", "new", "demo"])), 0);
+    // Every verb that answers, with arguments that make it answer rather than
+    // refuse: a refusal writes no stdout at all, which is a different rule.
+    let calls: &[&[&str]] = &[
+        &["version"],
+        &["survey"],
+        &["diff"],
+        &["drift"],
+        &["resolve", "extra"],
+        &["uses", "extra"],
+        &["scope", "pkg.util.**"],
+        &["orphans"],
+        &["hotspots"],
+        &["roots"],
+        &["log", "extra"],
+        &["covenant", "--list"],
+        &["invariant", "--list"],
+        &["explain", "datum"],
+        &["explain", "leadline"],
+        &["plan", "show", "plan:demo"],
+        &["plan", "lint", "plan:demo"],
+        &["plan", "new", "second"],
+        &["todo", "plan:demo"],
+        &["check"],
+    ];
+    let mut offenders = Vec::new();
+    for args in calls {
+        let mut argv = args.to_vec();
+        argv.push("--json");
+        let out = grid(dir.path(), &argv);
+        let text = stdout(&out);
+        if serde_json::from_str::<serde_json::Value>(text.trim()).is_err() {
+            offenders.push(format!(
+                "  grid {} --json -> {}",
+                args.join(" "),
+                text.lines().next().unwrap_or("(nothing)")
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "--json is not the wire result:\n{}",
+        offenders.join("\n")
+    );
+}

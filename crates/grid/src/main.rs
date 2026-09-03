@@ -204,7 +204,7 @@ fn main() -> ExitCode {
         Some((&"bisect", args)) => bisect_verb(args, json),
         Some((&"hotspots", args)) => hotspots(args, json),
         Some((&"check", args)) => check_verb(args, json),
-        Some((&"explain", args)) => explain::main(args),
+        Some((&"explain", args)) => explain::main(args, json),
         Some((&"suspects", args)) => suspects(args, json),
         Some((&"interfere", args)) => interfere_verb(args, json),
         Some((&"test", args)) => testrun::main(args, json),

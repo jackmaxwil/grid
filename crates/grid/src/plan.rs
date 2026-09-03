@@ -51,7 +51,7 @@ fn store_path(spec: &str) -> PathBuf {
 /// `grid plan new|show|lint`.
 pub fn main(args: &[&str], json: bool) -> u8 {
     match args.split_first() {
-        Some((&"new", rest)) => new(rest),
+        Some((&"new", rest)) => new(rest, json),
         Some((&"show", rest)) => show(rest, json),
         Some((&"lint", rest)) => lint(rest, json),
         _ => {
@@ -168,7 +168,7 @@ fn drafted_id(base: &grid_wire::SnapshotId) -> String {
 }
 
 /// `grid plan new [<id>] [--from-diff <base>] [--out <file>]`.
-fn new(args: &[&str]) -> u8 {
+fn new(args: &[&str], json: bool) -> u8 {
     let mut id = None;
     let mut from_diff = None;
     let mut out = None;
@@ -200,18 +200,18 @@ fn new(args: &[&str]) -> u8 {
         }
     }
     match from_diff {
-        Some(base) => from_working_diff(id, base, out),
+        Some(base) => from_working_diff(id, base, out, json),
         None if out.is_some() => {
             hint(&format!("grid: `--out` needs `--from-diff`\n{NEW_USAGE}"));
             exit::BAD_INPUT
         }
-        None => starter(id),
+        None => starter(id, json),
     }
 }
 
 /// Draft the plan from the diff between `base` and the worktree, and write it
 /// where the caller asked: a file, or stdout.
-fn from_working_diff(id: Option<&str>, base: &str, out: Option<&str>) -> u8 {
+fn from_working_diff(id: Option<&str>, base: &str, out: Option<&str>, json: bool) -> u8 {
     let params = grid_wire::methods::DeltaParams {
         base: crate::snapshot_or_rev(base),
         head: grid_wire::SnapshotOrRev::GitRev {
@@ -245,15 +245,18 @@ fn from_working_diff(id: Option<&str>, base: &str, out: Option<&str>) -> u8 {
         hint("grid: cannot serialize plan");
         return exit::INTERNAL;
     };
+    if let Some(path) = out {
+        if let Err(e) = std::fs::write(path, body.clone() + "\n") {
+            hint(&format!("grid: cannot write {path}: {e}"));
+            return exit::INTERNAL;
+        }
+    }
+    if json {
+        return crate::emit_json(&plan);
+    }
     match out {
         None => println!("{body}"),
-        Some(path) => {
-            if let Err(e) = std::fs::write(path, body + "\n") {
-                hint(&format!("grid: cannot write {path}: {e}"));
-                return exit::INTERNAL;
-            }
-            println!("todo     {plan_id}  {path}");
-        }
+        Some(path) => println!("todo     {plan_id}  {path}"),
     }
     hint(&format!(
         "hint: {} def and {} edge promises drafted — prune what you did not mean to promise, \
@@ -266,7 +269,7 @@ fn from_working_diff(id: Option<&str>, base: &str, out: Option<&str>) -> u8 {
 
 /// Write a starter plan: valid, empty, and lint-clean but for the warning
 /// that it promises nothing — which is exactly the next thing to correct.
-fn starter(id: Option<&str>) -> u8 {
+fn starter(id: Option<&str>, json: bool) -> u8 {
     let Some(id) = id else {
         hint(NEW_USAGE);
         return exit::BAD_INPUT;
@@ -312,6 +315,9 @@ fn starter(id: Option<&str>) -> u8 {
     if let Err(e) = std::fs::write(&path, body + "\n") {
         hint(&format!("grid: cannot write {}: {e}", path.display()));
         return exit::INTERNAL;
+    }
+    if json {
+        return crate::emit_json(&plan);
     }
     println!("todo     {plan_id}  {}", path.display());
     hint("hint: add promises to delta.edges, then `grid plan lint` before you write code");
