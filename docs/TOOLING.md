@@ -128,20 +128,67 @@ it, so a pull request runs 500 kill-9 rounds and the push to `main` runs the
 full 10 000.
 
 Tools are installed explicitly, with `taiki-e/install-action` (prebuilt) on
-every lane that needs one — `just` everywhere, `cargo-deny`, `cargo-machete`
-and `codespell` on the guardrails lane, `cargo-nextest` on the test lane,
-and `cargo-nextest` on the test lane. `cargo-fuzz` is the exception: the same
-action was tried for it and `fuzz-build` went red in 18 s while every other
-install-action step in that run was green, and this Forgejo build serves no job
-logs over its API, so the step went back to `cargo install cargo-fuzz --locked`
-rather than guessing (`docs/TODOS.md` T-40). The installs are not optional
-politeness: the guardrail aggregator *announces* a
+every lane that needs one — `just` everywhere, `cargo-deny` and
+`cargo-machete` on the guardrails lane beside `pipx install codespell` and
+`pipx install 'mypy>=1.5'`, and `cargo-nextest` on the test lane.
+`cargo-fuzz` is the exception: the same action was tried for it and
+`fuzz-build` went red in 18 s while every other install-action step in that
+run was green, and this Forgejo build serves no job *logs* over its API (the
+section below says exactly what it does and does not serve), so the cause
+could not be read back and the step went back to `cargo install cargo-fuzz
+--locked` rather than guessing (`docs/TODOS.md` T-40). The installs are not
+optional politeness: the guardrail aggregator *announces* a
 missing optional tool rather than failing on it (so a fresh clone can make
 `just check` green), which means CI has to guarantee the tools are there or the
 checks quietly stop running.
 
 `self-gate` shares the test lane's cache (`shared-key: test`) rather than
 warming a fourth cold debug build of its own.
+
+### Reading the forge's CI results from a session
+
+Measured 2026-09-03 against `git.example.invalid`, which reports
+`15.0.7+gitea-1.22.0`, driven by `tea` 0.15.1 (go-sdk v1.2.0). Written down
+because "the API does not serve it" was believed more broadly here than the
+evidence supports, and a session that gives up on the forge reads its own gate
+from the web UI or not at all.
+
+`tea actions runs list` works and gives run-level status. **`tea actions runs
+view <id>` and `tea actions runs logs <id>` do not**, and the failure is
+neither a token nor a permission: both call
+`/repos/{owner}/{repo}/actions/runs/{run_id}/jobs`, and this Forgejo does not
+implement that route. Its own spec (`/swagger.v1.json`) carries exactly two
+run endpoints — `GET /repos/{owner}/{repo}/actions/runs` and
+`GET .../actions/runs/{run_id}` — with no `/jobs` child. `tea`'s go-sdk targets
+a Gitea version that has one; the server is a Forgejo that does not. A 404
+there is a client/server surface mismatch, not an answer about the run.
+
+Per-job status **is** served, at a path `tea` has no command for:
+
+```
+tea api "/repos/apex/grid/actions/tasks?limit=60"
+```
+
+One record per job — `name`, `status`, `run_number`, `event`, `head_sha` — so
+a run is read job by job by grouping on `run_number`. That is how the wave-12
+merge was verified: run 78 (`push`, `aba4efb`) green on all eight jobs that
+run there, against run 77 (`pull_request`, `8dba626`) green on nine with
+`self-gate` red.
+
+One trap that reading exposes, worth more than the endpoint itself. On run 78
+`self-gate` and `title` are **skipped, not passed** — both are `if:
+github.event_name == 'pull_request'`. Across the 30 runs the API returns,
+every completed `pull_request` run has failed and every completed `push` run
+has succeeded, and that pattern measures `self-gate`'s standing failure rather
+than the health of `main`: the job most likely to be red does not execute on a
+push. **A green push run is a weaker claim than a green pull-request run**, and
+the two must not be quoted as if they were the same evidence.
+
+What is genuinely unavailable is **log text**: the API carries no log route at
+all, for a run or a job, which is why `tea actions runs logs` could not help
+even if it reached the right endpoint. T-40 stands unchanged — a step whose
+failure is only explicable from its log still cannot be diagnosed from a
+session, and the web UI is the only reader.
 
 | yi job | grid |
 |---|---|
