@@ -388,10 +388,15 @@ fn dispatch_wake(
     })
 }
 
-/// Wave 9's two methods: the budgeted walk and the check's answer. Both
-/// answer from the chart, so both fail the way every other chart method
-/// fails — the coordinate you named is not in the store — except for a trace
-/// id a review named and the log does not hold.
+/// The tail of the match: Wave 9's budgeted walk and the check's answer, plus
+/// `grid.anchor.carry`. All three answer from the chart, so all three fail the
+/// way every other chart method fails — the coordinate you named is not in the
+/// store — except for a trace id a review named and the log does not hold.
+///
+/// These live here rather than in [`dispatch`] because that function sits on
+/// the function-size ratchet at its recorded 181 lines: a match arm added
+/// there would fail the gate, and splitting the match is what the ratchet is
+/// asking for.
 fn dispatch_query_check(
     method: &str,
     params: &Value,
@@ -406,6 +411,15 @@ fn dispatch_query_check(
                 Err(e) => return Some(Err(e)),
             };
             rpc::query_walk(&params, root)
+                .map(|v| encode(&v))
+                .map_err(|e| chart_error(&e))
+        }
+        "grid.anchor.carry" => {
+            let params = match serde_json::from_value(params.clone()).map_err(bad_params) {
+                Ok(p) => p,
+                Err(e) => return Some(Err(e)),
+            };
+            crate::history::carry(&params, root)
                 .map(|v| encode(&v))
                 .map_err(|e| chart_error(&e))
         }

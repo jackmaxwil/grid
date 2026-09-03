@@ -601,6 +601,92 @@ fn resolving_an_unknown_name_is_an_empty_list_not_an_error() {
     assert_eq!(response["result"].as_array().expect("refs").len(), 0);
 }
 
+#[test]
+fn anchor_carry_is_served_over_the_socket_and_says_which_anchors_moved() {
+    // C10: every method the contract claims is answered over the real socket.
+    // grid.anchor.carry went unanswered from wire epoch 1 until this test
+    // (-32601), which is what T-59 recorded. Grid stores no anchors — they
+    // arrive as parameters — so the method needs no anchor store to mean
+    // something, and this is the whole of it.
+    let dir = repo();
+    let (caller, _target) = seed_chart(dir.path());
+    let daemon = Daemon::start(dir.path());
+    let to = daemon.call("grid.snapshot.current", &json!({}))["result"]["snapshot_id"]
+        .as_str()
+        .expect("a published snapshot")
+        .to_owned();
+
+    let anchor_of = |id: &str, datum: &str| {
+        json!({
+            "anchor_id": id,
+            "position": {"datum": datum},
+            "kind": "annotation",
+            "created_at": "2026-09-03T00:00:00Z"
+        })
+    };
+    let response = daemon.call(
+        "grid.anchor.carry",
+        &json!({
+            "anchors": [
+                anchor_of("anchor:01ARZ3NDEKTSV4RRFFQ69G5FAV", &caller),
+                // A datum the chart never held: orphaned, and no position,
+                // because a position that points nowhere is worse than none.
+                anchor_of(
+                    "anchor:01ARZ3NDEKTSV4RRFFQ69G5FAW",
+                    "b3:00000000000000000000000000000000000000000000000000000000000000ff",
+                ),
+            ],
+            "to": to
+        }),
+    );
+    assert!(response.get("error").is_none(), "got {response}");
+    let carried = response["result"].as_array().expect("carried anchors");
+    assert_eq!(carried.len(), 2, "one answer per anchor: {response}");
+
+    assert_eq!(carried[0]["status"], "exact");
+    assert_eq!(carried[0]["confidence"], json!(1.0));
+    assert_eq!(carried[0]["position"]["datum"], json!(caller));
+    assert!(
+        carried[0]["via"].as_array().expect("via").is_empty(),
+        "nothing was followed for an unmoved datum: {response}"
+    );
+
+    assert_eq!(carried[1]["status"], "orphaned");
+    assert_eq!(carried[1]["confidence"], json!(0.0));
+    assert!(carried[1].get("position").is_none(), "got {response}");
+
+    // And it deserializes into the generated type: the daemon's answer is a
+    // wire value, not a lookalike.
+    let typed: Result<Vec<grid_wire::CarriedAnchor>, _> =
+        serde_json::from_value(response["result"].clone());
+    assert!(typed.is_ok(), "carried anchors must deserialize: {typed:?}");
+}
+
+#[test]
+fn anchor_carry_refuses_a_snapshot_that_is_not_live() {
+    // The refusal every other verb makes about a coordinate it cannot open,
+    // rather than an empty list that would read as "none of them moved".
+    let dir = repo();
+    let (caller, _target) = seed_chart(dir.path());
+    let daemon = Daemon::start(dir.path());
+    let response = daemon.call(
+        "grid.anchor.carry",
+        &json!({
+            "anchors": [{
+                "anchor_id": "anchor:01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                "position": {"datum": caller},
+                "kind": "annotation",
+                "created_at": "2026-09-03T00:00:00Z"
+            }],
+            "to": "snap:b3:0000000000000000000000000000000000000000000000000000000000000000"
+        }),
+    );
+    assert_eq!(
+        response["error"]["code"], -32003,
+        "an unknown snapshot is the contract's error: {response}"
+    );
+}
+
 /// Publish a one-segment chart into `dir/.grid/chart` and return the two datum
 /// handles it interns: a caller and the callee it proves an edge to.
 fn seed_chart(dir: &Path) -> (String, String) {
