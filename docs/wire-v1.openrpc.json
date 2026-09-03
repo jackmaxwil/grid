@@ -959,10 +959,11 @@
           "tests": { "type": "array", "items": { "$ref": "#/components/schemas/TestComparison" } },
           "invariant_violations": { "type": "array", "items": { "$ref": "#/components/schemas/InvariantViolation" } },
           "reasons": { "type": "array", "items": { "type": "string" }, "description": "Human-readable one-liners, one per contributing hold cause; empty on pass." },
+          "defs_missing": { "type": "array", "items": { "$ref": "#/components/schemas/PlanDefPromise" }, "description": "Def promises no change in the delta made good — the definition side of `missing`, and a hold cause. Optional: a verdict from an engine that predates this field omits it, which reads as \"not checked\", never as \"nothing was pending\"." },
           "interface_unaccounted": { "type": "array", "items": { "$ref": "#/components/schemas/DefChange" }, "description": "The subset of defs_unaccounted whose sig moved (sig_changed true or absent) and which matches no def promise permitting that move (interface true or absent) — held for reason 'interface'. Always a subset of defs_unaccounted; a member of both lists is held once, not twice." }
         },
         "additionalProperties": false,
-        "description": "Cross-plan error. Surplus is computed after tolerate filtering. gate is 'hold' iff missing, surplus, defs_unaccounted, a failed TestComparison, or an invariant violation is non-empty; 'pass' otherwise. The verdict itemizes divergence — it never says only 'hold'."
+        "description": "Cross-plan error. Surplus is computed after tolerate filtering. gate is 'hold' iff missing, defs_missing, surplus, defs_unaccounted, a failed TestComparison, or an invariant violation is non-empty; 'pass' otherwise. The verdict itemizes divergence — it never says only 'hold'."
       },
       "Fuel": {
         "type": "object",

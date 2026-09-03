@@ -101,7 +101,7 @@ rows are `| \`token\` | one answer, at most three lines when printed |`.
 | `done` | record: a fraction — promises made good, edits applied, verdicts recorded. |
 | `todo` | record: a promise not yet made good — one item of remaining work. |
 | `match` | verdict role: a promised edge the diff made good. |
-| `missing` | verdict role: a promised edge never built. Holds the gate. |
+| `missing` | verdict role: a promise the delta never made good — an edge never built, or a definition never written (`defs_missing` on the wire). Holds the gate. |
 | `surplus` | verdict role: an edge built but never promised. Holds the gate. |
 | `tolerated` | verdict role: a surplus change the plan's tolerate rules excuse. Reported, never a hold cause. |
 

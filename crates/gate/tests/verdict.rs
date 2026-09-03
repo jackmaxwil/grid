@@ -635,3 +635,52 @@ fn an_unpromised_add_is_unaccounted_but_not_for_its_interface() {
         "an add or a remove has no interface that moved"
     );
 }
+
+/// The gate's own sentence — hold iff something is missing, surplus or
+/// unaccounted — has always covered edge promises and never def promises. A
+/// plan that promises a definition nobody wrote passed, while `grid todo` on
+/// the same plan listed it as pending: two verbs, one plan, contradictory
+/// answers, and the gate is the one CI would trust.
+#[test]
+fn a_def_promise_nothing_made_good_holds_the_gate() {
+    let mut p = plan(vec![]);
+    p.delta.defs = vec![def_promise(
+        PlanDefPromiseAction::Add,
+        "app.never_written",
+        None,
+    )];
+
+    // A delta that touches nothing at all: the promise cannot have been kept.
+    let out = verdict(&p, &diff(vec![], vec![]), &Table::new());
+
+    assert_eq!(
+        out.gate,
+        GateVerdictGate::Hold,
+        "a promise nobody made good passed the gate; reasons: {:?}",
+        out.reasons
+    );
+    assert_eq!(
+        out.defs_missing.as_deref().unwrap_or_default().len(),
+        1,
+        "the unfulfilled promise is named, not merely counted"
+    );
+}
+
+/// The other side of the same rule: a promise the delta does make good must
+/// not hold anything, or every plan that is finished would fail its own gate.
+#[test]
+fn a_def_promise_the_delta_makes_good_does_not_hold() {
+    let mut p = plan(vec![]);
+    p.delta.defs = vec![def_promise(PlanDefPromiseAction::Add, "app.written", None)];
+    let change = def_change(DefChangeAction::Added, "app.written", None);
+
+    let out = verdict(&p, &diff(vec![change], vec![]), &Table::new());
+
+    assert_eq!(
+        out.gate,
+        GateVerdictGate::Pass,
+        "a kept promise held the gate; reasons: {:?}",
+        out.reasons
+    );
+    assert!(out.defs_missing.as_deref().unwrap_or_default().is_empty());
+}
