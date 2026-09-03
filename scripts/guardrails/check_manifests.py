@@ -6,13 +6,28 @@ folder/crate name mismatches, and jcode's 84 crates frozen at 0.1.0 under a movi
 Grid adds the rule yi does not need. Cargo's [lints] table is all-or-nothing, so
 crates/chart-io cannot say `workspace = true` and still relax unsafe_code for the mmap;
 its hand-written tables must therefore be a superset of the workspace's at the same or a
-stricter level, or every lint added to the workspace quietly misses the one unsafe crate."""
-import sys, tomllib, pathlib
+stricter level, or every lint added to the workspace quietly misses the one unsafe crate.
+
+The dependency law is a review rule for Rust, because every package entering Cargo.lock is
+visible in the diff of every pull request. Under clients/ there is no lockfile to read, so
+the law is mechanical instead: a client ships against its language's standard library and
+nothing else, and the first dependency, extra or lockfile fails here."""
+import re, sys, tomllib, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from _common import ROOT, fail
 
 # Folder x/ is crate grid-x. crates/grid/ is the binary and keeps the bare name.
 BARE = "grid"
+# The naming law by analogy: the package under clients/<lang>/ is grid-client in that
+# language's spelling (grid-client distribution, grid_client import).
+CLIENTS = ROOT / "clients"
+CLIENT_NAME = "grid-client"
+# Every spelling of "something was installed here" that can appear under clients/.
+# pyvenv.cfg is the venv itself, which self-ignores (its own .gitignore is one `*`
+# line) and is therefore invisible to git status, check_blob_size.py and the
+# "the gate wrote nothing" invariant alike: this check is the only thing that sees it.
+INSTALLED = ("uv.lock", "poetry.lock", "pdm.lock", "requirements*.txt", "Pipfile",
+             "Pipfile.lock", "pyvenv.cfg", "*.egg-info")
 # The one crate allowed a hand-written [lints] table, and the one lint it may relax.
 LINTS_EXCEPTION = {"grid-chart-io": {("rust", "unsafe_code")}}
 LEVELS = ["allow", "warn", "deny", "forbid"]
@@ -64,5 +79,34 @@ for m in sorted((ROOT / "crates").glob("*/Cargo.toml")):
             errs.append(f"{m}: [lints.{key[0]}] does not restate workspace {key[1]} = {level!r}")
         elif LEVELS.index(mine) < LEVELS.index(level):
             errs.append(f"{m}: {key[1]} is {mine!r}, weaker than the workspace's {level!r}")
+
+# clients/ is absent in a checkout that predates the SDK wave, and an absent client has no
+# dependency to declare; only a present one is held to the law.
+for m in sorted(CLIENTS.glob("*/pyproject.toml")):
+    t = tomllib.loads(m.read_text())
+    project = t.get("project", {})
+    if project.get("name") != CLIENT_NAME:
+        errs.append(f"{m}: project.name {project.get('name')!r} != {CLIENT_NAME!r}")
+    if project.get("dependencies"):
+        errs.append(f"{m}: dependencies must stay empty — the client's TCB is the standard library")
+    for extra, deps in project.get("optional-dependencies", {}).items():
+        if deps:
+            errs.append(f"{m}: optional-dependencies.{extra} must stay empty — an extra is a dependency")
+    # PEP 735 groups are what `uv sync` and `pip install --group` install from, and
+    # build-system.requires is what pip fetches to build the package at all. Neither
+    # is project.dependencies, and both are a package entering the client's TCB.
+    for group, deps in t.get("dependency-groups", {}).items():
+        if deps:
+            errs.append(f"{m}: dependency-groups.{group} must stay empty — a dev group is a dependency")
+    build = t.get("build-system", {})
+    backend = build.get("build-backend", "").split(".")[0].lower().replace("_", "-")
+    for req in build.get("requires", []):
+        name = re.split(r"[<>=!~;\[ ]", req, maxsplit=1)[0].strip().lower().replace("_", "-")
+        if name != backend:
+            errs.append(f"{m}: build-system.requires {req!r} is not the {backend!r} backend — a build requirement is a package")
+
+for pattern in INSTALLED:
+    for found in sorted(CLIENTS.glob(f"**/{pattern}")):
+        errs.append(f"{found}: {found.name} under clients/ means something is being installed")
 
 fail(errs, "manifests")

@@ -696,3 +696,64 @@ differently than it was written; the deviation is recorded under its row.
   written — a `retain` of the hashes the survey just saw, at the end of
   `extract_all`. The bound is the tree; it costs one file's parse (0.85ms
   median here) for content that leaves and comes back.
+
+## From the 2026-09-02 SDK scope reading (`docs/plans/2026-09-02-sdk.md`)
+
+Four findings from reading the contract, the daemon and the generator
+against each other while scoping the client libraries. None is fixed by
+that plan; each is recorded here because the plan's answers depend on the
+behaviour as it stands.
+
+- **T-59 (P1, S) Two contract methods are not served.** `grid.anchor.carry`
+  and `grid.plan.estimate` are two of the contract's 23 methods and have no
+  arm in `crates/grid/src/serve.rs`, whose dispatch answers 21. Both have
+  generated param and result types and both round-trip their contract
+  example in `crates/wire/tests/conformance.rs`, so the gap is exactly the
+  one C10 is about: a method the daemon claims is not answered over the
+  real socket. `crates/grid/tests/conformance.rs` calls neither, which is
+  why nothing caught it. The SDK plan's step 3 adds the loop that would
+  have — every method in the contract, called with the contract's own
+  example params, asserting no answer is `-32601` — carrying these two in
+  an `UNSERVED` list that only shrinks. Fixing them removes the list.
+
+- **T-60 (P2, S) `grid serve` unlinks the socket path before binding.**
+  `serve::main` calls `remove_file` on the path unconditionally
+  (`crates/grid/src/serve.rs:46`), reasoning that a socket file left by a
+  dead daemon would make `bind` fail forever. It also unlinks a *live*
+  daemon's socket: the second `grid serve` binds a fresh inode at the same
+  name, the first keeps serving an inode with no name, and whichever exits
+  first removes the survivor's file (both call `remove_file` again on the
+  way out). Nothing in the tree hits this — each conformance daemon gets
+  its own temp directory — but it is why the SDK plan's client adopts a
+  running daemon and never spawns one. The fix that keeps the stale-socket
+  recovery is to attempt a connect first and refuse to bind when it
+  succeeds; a bind on an abstract or lock-guarded name would also do it.
+
+- **T-61 (P3, S) The daemon never sends error `data`.** The contract gives
+  six of the eight wire errors a `data` shape — `UnknownSnapshot` carries
+  `snapshot_id`, `SurveyFailed` carries `file` and `cause`,
+  `CorruptSegment` carries `path` and `reason` — and `serve::envelope`
+  writes `code` and `message` only, so every one of those fields is
+  documented and unpopulated. A caller that wants the snapshot id parses
+  the message. Additive to fix; the client decodes `data` as an optional
+  value already, so nothing on the wire has to change first.
+
+- **T-62 (P3, S) The contract's major refusal has no mechanism.** The
+  contract says the daemon "refuses clients that pin an incompatible
+  major", and `VersionParams` is empty, so a client has nothing to pin
+  with. The SDK plan's clients therefore compare majors themselves, after
+  `grid.version` and before any other call — which protects a well-behaved
+  client and not the daemon. Making the sentence true is an additive
+  optional param on `grid.version` and a refusal in `serve::dispatch`,
+  which is the daemon's change, not the SDK's.
+
+- **T-63 (P3, S) No job ever runs a fuzzer, so `client_response` has no
+  corpus.** `fuzz-build` in `.forgejo/workflows/grid-gate.yml` compiles the
+  four targets and stops, and the SDK wave's own 60-second local run found no
+  crash in 11,388,479 executions, so `fuzz/corpus/client_response/` does not
+  exist. `clients/python/tests/test_corpus.py` therefore skips on every clean
+  checkout and in every CI run, and C54's replay clause says so rather than
+  claiming a differential that has never executed. The fix is a timeboxed
+  `cargo +nightly fuzz run` job whose minimized corpus is committed —
+  har-verify's own CI order puts one at five minutes — which arms the replay
+  for every target at once, not only this one.

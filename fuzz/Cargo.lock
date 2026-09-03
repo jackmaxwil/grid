@@ -137,6 +137,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "grid-client"
+version = "0.1.0"
+dependencies = [
+ "grid-wire",
+ "serde_json",
+]
+
+[[package]]
 name = "grid-datum"
 version = "0.1.0"
 dependencies = [
@@ -148,6 +156,7 @@ name = "grid-fuzz"
 version = "0.0.0"
 dependencies = [
  "grid-chart",
+ "grid-client",
  "grid-lang-py",
  "libfuzzer-sys",
 ]

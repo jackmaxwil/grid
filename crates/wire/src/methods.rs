@@ -9,6 +9,18 @@ use super::{
     TestId, TestPlan, TodoList, Trace, TraceDiff, TraceId, WalkQuery, WalkResult,
 };
 
+/// One wire method: the `method` string it is sent under, and the type its
+/// `result` member decodes into.
+///
+/// The params struct is the implementor, so a caller names a method by the
+/// value it already has to build.
+pub trait Method: Serialize {
+    /// The `method` string a request carries.
+    const NAME: &'static str;
+    /// What the `result` member decodes into.
+    type Result: serde::de::DeserializeOwned;
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VersionParams {}
@@ -24,11 +36,21 @@ pub struct VersionResult {
     pub snapshot: Option<SnapshotId>,
 }
 
+impl Method for VersionParams {
+    const NAME: &'static str = "grid.version";
+    type Result = VersionResult;
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SnapshotCurrentParams {}
 
 pub type SnapshotCurrentResult = Snapshot;
+
+impl Method for SnapshotCurrentParams {
+    const NAME: &'static str = "grid.snapshot.current";
+    type Result = SnapshotCurrentResult;
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +63,11 @@ pub struct SurveyRunParams {
 
 pub type SurveyRunResult = Snapshot;
 
+impl Method for SurveyRunParams {
+    const NAME: &'static str = "grid.survey.run";
+    type Result = SurveyRunResult;
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolveParams {
@@ -51,6 +78,11 @@ pub struct ResolveParams {
 
 pub type ResolveResult = Vec<DefRef>;
 
+impl Method for ResolveParams {
+    const NAME: &'static str = "grid.resolve";
+    type Result = ResolveResult;
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeltaParams {
@@ -59,6 +91,11 @@ pub struct DeltaParams {
 }
 
 pub type DeltaResult = Diff;
+
+impl Method for DeltaParams {
+    const NAME: &'static str = "grid.delta";
+    type Result = DeltaResult;
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -69,6 +106,11 @@ pub struct GateCheckParams {
 
 pub type GateCheckResult = GateVerdict;
 
+impl Method for GateCheckParams {
+    const NAME: &'static str = "grid.gate.check";
+    type Result = GateCheckResult;
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueryWalkParams {
@@ -76,6 +118,11 @@ pub struct QueryWalkParams {
 }
 
 pub type QueryWalkResult = WalkResult;
+
+impl Method for QueryWalkParams {
+    const NAME: &'static str = "grid.query.walk";
+    type Result = QueryWalkResult;
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -85,6 +132,11 @@ pub struct AnchorCarryParams {
 }
 
 pub type AnchorCarryResult = Vec<CarriedAnchor>;
+
+impl Method for AnchorCarryParams {
+    const NAME: &'static str = "grid.anchor.carry";
+    type Result = AnchorCarryResult;
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -100,10 +152,20 @@ pub struct TraceIngestResult {
     pub unresolved_symbols: Vec<String>,
 }
 
+impl Method for TraceIngestParams {
+    const NAME: &'static str = "grid.trace.ingest";
+    type Result = TraceIngestResult;
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CacheCheckParams {
     pub request: CacheCheckRequest,
+}
+
+impl Method for CacheCheckParams {
+    const NAME: &'static str = "grid.cache.check";
+    type Result = super::CacheCheckResult;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -160,6 +222,11 @@ pub struct CacheRecordResultNondeterministicItem {
     pub previous_at: String,
 }
 
+impl Method for CacheRecordParams {
+    const NAME: &'static str = "grid.cache.record";
+    type Result = CacheRecordResult;
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScopeParams {
@@ -180,6 +247,11 @@ pub struct ScopeParams {
 
 pub type ScopeResult = ScopePack;
 
+impl Method for ScopeParams {
+    const NAME: &'static str = "grid.scope";
+    type Result = ScopeResult;
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlanLintParams {
@@ -187,6 +259,11 @@ pub struct PlanLintParams {
 }
 
 pub type PlanLintResult = LintResult;
+
+impl Method for PlanLintParams {
+    const NAME: &'static str = "grid.plan.lint";
+    type Result = PlanLintResult;
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -198,6 +275,11 @@ pub struct PlanEstimateParams {
 
 pub type PlanEstimateResult = Estimate;
 
+impl Method for PlanEstimateParams {
+    const NAME: &'static str = "grid.plan.estimate";
+    type Result = PlanEstimateResult;
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EditApplyParams {
@@ -205,6 +287,11 @@ pub struct EditApplyParams {
 }
 
 pub type EditApplyResult = EditResult;
+
+impl Method for EditApplyParams {
+    const NAME: &'static str = "grid.edit.apply";
+    type Result = EditApplyResult;
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -215,6 +302,11 @@ pub struct TodoParams {
 }
 
 pub type TodoResult = TodoList;
+
+impl Method for TodoParams {
+    const NAME: &'static str = "grid.todo";
+    type Result = TodoResult;
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -232,6 +324,11 @@ pub struct CheckParams {
     pub quick: Option<bool>,
 }
 
+impl Method for CheckParams {
+    const NAME: &'static str = "grid.check";
+    type Result = super::CheckResult;
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TraceDiffParams {
@@ -240,6 +337,11 @@ pub struct TraceDiffParams {
 }
 
 pub type TraceDiffResult = TraceDiff;
+
+impl Method for TraceDiffParams {
+    const NAME: &'static str = "grid.trace.diff";
+    type Result = TraceDiffResult;
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -255,12 +357,22 @@ pub struct SuspectsParams {
 
 pub type SuspectsResult = Suspects;
 
+impl Method for SuspectsParams {
+    const NAME: &'static str = "grid.suspects";
+    type Result = SuspectsResult;
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BisectParams {
     pub good: SnapshotOrRev,
     pub bad: SnapshotOrRev,
     pub test: String,
+}
+
+impl Method for BisectParams {
+    const NAME: &'static str = "grid.bisect";
+    type Result = super::BisectResult;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -280,6 +392,11 @@ pub struct DriftParams {
 
 pub type DriftResult = DriftReport;
 
+impl Method for DriftParams {
+    const NAME: &'static str = "grid.drift";
+    type Result = DriftResult;
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestPlanParams {
@@ -293,6 +410,11 @@ pub struct TestPlanParams {
 
 pub type TestPlanResult = TestPlan;
 
+impl Method for TestPlanParams {
+    const NAME: &'static str = "grid.test.plan";
+    type Result = TestPlanResult;
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InterfereParams {
@@ -302,3 +424,35 @@ pub struct InterfereParams {
 }
 
 pub type InterfereResult = InterfereReport;
+
+impl Method for InterfereParams {
+    const NAME: &'static str = "grid.interfere";
+    type Result = InterfereResult;
+}
+
+/// Every method the contract declares, in contract order.
+pub const METHODS: [&str; 23] = [
+    "grid.version",
+    "grid.snapshot.current",
+    "grid.survey.run",
+    "grid.resolve",
+    "grid.delta",
+    "grid.gate.check",
+    "grid.query.walk",
+    "grid.anchor.carry",
+    "grid.trace.ingest",
+    "grid.cache.check",
+    "grid.cache.record",
+    "grid.scope",
+    "grid.plan.lint",
+    "grid.plan.estimate",
+    "grid.edit.apply",
+    "grid.todo",
+    "grid.check",
+    "grid.trace.diff",
+    "grid.suspects",
+    "grid.bisect",
+    "grid.drift",
+    "grid.test.plan",
+    "grid.interfere",
+];

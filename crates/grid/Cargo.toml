@@ -28,6 +28,10 @@ serde_json = "1"
 
 [dev-dependencies]
 serde_json = "1"
+# The socket tests speak to the daemon the way a consumer does. A
+# dev-dependency is invisible to check_boundaries.py, so boundaries.toml
+# records this edge in a comment beside grid-client's own entry.
+grid-client = { path = "../client", version = "0.1.0" }
 grid-chart = { path = "../chart", version = "0.1.0" }
 grid-chart-io = { path = "../chart-io", version = "0.1.0" }
 grid-trace = { path = "../trace", version = "0.1.0" }

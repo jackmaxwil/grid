@@ -19,5 +19,5 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 subprocess = { max-threads = 3 }
 
 [[profile.default.overrides]]
-filter = 'binary_id(grid::conformance) + binary(porcelain) + binary(check) + binary(compile) + binary(compat) + binary(interfere) + binary(drift) + binary(edit_apply) + binary(attribution) + binary(pack) + binary(wave10) + binary(crash_safety)'
+filter = 'binary_id(grid::conformance) + binary_id(grid::client) + binary(porcelain) + binary(check) + binary(compile) + binary(compat) + binary(interfere) + binary(drift) + binary(edit_apply) + binary(attribution) + binary(pack) + binary(wave10) + binary(crash_safety)'
 test-group = 'subprocess'

@@ -67,6 +67,7 @@ jobs:
         with:
           tool: just,cargo-deny,cargo-machete
       - run: pipx install codespell
+      - run: pipx install 'mypy>=1.5'
       # Determinism smoke (plan Wave 2 accept): hashing a real tree twice must agree, and
       # the repo itself is the corpus grid always has.
       - env:
@@ -120,6 +121,7 @@ jobs:
       - run: cargo +nightly fuzz build normalize
       - run: cargo +nightly fuzz build references
       - run: cargo +nightly fuzz build segment
+      - run: cargo +nightly fuzz build client_response
 
   # C1 evidence: the one unsafe block in grid, under the tools that can see through it.
   # MIRI interprets everything except the mmap itself; ASan runs the real mapping against

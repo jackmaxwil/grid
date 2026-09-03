@@ -39,6 +39,9 @@ run scripts/check-assurance-links.sh
 # Prose is not exempt: grid's comments and design docs are most of what a reader gets.
 # Config and the domain-word allowlist live in .codespellrc.
 optional codespell "uv tool install codespell" codespell
+# The Python client ships types, generated and hand-written, and nothing else checks
+# them: there is no compiler on that side. PEP 692 kwargs unpacking needs mypy >= 1.5.
+optional mypy "pipx install 'mypy>=1.5'" mypy --strict clients/python
 
 # crates/wire is generated, so proving the tree still matches its generator needs the
 # generator to run and rustfmt to normalize its output — a subprocess and a format pass per

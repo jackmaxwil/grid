@@ -18,3 +18,6 @@ target/
 !.grid/plans/*.json
 
 __pycache__/
+# mypy is the guardrails' optional type checker for clients/python; its cache is a
+# build artifact like target/.
+.mypy_cache/

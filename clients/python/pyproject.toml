@@ -1,0 +1,20 @@
+# The whole dependency law for the Python client, in three lines: nothing to
+# install, nothing to lock, nothing to justify in docs/ASSURANCE.md. Its TCB is
+# CPython's standard library, and check_manifests.py refuses the first line that
+# changes that — a dependency, an extra, or a lockfile anywhere under clients/.
+[project]
+name = "grid-client"
+version = "0.1.0"
+description = "A synchronous client for grid's wire v1, over the daemon's unix socket."
+# 3.11 is the floor `NotRequired`, `Unpack` and `TypeAlias` reach in `typing`
+# without typing_extensions, and the floor the guardrails already need for
+# `tomllib`.
+requires-python = ">=3.11"
+dependencies = []
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["grid_client"]

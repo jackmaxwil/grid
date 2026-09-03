@@ -159,7 +159,15 @@ fn version_example_is_served_over_the_socket() {
     );
     assert_eq!(
         result["porcelain"], example["porcelain"],
-        "porcelain version is PORCELAIN.md's"
+        "porcelain version is the grid.version example's, which porcelain.rs pins to PORCELAIN.md's"
+    );
+    // The contract spells the porcelain version twice, and x-porcelain.version is
+    // the copy no generator reads and no other assertion reaches: without this
+    // line it is the one version string in the repository that can drift from the
+    // build in silence.
+    assert_eq!(
+        result["porcelain"], contract["x-porcelain"]["version"],
+        "porcelain version is x-porcelain.version"
     );
     // No survey has run, so there is no snapshot to report — and the field is
     // optional precisely for this state, not filled with a placeholder.

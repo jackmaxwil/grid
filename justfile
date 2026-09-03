@@ -1,6 +1,11 @@
 # grid's verbs. `just check` is the gate; everything else is a lane of it or a deeper rung.
 set positional-arguments := true
 
+# Resolved the way scripts/check-guardrails.sh resolves it, and for the same reason: a bare
+# `python3` is macOS's Xcode 3.9, below the 3.11 the generator's `Path.write_text(newline=)`
+# and the client's `requires-python` both need. `PY` overrides, as it does there.
+py := env('PY', `command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3`)
+
 default: check
 
 [group('build')]
@@ -33,6 +38,11 @@ test *ARGS:
     else
       cargo test --workspace "$@"
     fi
+    # The Python client's suite. Run from the repo root with the package on the path
+    # rather than from clients/python, because the differential locates the binary
+    # relative to the root and a pyproject.toml in the working directory is what some
+    # shells' python3 wrappers take as an invitation to build a virtualenv.
+    PYTHONPATH=clients/python {{py}} -m unittest discover -s clients/python/tests -q
 
 # The lanes `check` runs, named so CI can run them as separate jobs.
 [group('gate')]
@@ -107,7 +117,7 @@ worktrees:
 # Regenerate crates/wire from the contract. check_wire_drift.py fails when this is owed.
 [group('meta')]
 wire:
-    python3 scripts/gen-wire.py
+    {{py}} scripts/gen-wire.py
     cargo fmt --all
 
 [group('test')]

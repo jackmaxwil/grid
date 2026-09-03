@@ -16,6 +16,10 @@
 "grid-trace" = ["grid-chart", "grid-wire"]
 "grid-walk" = ["grid-chart", "grid-wire"]
 "grid-gate" = ["grid-wire"]
+# `grid` takes a dev-dependency on this crate for the socket tests, which is
+# invisible here: check_boundaries.py reads [dependencies] and
+# [build-dependencies] only, so the edge is not an entry to keep current.
+"grid-client" = ["grid-wire"]
 "grid-survey" = ["grid-chart", "grid-datum", "grid-lang-py", "grid-lang-rs", "grid-wire"]
 "grid" = [
   "grid-cache",
