@@ -13,7 +13,7 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 | C6 | a datum ignores formatting, comments and local renaming; `span_hash` does not | properties.rs determinism.rs | 2 |
 | C7 | the normalizer never panics on arbitrary bytes and never disagrees with itself | normalize.rs | 2+ |
 
-| C8 | the gate holds if and only if some itemized divergence exists | verdict.rs | 3 |
+| C8 | the gate holds if and only if some itemized divergence exists — on both sides of the plan: a promised edge never built (`missing`), a promised definition never written (`defs_missing`), a change no promise covers, a disagreeing test, a violated invariant. A promise the delta made good holds nothing | verdict.rs | 5 |
 | C9 | a promise pattern matches a callsign only in name-space; an unnamed datum makes no promise good | pattern.rs verdict.rs | 3 |
 | C10 | every wire method the daemon claims is answered over the real socket, not only in-process | conformance.rs | 1+ |
 

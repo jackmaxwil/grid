@@ -431,6 +431,8 @@ pub struct GateVerdict {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasons: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defs_missing: Option<Vec<PlanDefPromise>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interface_unaccounted: Option<Vec<DefChange>>,
 }
 

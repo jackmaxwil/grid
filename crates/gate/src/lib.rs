@@ -188,6 +188,11 @@ pub fn verdict<P: DeltaProvider>(plan: &Plan, diff: &Diff, provider: &P) -> Gate
             },
         );
 
+    // The def side of `matched`/`missing`. This is `def_progress`, the same
+    // partition `grid todo` prints as `defs N/M`, so the two verbs cannot
+    // disagree about whether a promise was kept: they read one function.
+    let (_made_good, defs_missing) = def_progress(plan, diff);
+
     let defs_unaccounted: Vec<DefChange> = diff
         .defs
         .iter()
@@ -233,6 +238,7 @@ pub fn verdict<P: DeltaProvider>(plan: &Plan, diff: &Diff, provider: &P) -> Gate
 
     let reasons = reasons(
         &missing,
+        &defs_missing,
         &surplus,
         &defs_unaccounted,
         &tests,
@@ -256,6 +262,7 @@ pub fn verdict<P: DeltaProvider>(plan: &Plan, diff: &Diff, provider: &P) -> Gate
         tests,
         invariant_violations,
         reasons: Some(reasons),
+        defs_missing: Some(defs_missing),
         interface_unaccounted: Some(interface_unaccounted),
     }
 }
@@ -362,6 +369,7 @@ fn witness(edge: &Edge) -> Path {
 /// list *is* the gate decision: `hold` iff it is non-empty.
 fn reasons(
     missing: &[PlanEdgePromise],
+    defs_missing: &[PlanDefPromise],
     surplus: &[EdgeChange],
     defs_unaccounted: &[DefChange],
     tests: &[TestComparison],
@@ -380,6 +388,13 @@ fn reasons(
             "{} promised {} never built",
             missing.len(),
             plural(missing.len(), "edge", "edges")
+        ));
+    }
+    if !defs_missing.is_empty() {
+        out.push(format!(
+            "{} promised {} never written",
+            defs_missing.len(),
+            plural(defs_missing.len(), "definition", "definitions")
         ));
     }
     if !surplus.is_empty() {
