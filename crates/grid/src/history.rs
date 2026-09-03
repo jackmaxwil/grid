@@ -7,6 +7,10 @@
 //! most the append that was in flight, never what preceded it. Wire `Edit`
 //! rows, so the log is schema-stable by the same additive rules as the
 //! socket.
+//!
+//! `grid.anchor.carry` answers from here too: carrying an anchor onto a
+//! newer chart *is* following this log, so the method sits beside the
+//! chain walk it is built on rather than in a module of its own.
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -118,6 +122,119 @@ pub fn chain(root: &Path, datum: &str) -> Vec<Edit> {
         .collect();
     hits.reverse();
     hits
+}
+
+/// `grid.anchor.carry` — follow a consumer's anchors onto the live chart.
+///
+/// Grid stores no anchors: they arrive as parameters, owned by whoever made
+/// them (a review annotation, a spec reference), and this answers where each
+/// one now points. That is why the method needs no anchor store to exist and
+/// why implementing it closes C10's gap rather than adding a feature.
+///
+/// Three answers, and the confidence says which of them grid actually knows:
+///
+/// - `exact` — the chart still holds the anchor's own datum, so nothing moved
+///   under it.
+/// - `carried` — the datum is gone and the recorded patch DAG
+///   ([`crate::history::chain`]) reaches a successor the chart does hold. An
+///   edit edge is a fact grid wrote down, not a guess, so identity carries at
+///   confidence 1. An anchor with an interior [`grid_wire::AstPath`] is the
+///   exception: the body changed, grid does not re-verify that the path still
+///   addresses the same node, and it says so with confidence 0.5 rather than
+///   claiming a precision it did not check.
+/// - `orphaned` — no successor in the chart. `position` is absent, because a
+///   position that points nowhere is worse than none.
+///
+/// # Errors
+/// [`crate::chart_provider::Error::NotLive`] when `to` is not the epoch the engine
+/// holds — the same refusal every other verb makes about a snapshot it cannot
+/// open — and [`crate::chart_provider::Error::NoSnapshot`] when nothing is published.
+pub fn carry(
+    params: &grid_wire::methods::AnchorCarryParams,
+    root: &std::path::Path,
+) -> Result<grid_wire::methods::AnchorCarryResult, crate::chart_provider::Error> {
+    let chart = crate::chart_provider::ChartDelta::live(root)?;
+    let live = chart.current().ok_or_else(|| chart.no_snapshot())?;
+    if live != params.to {
+        return Err(crate::chart_provider::Error::NotLive(params.to.0.clone()));
+    }
+
+    let held = |datum: &grid_wire::Datum| {
+        !chart
+            .resolve(&grid_wire::Locator::Datum {
+                datum: datum.clone(),
+            })
+            .is_empty()
+    };
+
+    let mut out = Vec::with_capacity(params.anchors.len());
+    for anchor in &params.anchors {
+        let start = &anchor.position.datum;
+        let interior = anchor.position.path.is_some();
+        if held(start) {
+            out.push(grid_wire::CarriedAnchor {
+                anchor_id: anchor.anchor_id.clone(),
+                status: grid_wire::CarriedAnchorStatus::Exact,
+                position: Some(anchor.position.clone()),
+                confidence: 1.0,
+                via: Vec::new(),
+            });
+            continue;
+        }
+        let (position, via) = follow(root, start, &held);
+        out.push(match position {
+            Some(datum) => grid_wire::CarriedAnchor {
+                anchor_id: anchor.anchor_id.clone(),
+                status: grid_wire::CarriedAnchorStatus::Carried,
+                position: Some(grid_wire::Position {
+                    datum,
+                    path: anchor.position.path.clone(),
+                }),
+                // Invariant: identity carried through recorded edits is a
+                // fact; an interior path across a changed body is not.
+                confidence: if interior { 0.5 } else { 1.0 },
+                via,
+            },
+            None => grid_wire::CarriedAnchor {
+                anchor_id: anchor.anchor_id.clone(),
+                status: grid_wire::CarriedAnchorStatus::Orphaned,
+                position: None,
+                confidence: 0.0,
+                via: Vec::new(),
+            },
+        });
+    }
+    Ok(out)
+}
+
+/// Walk the recorded patch DAG forward from `start` to the first datum the
+/// chart still holds, returning it with the edits crossed, in order.
+///
+/// Bounded by the number of edits in the lineage, and every datum is visited
+/// at most once, so a cycle in a hand-edited log terminates rather than
+/// spinning.
+fn follow(
+    root: &std::path::Path,
+    start: &grid_wire::Datum,
+    held: &dyn Fn(&grid_wire::Datum) -> bool,
+) -> (Option<grid_wire::Datum>, Vec<grid_wire::Edit>) {
+    let lineage = crate::history::chain(root, &start.0);
+    let mut seen: std::collections::BTreeSet<String> = [start.0.clone()].into();
+    let mut cursor = start.clone();
+    let mut via = Vec::new();
+    loop {
+        let Some(step) = lineage
+            .iter()
+            .find(|edit| edit.from == cursor && seen.insert(edit.to.0.clone()))
+        else {
+            return (None, Vec::new());
+        };
+        via.push(step.clone());
+        cursor = step.to.clone();
+        if held(&cursor) {
+            return (Some(cursor), via);
+        }
+    }
 }
 
 #[cfg(test)]

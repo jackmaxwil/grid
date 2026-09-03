@@ -41,9 +41,27 @@ pub fn main(args: &[&str]) -> u8 {
             }
         }
     }
-    // A socket file left by a dead daemon would make bind fail forever.
-    // Removing it is safe: bind below is what proves nobody is listening.
-    let _ = std::fs::remove_file(&path);
+    // Incident: this unlinked the path unconditionally, under a comment
+    // claiming that bind proved nobody was listening. Bind proves no such
+    // thing. Unlinking a live daemon's socket and binding a fresh one leaves
+    // the first process serving an unnamed inode it can never be reached on
+    // again while the second owns the name — two daemons, one store, and a
+    // silent theft rather than an error. Only a connection distinguishes a
+    // corpse from a listener, so one is attempted before anything is removed.
+    match UnixStream::connect(&path) {
+        Ok(_) => {
+            hint(&format!(
+                "grid: {} is already served by a live daemon",
+                path.display()
+            ));
+            hint("hint: stop it, or serve on another path (GRID_SOCKET)");
+            return exit::BAD_INPUT;
+        }
+        // Absent, or a socket file whose daemon is gone: safe to clear.
+        Err(_) => {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 
     let listener = match UnixListener::bind(&path) {
         Ok(l) => l,
@@ -370,10 +388,15 @@ fn dispatch_wake(
     })
 }
 
-/// Wave 9's two methods: the budgeted walk and the check's answer. Both
-/// answer from the chart, so both fail the way every other chart method
-/// fails — the coordinate you named is not in the store — except for a trace
-/// id a review named and the log does not hold.
+/// The tail of the match: Wave 9's budgeted walk and the check's answer, plus
+/// `grid.anchor.carry`. All three answer from the chart, so all three fail the
+/// way every other chart method fails — the coordinate you named is not in the
+/// store — except for a trace id a review named and the log does not hold.
+///
+/// These live here rather than in [`dispatch`] because that function sits on
+/// the function-size ratchet at its recorded 181 lines: a match arm added
+/// there would fail the gate, and splitting the match is what the ratchet is
+/// asking for.
 fn dispatch_query_check(
     method: &str,
     params: &Value,
@@ -388,6 +411,15 @@ fn dispatch_query_check(
                 Err(e) => return Some(Err(e)),
             };
             rpc::query_walk(&params, root)
+                .map(|v| encode(&v))
+                .map_err(|e| chart_error(&e))
+        }
+        "grid.anchor.carry" => {
+            let params = match serde_json::from_value(params.clone()).map_err(bad_params) {
+                Ok(p) => p,
+                Err(e) => return Some(Err(e)),
+            };
+            crate::history::carry(&params, root)
                 .map(|v| encode(&v))
                 .map_err(|e| chart_error(&e))
         }

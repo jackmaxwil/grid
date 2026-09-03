@@ -704,17 +704,52 @@ against each other while scoping the client libraries. None is fixed by
 that plan; each is recorded here because the plan's answers depend on the
 behaviour as it stands.
 
-- **T-59 (P1, S) Two contract methods are not served.** `grid.anchor.carry`
-  and `grid.plan.estimate` are two of the contract's 23 methods and have no
-  arm in `crates/grid/src/serve.rs`, whose dispatch answers 21. Both have
-  generated param and result types and both round-trip their contract
-  example in `crates/wire/tests/conformance.rs`, so the gap is exactly the
-  one C10 is about: a method the daemon claims is not answered over the
-  real socket. `crates/grid/tests/conformance.rs` calls neither, which is
-  why nothing caught it. The SDK plan's step 3 adds the loop that would
-  have — every method in the contract, called with the contract's own
-  example params, asserting no answer is `-32601` — carrying these two in
-  an `UNSERVED` list that only shrinks. Fixing them removes the list.
+- **T-59 (P1, S) Two contract methods are not served.** *Half fixed
+  2026-09-03.* `grid.anchor.carry` and `grid.plan.estimate` were two of the
+  contract's 23 methods with no arm in `crates/grid/src/serve.rs`, whose
+  dispatch answered 21 — exactly the gap C10 is about, and
+  `crates/grid/tests/conformance.rs` called neither, which is why nothing
+  caught it. The SDK plan's step 3 added the loop that does: every method in
+  the contract, called with the contract's own example params, asserting no
+  answer is `-32601`, with the offenders in an `UNSERVED` list that only
+  shrinks.
+
+  `grid.anchor.carry` is now served. It needed no anchor store to mean
+  something — anchors arrive as parameters, owned by whoever made them — so
+  it is `exact` when the chart still holds the anchor's datum, `carried` when
+  the recorded patch DAG reaches a successor it does hold, and `orphaned`
+  otherwise, with the confidence saying which of those grid actually checked.
+  `UNSERVED` is down to one.
+
+- **T-64 (P2, M) `grid.plan.estimate` needs a decision the contract does not
+  make.** The remaining `UNSERVED` entry, and it is not a matter of writing
+  the arm. Its result is `{defs_in_closure, tests_in_reverse_closure,
+  predicted_cache_misses}`, and two of those three are underdetermined:
+
+  - **`tests_in_reverse_closure` asks grid to name tests, and grid does not
+    name tests.** `grid test` takes its inventory from the runner — `cargo
+    nextest list`, `pytest --collect-only` — and `testplan::callsign_of`
+    only maps a runner's id *onto* a callsign. There is no inverse and no
+    is-a-test predicate anywhere in the tree, deliberately: the alternative
+    is a name heuristic, which is the guess this repository refuses to make
+    everywhere else. Either the method takes an inventory parameter (a wire
+    change) or the field means something other than what it says.
+  - **`predicted_cache_misses` has no `env_hash` to key on.** A verdict is
+    cached per environment (`grid_cache::key(datum, kind, env_hash)`) and
+    `PlanEstimateParams` carries `plan` and `base` only, so "would miss"
+    cannot be computed for the environment that will actually run.
+  - `defs_in_closure` is the one that is decidable today, and even it has to
+    choose between the undirected neighbourhood `grid scope` certifies and
+    the transitive identity closure `grid_cache::closure` computes. They are
+    different numbers and the contract's one-line description does not say
+    which.
+
+  Writing an arm that returns plausible numbers for these would be a
+  fabricated answer with a schema around it, which is the one thing the
+  evidence-grade discipline exists to prevent. This is a plan document's
+  worth of decision, not a patch: it wants a contract change (an inventory
+  and an `env_hash` on the params, or narrower field meanings) landed the way
+  every other wire change lands. `UNSERVED` holds the line at one until then.
 
 - **T-60 (P2, S) `grid serve` unlinks the socket path before binding.**
   `serve::main` calls `remove_file` on the path unconditionally
@@ -728,6 +763,11 @@ behaviour as it stands.
   running daemon and never spawns one. The fix that keeps the stale-socket
   recovery is to attempt a connect first and refuse to bind when it
   succeeds; a bind on an abstract or lock-guarded name would also do it.
+  **Fixed 2026-09-03** by the connect-first refusal: a live peer is exit 2
+  with the reason, an unreachable one is the stale file the unlink existed
+  for. The regression test spawns and polls rather than waiting on the
+  child, because with the bug restored a second daemon does not fail — it
+  serves forever, and the test hung instead of failing.
 
 - **T-61 (P3, S) The daemon never sends error `data`.** The contract gives
   six of the eight wire errors a `data` shape — `UnknownSnapshot` carries

@@ -177,12 +177,20 @@ run there, against run 77 (`pull_request`, `8dba626`) green on nine with
 
 One trap that reading exposes, worth more than the endpoint itself. On run 78
 `self-gate` and `title` are **skipped, not passed** — both are `if:
-github.event_name == 'pull_request'`. Across the 30 runs the API returns,
-every completed `pull_request` run has failed and every completed `push` run
-has succeeded, and that pattern measures `self-gate`'s standing failure rather
-than the health of `main`: the job most likely to be red does not execute on a
-push. **A green push run is a weaker claim than a green pull-request run**, and
-the two must not be quoted as if they were the same evidence.
+github.event_name == 'pull_request'`, and a job that did not run is not a job
+that passed. **A green push run is therefore a weaker claim than a green
+pull-request run**, and the two must not be quoted as if they were the same
+evidence.
+
+Count before generalising, and pass a `limit`. The endpoint defaults to about
+thirty records, and thirty was enough to suggest a tidy story — every
+pull-request run failing, every push run succeeding — that 716 records
+contradict. Measured over the whole history: `self-gate` has failed 49
+pull-request runs and **passed 5**, been skipped on 25 pushes and failed on 2;
+and pushes to `main` have gone red in `build-test`, `chart-io-sanitizers`,
+`fault-injection` and `fuzz-build` as well. The standing `self-gate` failure
+(#34) is real and was worth fixing, but "no pull request has ever passed it"
+was an artifact of the page size, not a fact about the repository.
 
 What is genuinely unavailable is **log text**: the API carries no log route at
 all, for a run or a job, which is why `tea actions runs logs` could not help

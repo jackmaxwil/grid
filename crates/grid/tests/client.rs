@@ -25,9 +25,9 @@ use grid_wire::{CallsignPattern, GitRev, Locator, SnapshotOrRev, WalkQuery};
 use serde_json::Value;
 
 /// Contract methods `serve.rs` does not dispatch, so they answer `-32601`
-/// (docs/TODOS.md T-59). A ratchet, not an allowlist: a method listed here
+/// (docs/TODOS.md T-64). A ratchet, not an allowlist: a method listed here
 /// that starts being answered fails this test, so the list only shrinks.
-const UNSERVED: [&str; 2] = ["grid.anchor.carry", "grid.plan.estimate"];
+const UNSERVED: [&str; 1] = ["grid.plan.estimate"];
 
 const METHOD_NOT_FOUND: i32 = -32601;
 
