@@ -48,11 +48,14 @@ mod standing;
 mod suspects;
 mod testplan;
 mod testrun;
+mod usage;
 mod watch;
 mod weak;
 
 use std::io::{BufRead as _, Write as _};
 use std::process::ExitCode;
+
+use usage::{banner, flag_where_a_rev_belongs, help, relation_named, ORPHANS_USAGE, RELATIONS};
 
 /// Exit codes, uniform across verbs (`docs/PORCELAIN.md`).
 mod exit {
@@ -63,7 +66,6 @@ mod exit {
     pub const STALE: u8 = 4;
 }
 
-const PITCH: &str = "what your code promises vs what it does";
 const WIRE_VERSION: &str = "1.1.0";
 const ENGINE_VERSION: &str = concat!("grid ", env!("CARGO_PKG_VERSION"));
 
@@ -74,56 +76,6 @@ fn hint(msg: &str) {
         return;
     }
     let _ = writeln!(std::io::stderr(), "{msg}");
-}
-
-fn banner() {
-    hint(&format!(
-        "grid — {PITCH}\n  grid              what changed, and does it match the promise\n  \
-         grid uses X       who reaches X, across languages and processes\n  \
-         grid explain Y    what any word, symbol, or id in this output means"
-    ));
-}
-
-/// One line per verb — the banner sells three, this lists them all.
-fn help() {
-    hint(
-        "\nverbs:\n  \
-         survey                       chart the worktree; idempotent\n  \
-         diff [base] [head]           what changed, in defs and edges\n  \
-         drift [base] [head]          dependents of changed interfaces; exit 3 on suspects\n  \
-         drift --tests                known tests whose recorded verdict no longer applies\n  \
-         drift --compat               changed Deserialize types old bytes cannot read\n  \
-         covenant <A> <B> --via <w>   declare a coupling no language establishes\n  \
-         invariant persisted <p>      declare that old bytes of a type exist; --list shows the repo's rules\n  \
-         watch [base]                 signed drift deltas, one file event per stdin line\n  \
-         interfere <other-worktree>   what another worktree's edits and yours collide over\n  \
-         resolve <name|file|f:line>   where it is; a bare file lists its defs\n  \
-         uses <name> [--relation r]   proven inbound edges\n  \
-         scope <pattern> [--depth N]  context pack around an edit\n  \
-         scope <p> --bodies N         the same, with the text and its horizon\n  \
-         scope <p> --orient|--edit    the two named depth presets (0/2 and 1/3)\n  \
-         orphans [--under p] [--traced]  no proven caller (not the same as dead); --traced adds trace N\n  \
-         hotspots [--under p]         complexity x churn, descending\n  \
-         roots                        import name -> directory map\n  \
-         log <name>                   a definition's history in identity space\n  \
-         suspects <test> [--closure [<since>]]  likely culprits, ranked; bare --closure uses the last snapshot it passed at\n  \
-         test [base] [--trace|--all]  run what the change can reach; replay the rest; exit 3 on red\n  \
-         gate <plan> [head]           promise vs delta; exit 3 on hold\n  \
-         plan lint <file>             validate a promise file\n  \
-         plan new [--from-diff <b>]   a starter promise file, or one drafted from the diff\n  \
-         todo <plan>                  the promise as a worklist\n  \
-         check [base] [head] [--quick]  everything the change did that nobody checked; exit 3\n  \
-         check --plan <p> [--why]     the same, plus the gate verdict and why it says so\n  \
-         check --format md            the same, as one markdown document for a PR comment\n  \
-         check --compile [-- args]    wrap cargo check; the callers it did not compile; exit 3\n  \
-         cache lookup|record ...      test verdicts keyed by identity closure\n  \
-         edit apply <file>            compare-and-swap edits by datum\n  \
-         trace ingest|diff ...        runtime traces -> observed edges\n  \
-         trace export|import <dir>    retained traces as a directory that travels\n  \
-         explain <anything>           define any word or id in grid output\n  \
-         serve                        the same contract on a socket\n\n\
-         every verb takes --json; hints live on stderr (GRID_HINTS=0)",
-    );
 }
 
 /// `grid roots` — the import-name -> directory map the callsigns are rooted
@@ -168,6 +120,15 @@ fn main() -> ExitCode {
     if let Err(e) = rpc::trace_dir(root()) {
         hint(&format!("grid: {e}"));
         return ExitCode::from(exit::BAD_INPUT);
+    }
+
+    // `--help` anywhere is a request for help, never a name. Parsed as a
+    // positional it became one: `grid survey --help` ran the survey, and
+    // `grid resolve --help` looked up a definition called `--help`.
+    if rest.iter().any(|a| *a == "--help" || *a == "-h") {
+        banner();
+        help();
+        return ExitCode::from(exit::OK);
     }
 
     let code = match rest.split_first() {
@@ -432,7 +393,6 @@ fn cache_args<'a>(args: &'a [&'a str]) -> Option<(&'a str, &'a str, &'a [&'a str
     }
 }
 
-/// `--json` is the wire result verbatim — the same bytes the daemon returns.
 fn emit_json<T: serde::Serialize>(value: &T) -> u8 {
     match serde_json::to_string(value) {
         Ok(s) => {
@@ -472,6 +432,9 @@ fn root() -> &'static std::path::Path {
 /// Idempotent: an unchanged tree produces the same snapshot id, so running it
 /// twice costs a walk and publishes nothing new.
 fn survey(args: &[&str], json: bool) -> u8 {
+    if flag_where_a_rev_belongs(args, "usage: grid survey [<rev>]") {
+        return exit::BAD_INPUT;
+    }
     let params = grid_wire::methods::SurveyRunParams {
         git_rev: args.first().map(|r| grid_wire::GitRev((*r).to_string())),
         worktree: None,
@@ -511,6 +474,9 @@ fn survey(args: &[&str], json: bool) -> u8 {
 /// Defaults to `HEAD` against the working tree's snapshot, which is the
 /// question "what have I changed" and the reason bare `grid` runs it.
 fn diff(args: &[&str], json: bool) -> u8 {
+    if flag_where_a_rev_belongs(args, "usage: grid diff [<base>] [<head>]") {
+        return exit::BAD_INPUT;
+    }
     let rev = |s: &str| grid_wire::SnapshotOrRev::GitRev {
         git_rev: grid_wire::GitRev(s.to_string()),
     };
@@ -1413,7 +1379,7 @@ fn uses(args: &[&str], json: bool) -> u8 {
     while let Some(arg) = it.next() {
         if *arg == "--relation" {
             let Some(want) = it.next().and_then(|w| relation_named(w)) else {
-                hint("usage: grid uses <name> --relation <calls|constructs|reads_field|writes_field|implements|imports>");
+                hint(&format!("usage: grid uses <name> --relation <{RELATIONS}>"));
                 return exit::BAD_INPUT;
             };
             relation = Some(want);
@@ -1694,15 +1660,6 @@ fn bisect_verb(args: &[&str], json: bool) -> u8 {
         }
     }
 }
-
-/// The wire spelling of a relation, for `--relation` arguments. The serde
-/// names are the vocabulary, so the flag cannot drift from the contract.
-fn relation_named(name: &str) -> Option<grid_wire::Relation> {
-    serde_json::from_value(serde_json::Value::String(name.to_owned())).ok()
-}
-
-const ORPHANS_USAGE: &str =
-    "usage: grid orphans [--lang <py|rs|ts|js>] [--under <path>] [--traced]";
 
 /// `grid orphans [--lang <py|rs|ts|js>] [--under <path>] [--traced]` —
 /// definitions with no proven inbound edge. The header states the evidence

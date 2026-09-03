@@ -5,7 +5,8 @@ version: 2.24.0
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
 carries hints and banners (`GRID_HINTS=0` disables); machines read stdout
-only. `--json` emits the wire result verbatim and is not covered by this
+only. `GRID_HINTS=0` silences teaching, never an answer the caller asked
+for: `grid help` and `grid <verb> --help` print whatever the switch says. `--json` emits the wire result verbatim and is not covered by this
 document.
 
 ## Records

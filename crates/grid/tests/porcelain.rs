@@ -1565,8 +1565,22 @@ fn help_lists_every_verb() {
     assert_eq!(code(&out), 0);
     let err = String::from_utf8_lossy(&out.stderr);
     for verb in [
-        "survey", "resolve", "uses", "scope", "orphans", "hotspots", "log", "gate", "plan",
-        "check", "covenant", "cache", "edit", "trace", "roots",
+        "version",
+        "survey [<rev>]",
+        "resolve",
+        "uses",
+        "scope",
+        "orphans",
+        "hotspots",
+        "log",
+        "gate",
+        "plan new",
+        "check",
+        "covenant",
+        "cache",
+        "edit",
+        "trace",
+        "roots",
     ] {
         assert!(err.contains(verb), "`{verb}` missing from help:\n{err}");
     }
@@ -1938,5 +1952,129 @@ fn every_verb_answers_json_with_json() {
         offenders.is_empty(),
         "--json is not the wire result:\n{}",
         offenders.join("\n")
+    );
+}
+
+/// `GRID_HINTS=0` means "do not teach me unasked". It cannot mean "refuse to
+/// answer when I ask": a scripted `grid help` in a hints-off environment
+/// printed nothing at all, exit 0, which reads as a binary with no verbs.
+#[test]
+fn help_answers_even_with_hints_off() {
+    let dir = repo();
+    let out = Command::new(env!("CARGO_BIN_EXE_grid"))
+        .args(["help"])
+        .current_dir(dir.path())
+        .env("GRID_HINTS", "0")
+        .output()
+        .expect("run grid");
+    assert_eq!(out.status.code(), Some(0));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("survey"), "help said nothing:\n{err}");
+    // The banner is a hint — unasked teaching — and stays silenced.
+    let bare = Command::new(env!("CARGO_BIN_EXE_grid"))
+        .current_dir(dir.path())
+        .env("GRID_HINTS", "0")
+        .output()
+        .expect("run grid");
+    assert!(
+        !String::from_utf8_lossy(&bare.stderr).contains("what your code promises"),
+        "the banner is still a hint"
+    );
+}
+
+/// `--help` is a request for help wherever it appears. Parsed as a positional
+/// it becomes a name: `grid survey --help` *ran the survey*, and `grid resolve
+/// --help` looked for a definition called `--help`.
+#[test]
+fn a_help_flag_is_never_a_name() {
+    let dir = repo();
+    for verb in [
+        "survey", "resolve", "uses", "diff", "log", "gate", "explain",
+    ] {
+        let out = grid(dir.path(), &[verb, "--help"]);
+        assert_eq!(code(&out), 0, "grid {verb} --help must answer with help");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("verbs:"),
+            "grid {verb} --help did not print the verb list:\n{err}"
+        );
+        assert!(
+            stdout(&out).is_empty(),
+            "grid {verb} --help wrote records to stdout"
+        );
+    }
+}
+
+/// A verb that takes a revision knows no flags, so an unknown one reached git
+/// as a revision and reported git's error for a grid usage mistake:
+/// `grid survey --nonsense` answered `git: error: unknown option`.
+#[test]
+fn a_flag_where_a_rev_belongs_is_refused_by_grid_not_git() {
+    let dir = repo();
+    for verb in ["survey", "diff"] {
+        let out = grid(dir.path(), &[verb, "--nonsense"]);
+        assert_eq!(code(&out), 2, "grid {verb} --nonsense must be bad input");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("unknown flag") && !err.contains("git:"),
+            "grid {verb} --nonsense blamed git:\n{err}"
+        );
+    }
+}
+
+/// A word the usage line offers is a word the binary accepts. `--relation
+/// imports` was advertised by `grid uses`'s own usage line and rejected with
+/// exit 2; five of the twelve relations the chart has were never offered.
+///
+/// The test reads the offer out of the binary and feeds each word back, so
+/// the usage line cannot drift from the contract in either direction.
+#[test]
+fn every_relation_the_usage_offers_is_one_uses_accepts() {
+    let dir = repo_with_a_call();
+    assert_eq!(code(&grid(dir.path(), &["survey"])), 0);
+    let usage = String::from_utf8_lossy(
+        &grid(
+            dir.path(),
+            &["uses", "extra", "--relation", "nosuchrelation"],
+        )
+        .stderr,
+    )
+    .into_owned();
+    let offered: Vec<String> = usage
+        .rsplit_once('<')
+        .and_then(|(_, tail)| tail.split_once('>'))
+        .map(|(inner, _)| inner.split('|').map(str::to_owned).collect())
+        .unwrap_or_default();
+    assert!(offered.len() > 1, "no relation offer in usage:\n{usage}");
+    let mut rejected = Vec::new();
+    for word in &offered {
+        let out = grid(dir.path(), &["uses", "extra", "--relation", word]);
+        if code(&out) != 0 {
+            rejected.push(word.clone());
+        }
+    }
+    assert!(
+        rejected.is_empty(),
+        "`grid uses` offers relations it rejects: {}\nusage:\n{usage}",
+        rejected.join(", ")
+    );
+    // And the offer is the whole contract, not a subset of it: every relation
+    // the wire defines is a word a caller can filter on.
+    let contract = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/wire-v1.openrpc.json"
+    ))
+    .expect("read contract");
+    let spec: serde_json::Value = serde_json::from_str(&contract).expect("parse contract");
+    let all: Vec<String> = spec["components"]["schemas"]["Relation"]["enum"]
+        .as_array()
+        .expect("Relation enum")
+        .iter()
+        .map(|v| v.as_str().expect("a string").to_owned())
+        .collect();
+    let missing: Vec<&String> = all.iter().filter(|r| !offered.contains(r)).collect();
+    assert!(
+        missing.is_empty(),
+        "relations the chart has and the usage never offers: {missing:?}"
     );
 }
