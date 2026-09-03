@@ -71,6 +71,10 @@ rows are `| \`token\` | one answer, at most three lines when printed |`.
 |---|---|
 | `pass` | the gate verdict when the code made every promise good: plan and diff agree. Exit 0. |
 | `hold` | the gate verdict when code diverges from its promise. Correct the code or amend the plan, then re-run the gate. Exit 3. |
+| `root` | record: one import name and the directory it roots (`grid roots`). The map every callsign is measured against, read from manifests rather than the chart, so it answers before the first survey has run. |
+| `hot` | record: one ranked hotspot — callsign, `cx N`, `edits M`, `file:line` (`grid hotspots`). Complexity times churn, descending: where this repository has been rewritten most, at its branchiest. A ranking, never a gate. |
+| `hop` | record: one step of a walk — relation, target, evidence. Where an `edge` record is one edge as the chart holds it, a `hop` is one edge as a walk traversed it, so its evidence is the grade that walk was willing to cross. |
+| `fork` | record: where two retained traces of one test parted — the caller, the callee the passing trace reached (`-` when it had no hop there), and the callee the failing one reached instead (`grid trace diff`). |
 | `def` | record: a definition. First column is a glyph — `+` added, `-` removed, `~` modified, `>` moved. |
 | `ref` | record: a definition that exists (a resolve or scope answer), as opposed to one that changed. Callsign, then datum prefix. |
 | `edge` | record: one edge. Change glyph or verdict role first, then `src -relation-> dst`, then evidence. |
@@ -81,6 +85,8 @@ rows are `| \`token\` | one answer, at most three lines when printed |`.
 | `verdict-stale` | a recorded test verdict that no longer applies: the test's closure key, recomputed now, is not one the cache holds. Identity math, not a guess, so it gates. Reported as `miss <test> closure-changed`. |
 | `selection` | the inbound walk `grid test` runs from every definition whose datum moved, over every grade plus the retained traces' observed edges, that decides — per test — `selected` or `replayed`. Deterministic for a given pair of snapshots; adding a trace never adds a selection. |
 | `selected` | a test `grid test` must run: the inbound walk from the changed set reached its definition (`closure-changed`), no live trace watched it (`no-trace`), a changed definition is one no trace has ever listed (`unwatched`), the chart cannot name it (`unresolved`), the walk ran aground (`aground`), or nothing is on record to replay (`not-recorded`). Every reason is a refusal to skip. |
+| `not-recorded` | why a test is `selected` when nothing else forced it: no verdict for its closure key, in this environment, is on record to replay. The absence of a cached answer, never a failing one — a first run, a new test, or a cache the environment moved out from under. |
+| `unattributed` | a recorded verdict that names no test: neither a trace id nor a `test:<callsign>` namespace came with it, so nothing says what produced it. Counted and reported as its own population, never attributed by guess and never folded into a test that happens to be nearby. |
 | `replay` | reusing a recorded verdict from the cache instead of rerunning a test — what a `replayed` test gets. Licensed only by a live trace over an unmoved closure, and only while every changed definition is one some retained trace lists; `--no-replay` (or `--all`) runs the inventory instead. |
 | `replayed` | a test `grid test` did not run: its closure key at head, in this environment, is one the cache holds, a live trace watched its reach, and every changed definition is one some trace has listed — so this trace's silence about the change is evidence. Printed as a `hit` with the recorded verdict and time. |
 | `no-trace` | why a test is selected regardless of the walk: no retained trace still describes code base holds. The chart is known incomplete, so the static closure alone never licenses a skip. |

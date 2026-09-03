@@ -2078,3 +2078,55 @@ fn every_relation_the_usage_offers_is_one_uses_accepts() {
         "relations the chart has and the usage never offers: {missing:?}"
     );
 }
+
+/// Every record tag the grammar declares is a word `grid explain` answers.
+///
+/// `grid explain` is the one thing a caller staring at an unfamiliar record
+/// has, and four of PORCELAIN's own tags — `root`, `hot`, `hop`, `fork` — had
+/// no answer, along with `not-recorded` and `unattributed`, the two words you
+/// meet exactly when you are stuck.
+///
+/// Conservatism: the tags come out of PORCELAIN.md's own table rather than a
+/// list here, so a record added to the grammar without a vocabulary row fails
+/// this test instead of a reader.
+#[test]
+fn every_record_tag_is_a_word_explain_answers() {
+    let grammar = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/PORCELAIN.md"
+    ))
+    .expect("read PORCELAIN.md");
+    // The record table's rows are ``| `tag` | columns |``; a tag cell may hold
+    // two spellings (``` `done` / `todo` ```) and a parenthetical scope.
+    let tags: Vec<String> = grammar
+        .lines()
+        .filter(|l| l.starts_with("| `"))
+        .filter_map(|l| l.split('|').nth(1))
+        .flat_map(|cell| {
+            cell.split('/')
+                .filter_map(|t| t.trim().split(' ').next())
+                .filter_map(|t| t.trim().strip_prefix('`')?.strip_suffix('`'))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(tags.len() > 15, "no record tags parsed out of PORCELAIN.md");
+    let dir = repo();
+    let mut unanswered: Vec<String> = Vec::new();
+    // Plus the two words a caller meets when a verb refuses to skip work.
+    for tag in tags
+        .iter()
+        .map(String::as_str)
+        .chain(["not-recorded", "unattributed"])
+    {
+        if code(&grid(dir.path(), &["explain", tag])) != 0 {
+            unanswered.push(tag.to_owned());
+        }
+    }
+    unanswered.dedup();
+    assert!(
+        unanswered.is_empty(),
+        "the grammar emits words `grid explain` cannot define: {}",
+        unanswered.join(", ")
+    );
+}
