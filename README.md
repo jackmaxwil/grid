@@ -10,9 +10,11 @@ drift, test selection, gates, attribution and context packs run over that
 chart in identity space, not text space, and every answer states its
 horizon and its refusals.
 
-Languages: Rust and Python. TS/JS next. One static binary; no daemon
-required, no build integration, no config beyond two optional declaration
-files. Discovery is `git ls-files` minus your ignore rules.
+Languages: Rust and Python. TS/JS next. One static binary; no build
+integration and no config beyond two optional declaration files. Discovery
+is `git ls-files` minus your ignore rules. The CLI answers in-process and
+needs no daemon; a daemon exists for programs, and two clients speak to it
+over the same contract the CLI prints.
 
 ## Three verbs and one hook
 
@@ -92,20 +94,85 @@ Everything else — `diff`, `uses`, `resolve`, `orphans`, `hotspots`, `log`,
 `watch`, `trace diff`, `edit apply`, `serve` — is behind those; `grid
 help` lists every verb, `grid explain` defines every word.
 
+## Speaking to it from a program
+
+`grid serve` is the daemon: a unix socket, newline-framed JSON-RPC 2.0,
+one line in and one line out, 23 methods (`docs/wire-v1.openrpc.json`).
+Two clients ship with it, and neither is hand-written where it can be
+generated — both type layers come out of `scripts/gen-wire.py` reading the
+same contract, so they cannot disagree about a shape or a method name.
+
+```rust
+// Rust: crates/client — grid-wire, serde, std. Nothing else.
+use grid_client::Client;
+use grid_wire::methods::ResolveParams;
+use grid_wire::{Callsign, Locator};
+
+let mut grid = Client::connect(".grid/grid.sock")?;
+let defs = grid.call(&ResolveParams {
+    locator: Locator::Callsign { callsign: Callsign("grid_chart.Segment.parse".into()) },
+    snapshot: None,
+})?;
+```
+
+```python
+# Python: clients/python — json and socket. Nothing else, and no lockfile.
+from grid_client import Client
+with Client.connect(".grid/grid.sock") as grid:
+    defs = grid.resolve(locator={"callsign": "grid_chart.Segment.parse"})
+```
+
+What both clients guarantee, and what they refuse to paper over:
+
+- **One connection, one call in flight, matched by id.** A response whose
+  id is not the outstanding one is a fault, never handed back as the
+  answer to the call that was waiting. Pipelining is what the transport
+  allows and neither client exposes: against a serial daemon on a local
+  socket it buys round trips and costs a correlation path nothing
+  exercises.
+- **Adopt, never spawn.** `connect` requires a daemon already running.
+  `grid serve` unlinks its socket path before binding, so a client that
+  started one would silently steal a live daemon's socket; lifecycle is
+  the caller's (`docs/TODOS.md` T-60).
+- **The handshake is first.** `connect` asks `grid.version` before
+  anything else and refuses a different wire major. Majors are compared
+  as integers off the front of the string — there is no semver type,
+  because a dependency for that is a dependency.
+- **Faults are typed and they poison.** Truncated line, foreign id, a
+  body carrying both `result` and `error`, a bad `jsonrpc`, non-UTF-8:
+  each is its own variant, and after any of them the connection is closed
+  to further calls rather than left desynced. A fresh connection is the
+  recovery, and it is equivalent — the daemon holds no per-connection
+  state.
+- **An unknown error code stays decodable.** The eight wire codes decode
+  to a named variant; a ninth, or any JSON-RPC code, arrives with the
+  integer intact and no name. Nothing turns a code into an enum by a
+  match that could panic.
+- **Fuel exhaustion is a result, not an error.** A walk that ran out of
+  fuel returns `aground` with its frontier and the radius it finished.
+  Resuming is a new walk from that frontier; neither client hides that
+  behind a helper.
+- **No cache, no reconnect, no retry.** Three methods write. A silent
+  re-issue is a second write, so both clients make the caller decide.
+
+The Python package declares `dependencies = []` and has no lockfile, and
+`check_manifests.py` fails the gate on the first line that changes either.
+
 ## What grid will not pretend
 
 - **An edge exists only where the language's own binding rules establish
   it.** Glob imports, macro bodies, and method calls on receivers whose
   type is not written down are omissions, never guesses — and every
-  omission is counted: `miss 12574 references declined (external 4303,
-  method 7599 of which 64 refused, internal 672)` closes a survey of this
-  repo — a prelude name or a Python builtin left unbound is `external`,
-  never a hole. A method call on a receiver whose type the file states
-  resolves by rustc's own lookup order: proven where the written form
-  matches the inherent method's at the first step, modeled where the type
-  was inferred or matched later, refused with a reason where a trait
-  could outrank it. Seventy percent of Rust method calls have no
-  syntactic type; `cargo check` and traces cover them, not the resolver.
+  omission is counted: `miss 17924 references declined (external 5033,
+  method 8958 of which 64 refused, internal 743, macro 3190)` closes a
+  survey of this repo — a prelude name or a Python builtin left unbound
+  is `external`, never a hole. A method call on a receiver whose type the
+  file states resolves by rustc's own lookup order: proven where the
+  written form matches the inherent method's at the first step, modeled
+  where the type was inferred or matched later, refused with a reason
+  where a trait could outrank it. Seventy percent of Rust method calls
+  have no syntactic type; `cargo check` and traces cover them, not the
+  resolver.
 - **Evidence grades are load-bearing.** `proven > observed > modeled >
   heuristic`. Proven and observed gate (exit 3); modeled gates only under
   a declaration; heuristic ranks and never moves the exit.
@@ -133,6 +200,11 @@ internal, `2` bad input, `3` divergence, `4` stale coordinate. A name
 that resolves to nothing is exit 2 with the closest callsigns on stderr —
 silence is never an answer. `scope --bodies` and `explain` are the two
 text-mode verbs; their `--json` is the record form.
+
+`--json` is also the equivalence the clients are tested against: a typed
+client call returns what the CLI prints for the same question, asserted
+over the real socket rather than in-process (`crates/grid/tests/client.rs`,
+claim C53).
 
 ## Coverage closes the loop, with no tracer
 
@@ -216,20 +288,20 @@ bug. The deep edit's wall time is mostly `cargo` rebuilding what depends on
 the crate; selection saves the running, never the building. On a suite of
 slow, independent tests the ratio is the selection ratio; here it is not.
 
-## Numbers (2026-09-02, Apple M4 Max, release, this repo: 1884 defs / 3602 edges, store warm, min of 5)
+## Numbers (2026-09-03, Apple M4 Max, release, this repo: 2223 defs / 4503 edges, store warm)
 
 | verb | measured |
 |---|---|
-| `grid survey` (worktree) | ~96ms (the dirty-diff hash rides the survey's own git thread) |
+| `grid survey` (worktree) | 120ms (the dirty-diff hash rides the survey's own git thread) |
 | `grid survey <rev>` | 130ms here; 240ms on a 4312-def repo (was 5.4s: one git process, not one per file) |
-| `grid check --quick` | ~117ms, ~96ms of it the worktree survey a hook must re-run |
+| `grid check --quick` | ~117ms, most of it the worktree survey a hook must re-run |
 | `grid check` | ~125ms with the base already retained |
 | `grid.test.plan` | 4–5ms warm; the run is the runner's |
 | `grid scope --bodies`, 3 hops | ~20ms |
 | `grid suspects --closure` | ~4ms by snapshot id |
 | `grid interfere`, both stores warm | ~83ms |
-| `grid test`, nothing changed, 541 tests | 0.8s against 24.4s for the inventory |
-| `just traces` (one traced run per test) | 22m 16s, 538 traces retained |
+| `grid.version` over the socket, raw | 2.371ms (mean of 200, warm connection) |
+| `grid.version` through the Python client | 2.377ms (mean of 200) — the client costs 6µs; the framing is the price |
 
 The declined split after the method-calls plan (`docs/plans/2026-09-01-
 method-calls.md`), same tree, previous binary against this one:
@@ -253,6 +325,13 @@ justifies line by line.
 ```bash
 cargo build --release
 cargo install --path crates/grid      # or copy target/release/grid onto PATH
+```
+
+The Python client is not on an index and does not need to be — it is a
+directory with no dependencies:
+
+```bash
+PYTHONPATH=clients/python python3 -c 'from grid_client import Client'
 ```
 
 Per-repo state lives in `.grid/`: the content-addressed segment store, the
@@ -281,11 +360,13 @@ carries the invariant that the gate regenerated nothing into a split run.
 `just guardrails` on its own runs the checks under `scripts/guardrails/` —
 manifest and crate-boundary law, source-shape ceilings, blob size, commit
 style, `cargo deny check`, `scripts/check-assurance-links.sh`,
-`scripts/check-unsafe-confined.sh`, and the proof that `crates/wire` is still
-byte-identical to what `scripts/gen-wire.py` writes from the contract.
-`codespell`, `cargo-deny`, `cargo-machete` and `cargo-nextest` are used when
-they are on `PATH` and announced when they are not; none of them is a
-dependency, and none of them absent makes the gate red.
+`scripts/check-unsafe-confined.sh`, and the proof that every generated file
+is still byte-identical to what `scripts/gen-wire.py` writes from the
+contract — `crates/wire/src` and the Python client's type layer alike, so a
+contract edit cannot ship having regenerated only one language.
+`codespell`, `cargo-deny`, `cargo-machete`, `cargo-nextest` and `mypy` are
+used when they are on `PATH` and announced when they are not; none of them
+is a dependency, and none of them absent makes the gate red.
 
 `just hooks` points git at `.githooks/`: the subject rule on the message being
 written, `just precommit` (the build-free subset) on commit, the whole gate on
@@ -297,7 +378,7 @@ assurance lane. `docs/TOOLING.md` says where each mechanism came from.
 
 ## Architecture
 
-Twelve crates, one direction, no cycles.
+Thirteen crates, one direction, no cycles.
 
 | crate | owns |
 |---|---|
@@ -305,15 +386,22 @@ Twelve crates, one direction, no cycles.
 | `grid-datum` | identity vocabulary: datum, sig, shape, definition, references — parser-free |
 | `grid-lang-py` / `grid-lang-rs` | frontends: parse → normalize → extract (rustpython / syn) |
 | `grid-survey` | tree → definitions + proven edges; roots, re-exports, per-language resolvers, the declined split |
-| `grid-chart` | the segment (a validated, mmap-able CSR image; epoch 4), the membership image, the diff |
+| `grid-chart` | the segment (a validated, mmap-able CSR image; epoch 5), the membership image, the diff |
 | `grid-chart-io` | the store: atomic publish, crash-safe by kill-9 soak, content-addressed, superseded-epoch recovery |
 | `grid-cache` | verdicts keyed by identity closure; budgets rejected, never truncated |
 | `grid-trace` | coverage and runtime traces → observed edges; decay grading |
 | `grid-walk` | budgeted multi-hop walks with a completeness certificate |
 | `grid-gate` | plan vs diff: the gate verdict, `interface` promises |
+| `grid-client` | the socket client: one connection, typed calls over `Method`, faults typed and poisoning |
 | `grid` | CLI + daemon; the only composition root |
 
-Load-bearing invariants (`docs/ASSURANCE.md`, claims C1–C43):
+`grid-client` depends on `grid-wire` and nothing else in the workspace, so
+the schema wall stays the only surface a client shares with the engine.
+The Python client sits outside `crates/` at `clients/python/`, which keeps
+the naming law (`crates/x` is `grid-x`) true by construction: `crates/`
+holds Rust and only Rust.
+
+Load-bearing invariants (`docs/ASSURANCE.md`, claims C1–C54):
 
 - **Determinism.** Same tree → byte-identical segments → same snapshot
   id, any machine, any order. Incremental ≡ full, tested against the
@@ -324,10 +412,13 @@ Load-bearing invariants (`docs/ASSURANCE.md`, claims C1–C43):
   Normalization changes are declared epoch bumps, never silent re-hashes.
 - **Honesty.** An edge exists only where the language's binding rules
   establish it; everything declined is counted and reported.
-- **Formats.** Segment epoch 4 is current; every earlier epoch parses
+- **Formats.** Segment epoch 5 is current; every earlier epoch parses
   forever, pinned by a committed fixture, answering columns it lacks with
   *unknown*. Wire epoch 1 (`docs/wire-v1.openrpc.json`), additive-only
   within an epoch. Porcelain is semver.
+- **Generation.** Every serialized shape, in every language grid ships, is
+  written by one script from one contract, and the gate refuses a tree
+  where any of them is stale.
 
 ## Documents
 
@@ -364,8 +455,10 @@ requests with `tea`, the Gitea CLI, as described in yi's `docs/FORGE.md` under
 - `#![forbid(unsafe_code)]` everywhere except the one audited mmap block;
   clippy pedantic at deny; no `unwrap` outside tests; index math guarded.
 - Schema changes: wire additive-only inside an epoch; segment format
-  changes are declared epoch bumps with a forever-parsed fixture.
+  changes are declared epoch bumps with a forever-parsed fixture. Never
+  hand-edit a generated file — edit `docs/wire-v1.openrpc.json` and run
+  `just wire`, which writes both languages.
 - Deviations from a plan are allowed and recorded, one line each with the
   reason, in the commit that made them.
-- Commit messages: imperative subject, body says why and states the
-  measured numbers, gates green first.
+- Commit messages: conventional subject (`type(scope): sentence`), body
+  says why and states the measured numbers, gates green first.
