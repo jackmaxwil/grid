@@ -1650,12 +1650,7 @@ fn bisect_verb(args: &[&str], json: bool) -> u8 {
             if json {
                 return emit_json(&result);
             }
-            if let Some(culprit) = &result.culprit {
-                println!(
-                    "culprit  {}  steps {}  cache_hits {}",
-                    culprit.0, result.steps, result.cache_hits
-                );
-            }
+            print!("{}", porcelain::bisect(&result));
             exit::OK
         }
     }

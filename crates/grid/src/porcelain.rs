@@ -15,7 +15,7 @@ use grid_wire::{
 };
 
 /// The porcelain grammar version this renderer implements.
-pub const VERSION: &str = "2.24.0";
+pub const VERSION: &str = "2.25.0";
 
 /// One record: a tag and its columns. Rendering is the same for every record
 /// type, which is what makes the grammar a grammar.
@@ -56,21 +56,9 @@ const fn def_glyph(action: DefChangeAction) -> &'static str {
     }
 }
 
-/// An edge arrow in callsign space.
-///
-/// Callsigns are the default identity (PORCELAIN.md display policy), so an
-/// arrow prints names whenever the chart can supply them. A datum the chart
-/// cannot name falls back to `@<prefix>`, which is still a coordinate a user
-/// can paste back in — never a bare 64-hex digest, which is neither readable
-/// nor typeable.
+/// The arrow for the edge inside a change.
 fn edge_arrow(change: &EdgeChange, name: &NameOf) -> String {
-    let show = |d: &grid_wire::Datum| name(d).unwrap_or_else(|| format!("@{}", short(d)));
-    format!(
-        "{} -{}-> {}",
-        show(&change.edge.src),
-        relation_name(change.edge.relation),
-        show(&change.edge.dst)
-    )
+    chart_edge_arrow(&change.edge, name)
 }
 
 /// How the renderer asks the chart what a datum is called. `None` means the
@@ -985,8 +973,11 @@ pub fn test_run(run: &grid_wire::TestRun) -> String {
     out
 }
 
-/// An edge arrow for a chart edge (not a change): same shape as
-/// `edge_arrow`, but nothing was added or removed — the edge *is*.
+/// The arrow every edge is printed as, changed or not.
+///
+/// Callsigns are the default identity (PORCELAIN.md display policy). A datum
+/// the chart cannot name falls back to `@<prefix>`, still a coordinate a user
+/// can paste back in — never a bare 64-hex digest, which is neither.
 #[must_use]
 pub fn chart_edge_arrow(edge: &grid_wire::Edge, name: &NameOf) -> String {
     let show = |d: &grid_wire::Datum| name(d).unwrap_or_else(|| format!("@{}", short(d)));
@@ -1313,5 +1304,20 @@ pub fn trace_diff(diff: &grid_wire::TraceDiff) -> String {
     for e in &diff.added {
         record(&mut out, "edge", &["+", &arrow(e), grade_name(e.grade)]);
     }
+    out
+}
+
+/// `hit` then `done` for a bisect: the culprit, then the search that found it.
+/// The tag is `grid suspects`'s, because the two verbs answer one question —
+/// which change broke this test — from different evidence.
+#[must_use]
+pub fn bisect(result: &grid_wire::BisectResult) -> String {
+    let mut out = String::new();
+    if let Some(culprit) = &result.culprit {
+        record(&mut out, "hit", &[&culprit.0, "culprit"]);
+    }
+    let steps = format!("steps {}", result.steps);
+    let hits = format!("cache_hits {}", result.cache_hits);
+    record(&mut out, "done", &[&steps, &hits]);
     out
 }

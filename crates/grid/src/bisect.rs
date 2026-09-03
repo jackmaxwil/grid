@@ -1,9 +1,10 @@
 //! `grid.bisect` — cache-assisted search over retained patch history.
 //!
-//! Grid currently retains snapshots, not an ordered patch DAG with test
-//! outcomes. The wire method therefore fails closed until that history exists;
-//! the pure search below is the algorithm used once a trustworthy chain is
-//! available and is exercised with seeded history.
+//! The two logs the chain is read from are live: `edit apply` appends the
+//! patch edges and `cache record` appends a verdict against a datum whenever
+//! a retained trace names the test. A repository that has run neither has no
+//! chain, and the search fails closed on it — that refusal is the empty case,
+//! not the verb.
 
 use std::path::Path;
 

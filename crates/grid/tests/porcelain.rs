@@ -1584,14 +1584,10 @@ fn help_lists_every_verb() {
     ] {
         assert!(err.contains(verb), "`{verb}` missing from help:\n{err}");
     }
-    // `bisect` always refuses until retained history exists, and a verb that
-    // can only refuse is worse than an absent one: it answers, unlisted.
-    assert!(!err.contains("bisect"), "bisect is listed:\n{err}");
-    assert_eq!(
-        code(&grid(dir.path(), &["bisect"])),
-        2,
-        "bisect still answers"
-    );
+    // `bisect` was unlisted while it could only refuse. It answers over the
+    // retained chain now, and a verb that answers and is not offered is the
+    // same defect as one offered that cannot.
+    assert!(err.contains("bisect"), "bisect is not listed:\n{err}");
 }
 
 #[test]
@@ -2129,4 +2125,101 @@ fn every_record_tag_is_a_word_explain_answers() {
         "the grammar emits words `grid explain` cannot define: {}",
         unanswered.join(", ")
     );
+}
+
+/// A plan id and a plan filename are the same plan. `grid plan new x.json`
+/// wrote `.grid/plans/x.json.json`, so the record's two columns named
+/// different things and `grid plan lint x.json` refused what `plan new` had
+/// just written.
+#[test]
+fn a_plan_named_with_its_extension_is_the_plan_it_wrote() {
+    let dir = repo();
+    let out = grid(dir.path(), &["plan", "new", "x.json"]);
+    assert_eq!(code(&out), 0);
+    let record = stdout(&out);
+    let c = columns(record.lines().next().expect("a record"));
+    assert_eq!(c[0], "todo");
+    assert!(
+        c[2].ends_with(&format!("{}.json", c[1].trim_start_matches("plan:"))),
+        "the record's columns name different plans: {record}"
+    );
+    assert!(
+        !c[2].contains(".json.json"),
+        "the extension was applied twice: {record}"
+    );
+    assert!(
+        dir.path().join(c[2]).is_file(),
+        "the record names a file that is not there: {record}"
+    );
+    // And the name it printed is a name the next verb in the loop accepts.
+    for spec in ["x.json", "x", "plan:x"] {
+        assert_eq!(
+            code(&grid(dir.path(), &["plan", "lint", spec])),
+            0,
+            "`grid plan lint {spec}` refuses the plan `grid plan new x.json` wrote"
+        );
+    }
+}
+
+/// Seed the retained patch log and the datum-outcome log `grid bisect`
+/// searches: an ordered chain whose verdicts turn from pass to fail at the
+/// third datum. This is the shape `grid edit apply` and `grid cache record
+/// --trace` write between them.
+fn seed_patch_history(dir: &Path, test: &str) -> String {
+    let datum = |n: u8| format!("b3:{n:064x}");
+    let jsonl = |rows: Vec<serde_json::Value>| {
+        rows.iter()
+            .map(|r| serde_json::to_string(r).expect("json"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    };
+    let log = jsonl(
+        (0..4)
+            .map(|n| json!({ "from": datum(n), "to": datum(n + 1) }))
+            .collect(),
+    );
+    let outcomes = jsonl(
+        (0..5)
+            .map(|n| json!({ "datum": datum(n), "test": test, "fails": n >= 3 }))
+            .collect(),
+    );
+    std::fs::create_dir_all(dir.join(".grid")).expect("mkdir");
+    std::fs::write(dir.join(".grid/log"), log).expect("write log");
+    std::fs::write(dir.join(".grid/outcomes"), outcomes).expect("write outcomes");
+    datum(3)
+}
+
+/// `grid bisect` answers in the grammar PORCELAIN declares for it: one `hit`
+/// for the culprit, then a `done` carrying the measured `steps` and
+/// `cache_hits`. It emitted a bare `culprit` line instead — a record tag the
+/// grammar does not define, which no consumer of `grid suspects` output could
+/// read even though the two verbs answer the same question.
+#[test]
+fn bisect_answers_in_the_grammar_it_declares() {
+    let dir = repo();
+    let culprit = seed_patch_history(dir.path(), "t");
+    let out = grid(dir.path(), &["bisect", "t"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = stdout(&out);
+    let mut lines = text.lines();
+    let hit = columns(lines.next().expect("a hit record"));
+    assert_eq!(hit[0], "hit");
+    assert_eq!(hit[1], culprit);
+    let done = lines.next().expect("a done record");
+    assert_eq!(columns(done)[0], "done");
+    assert!(
+        done.contains("steps ") && done.contains("cache_hits "),
+        "the done record carries no measured search: {text}"
+    );
+    // An empty history is still bad input with no stdout, not an empty success.
+    let bare = repo();
+    let refused = grid(bare.path(), &["bisect", "t"]);
+    assert_eq!(code(&refused), 2);
+    assert!(stdout(&refused).is_empty());
 }

@@ -43,9 +43,17 @@ fn parse(path: &Path) -> Result<Plan, String> {
     serde_json::from_str(&text).map_err(|e| format!("{} is not a valid plan: {e}", path.display()))
 }
 
-fn store_path(spec: &str) -> PathBuf {
+/// The plan id a spec names. `plan:x`, `x` and `x.json` are three spellings
+/// of one plan: the store adds the extension itself, so a spec that already
+/// carries it wrote `x.json.json` and made the `todo` record's two columns
+/// name different things.
+fn plan_ident(spec: &str) -> &str {
     let id = spec.strip_prefix("plan:").unwrap_or(spec);
-    Path::new(STORE).join(format!("{id}.json"))
+    id.strip_suffix(".json").unwrap_or(id)
+}
+
+fn store_path(spec: &str) -> PathBuf {
+    Path::new(STORE).join(format!("{}.json", plan_ident(spec)))
 }
 
 /// `grid plan new|show|lint`.
@@ -274,11 +282,7 @@ fn starter(id: Option<&str>, json: bool) -> u8 {
         hint(NEW_USAGE);
         return exit::BAD_INPUT;
     };
-    let plan_id = if id.starts_with("plan:") {
-        id.to_owned()
-    } else {
-        format!("plan:{id}")
-    };
+    let plan_id = format!("plan:{}", plan_ident(id));
     let path = store_path(&plan_id);
     if path.exists() {
         hint(&format!(

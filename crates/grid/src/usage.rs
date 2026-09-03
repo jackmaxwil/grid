@@ -47,6 +47,7 @@ pub fn help() {
          hotspots [--under p]         complexity x churn, descending\n  \
          roots                        import name -> directory map\n  \
          log <name>                   a definition's history in identity space\n  \
+         bisect <test>                the patch the retained chain first recorded it failing at\n  \
          suspects <test> [--closure [<since>]]  likely culprits, ranked; bare --closure uses the last snapshot it passed at\n  \
          test [base] [--trace|--all]  run what the change can reach; replay the rest; exit 3 on red\n  \
          gate <plan> [head]           promise vs delta; exit 3 on hold\n  \
