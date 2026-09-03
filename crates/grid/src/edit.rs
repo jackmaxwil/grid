@@ -262,7 +262,7 @@ fn plan<'a>(params: &'a EditApplyParams, defs: &[Located], root: &Path) -> Resul
         // No base: a creation. The target is a repo-relative path that
         // must not exist — not as a file, not as a definition.
         let path = &spec.target;
-        if path.starts_with('/') || path.split('/').any(|seg| seg == "..") {
+        if path.starts_with('/') || path.split('/').any(|seg| seg == "..") || escapes(root, path) {
             return Err(Error::BadPath(path.clone()));
         }
         if root.join(path).exists() || resolve(path, defs).is_ok() {
@@ -271,6 +271,35 @@ fn plan<'a>(params: &'a EditApplyParams, defs: &[Located], root: &Path) -> Resul
         plan.creations.push((spec, path.clone(), order));
     }
     Ok(plan)
+}
+
+/// True when `path`, resolved through symlinks, would land outside `root`.
+///
+/// The lexical check above sees a leading `/` and a `..` segment; it cannot
+/// see a symlink. `link/x.rs`, where `link` points at another directory, is
+/// neither absolute nor climbing, and writing it leaves the repository — and
+/// through `grid serve` that is a write primitive outside the tree for any
+/// local socket client.
+///
+/// A creation's own file does not exist yet, so the deepest ancestor that
+/// does exist is the one that can be canonicalized: if that ancestor is
+/// outside the repository, everything under it is too. A root that cannot be
+/// canonicalized, or a path with no existing ancestor at all, is refused
+/// rather than guessed at.
+fn escapes(root: &Path, path: &str) -> bool {
+    let Ok(root) = root.canonicalize() else {
+        return true;
+    };
+    let mut candidate = root.join(path);
+    loop {
+        if let Ok(real) = candidate.canonicalize() {
+            return !real.starts_with(&root);
+        }
+        match candidate.parent() {
+            Some(parent) if parent != candidate => candidate = parent.to_path_buf(),
+            _ => return true,
+        }
+    }
 }
 
 /// Phases 2 and 3 — build every post-image in memory, prove it parses, then

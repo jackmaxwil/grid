@@ -22,7 +22,7 @@ Claim → evidence, maintained from Wave 0. CI fails on a dangling claim
 
 | C13 | an incremental survey and a full one produce the same segment bytes | determinism.rs corpus.rs | 5 |
 | C14 | every recorded edge is one the language's own binding rules establish; an unresolvable or ambiguous name yields no edge | refs.rs determinism.rs | 5 |
-| C15 | an edit addressed at a stale coordinate conflicts and writes nothing; it never lands against moved code | edit_apply.rs | 6 |
+| C15 | an edit addressed at a stale coordinate conflicts and writes nothing; it never lands against moved code, and it never writes outside the repository — a creation path is refused unless its deepest existing ancestor canonicalizes inside the tree, so a symlinked directory component escapes no more than `..` or a leading `/` does | edit_apply.rs | 7 |
 
 | C16 | an observed edge exists only where both endpoints resolve; every endpoint that does not resolve is returned, never dropped | ingest.rs | 8 |
 | C17 | two traces fork at the first hop where their call order parts, and each trace's exclusive edges are itemized | diff.rs | 8 |

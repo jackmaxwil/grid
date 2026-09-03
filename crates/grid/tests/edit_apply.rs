@@ -352,3 +352,32 @@ fn an_escaping_path_is_refused() {
         .join("escape.py")
         .exists());
 }
+
+/// Conservatism (C15's containment half): the repo-relative check is about
+/// where the bytes land, not about how the path is spelled. `..` and a leading
+/// `/` are refused lexically, but a directory component that is a symlink has
+/// neither and still leaves the tree — and through `grid serve` that would be
+/// a write primitive outside the repository for any local socket client.
+#[test]
+fn a_creation_through_a_symlinked_directory_is_refused() {
+    let dir = repo();
+    let outside = tempfile::tempdir().expect("tempdir");
+    let target = outside.path().join("escaped.py");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).expect("symlink");
+
+    let request = edit_request("link/escaped.py", None, "def escaped():\n    return 3\n");
+    let out = grid(dir.path(), &["edit", "apply", "-"], &request);
+
+    assert_eq!(
+        code(&out),
+        2,
+        "a path that leaves the tree is bad input; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !target.exists(),
+        "grid wrote {} — outside the repository, through a symlink",
+        target.display()
+    );
+}
