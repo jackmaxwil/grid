@@ -1,6 +1,6 @@
 # Grid porcelain grammar
 
-version: 2.25.0
+version: 2.26.0
 
 Stdout of every grid verb is typed records: one record per line, fields
 separated by runs of spaces, stable column order per record type. stderr
@@ -32,7 +32,7 @@ document.
 | `covenant` | pattern A, pattern B, `via` word — one declared covenant (`grid covenant`) |
 | `delta` | `+` or `-`, then a `drift` record's columns — one signed change to the suspect set (`grid watch`) |
 | `miss` | callsign, reason |
-| `pass` / `hold` | plan id, snapshot id (first record of gate output) |
+| `pass` / `hold` | plan id, snapshot id (first record of gate output) — `@rev` when the snapshot's manifest is at hand, and `snap:<7 hex>` when only the id is, never `@` over a manifest hash: `@` means a rev somebody can check out |
 | `warn` | callsign, message |
 | `conflict` | callsign, hash transition |
 | `done` / `todo` | promise fraction / promise record |

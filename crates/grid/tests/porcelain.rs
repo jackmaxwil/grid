@@ -2223,3 +2223,52 @@ fn bisect_answers_in_the_grammar_it_declares() {
     assert_eq!(code(&refused), 2);
     assert!(stdout(&refused).is_empty());
 }
+
+/// A snapshot has one display name, and it is `@rev`.
+///
+/// It had two. `grid survey` printed `@<rev>` from the manifest, while every
+/// record rendered from a bare `SnapshotId` printed the first seven hex of the
+/// manifest's own blake3 under the same `@` sigil — a name shaped exactly like
+/// a git sha that is not one, and not a rev anybody could check out. One
+/// snapshot answered to `@8fcfcb3` and to `@95798a6` in the same session.
+///
+/// The rev is not recoverable from an id alone, so the id is printed as the id
+/// (`snap:` + prefix). What it must never do is wear the shape of a rev.
+#[test]
+fn a_snapshot_id_shown_in_place_of_a_rev_never_wears_a_revs_shape() {
+    let dir = repo();
+    let out = grid(dir.path(), &["survey"]);
+    assert_eq!(code(&out), 0);
+    let surveyed = columns(stdout(&out).lines().next().expect("a record"))[1].to_owned();
+    assert!(
+        surveyed.starts_with('@'),
+        "survey displays @rev: {surveyed}"
+    );
+
+    // A plan based on a snapshot id, which is the shape a gate verdict and a
+    // `todo` record render from.
+    let id = "snap:b3:8fcfcb3c0000000000000000000000000000000000000000000000000000abcd";
+    let plan = json!({
+        "plan_id": "plan:ids",
+        "base": { "snapshot": id },
+        "delta": { "defs": [], "edges": [] },
+    });
+    std::fs::create_dir_all(dir.path().join(".grid/plans")).expect("mkdir");
+    std::fs::write(
+        dir.path().join(".grid/plans/ids.json"),
+        serde_json::to_string(&plan).expect("json"),
+    )
+    .expect("write");
+
+    let shown = grid(dir.path(), &["plan", "show", "plan:ids"]);
+    assert_eq!(code(&shown), 0);
+    let base = columns(stdout(&shown).lines().next().expect("a record"))[2].to_owned();
+    assert!(
+        !base.starts_with('@'),
+        "a snapshot id is displayed as a rev would be: {base}"
+    );
+    assert!(
+        base.starts_with("snap:") && id.contains(base.trim_start_matches("snap:")),
+        "a snapshot id must still be the id it abbreviates: {base}"
+    );
+}
