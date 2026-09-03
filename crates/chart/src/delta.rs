@@ -161,7 +161,7 @@ pub fn diff<A: AsRef<[u8]>, B: AsRef<[u8]>>(
     defs.extend(detect_def_moves(&added, &removed));
     defs.sort_by(|a, b| a.callsign.0.cmp(&b.callsign.0));
 
-    let (base_edges, head_edges) = (edges_of(base), edges_of(head));
+    let (base_edges, head_edges) = (rebind(edges_of(base), &defs), edges_of(head));
     let added: Vec<_> = head_edges
         .iter()
         .filter(|(k, _)| !base_edges.contains_key(*k))
@@ -262,6 +262,32 @@ fn detect_def_moves(
         }
     }
     out
+}
+
+/// Rewrite the base edge keys through the renames the def comparison just
+/// found, so a relationship is compared under one name on both sides.
+///
+/// Incident: comparison is in callsign space and the record is in datum
+/// space, so a rename moved the key while the record held: renaming a scope
+/// rebinds the callsigns inside it without touching a body, and the identical
+/// `(src, relation, dst, grade)` record came out as both `added` and
+/// `removed` — a gate held on hundreds of `edge surplus` findings that
+/// described nothing that happened. The shape join is where the identity
+/// lives, so it is where the rewrite belongs; a rename the join refused as
+/// ambiguous rewrites nothing and the edge stays -/+.
+fn rebind(edges: Edges, defs: &[DefChange]) -> Edges {
+    let renamed: BTreeMap<&str, &str> = defs
+        .iter()
+        .filter_map(|d| Some((d.moved_from.as_ref()?.0.as_str(), d.callsign.0.as_str())))
+        .collect();
+    if renamed.is_empty() {
+        return edges;
+    }
+    let to = |name: String| renamed.get(name.as_str()).map_or(name, |s| (*s).to_owned());
+    edges
+        .into_iter()
+        .map(|((src, tag, dst), facts)| ((to(src), tag, to(dst)), facts))
+        .collect()
 }
 
 /// Pair a removed edge with an added one when the *same call to the same
