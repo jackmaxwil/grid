@@ -528,14 +528,23 @@ fn cat_blobs(
 ) -> Result<(Vec<SourceFile>, Manifests), SurveyError> {
     let mut out = Vec::new();
     let mut manifests = Vec::new();
+    // Requests end at a newline: `--batch -z` needs git 2.43, and git 2.34
+    // exited on it, so every rev survey read "answers ran out". A path with a
+    // newline in it cannot be asked for, so it is named unreadable, not read.
+    let (wanted, unaskable): (Vec<_>, Vec<_>) = wanted
+        .into_iter()
+        .partition(|(path, _)| !path.contains('\n'));
+    for (path, want) in unaskable {
+        if let Want::Source(lang) = want {
+            out.push(source_file(path, lang, None));
+        }
+    }
     if wanted.is_empty() {
         return Ok((out, manifests));
     }
     let as_git = |e: std::io::Error| SurveyError::Git(e.to_string());
-    // `-z` because a path is bytes: a newline in one would otherwise be read
-    // as the end of the request.
     let mut child = Command::new("git")
-        .args(["cat-file", "--batch", "-z"])
+        .args(["cat-file", "--batch"])
         .current_dir(root)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -547,7 +556,7 @@ fn cat_blobs(
         buf.extend_from_slice(rev.as_bytes());
         buf.push(b':');
         buf.extend_from_slice(path.as_bytes());
-        buf.push(0);
+        buf.push(b'\n');
     }
     let stdin = child.stdin.take();
     let stdout = child
