@@ -213,3 +213,31 @@ fn an_under_prefix_that_matches_nothing_is_bad_input() {
         );
     }
 }
+
+/// Issue #61: a verb that takes a name read an unknown `--flag` as the name,
+/// looked it up, and answered "nothing is called `--bogus-flag`". A flag the
+/// verb does not take is refused as a flag, before any lookup, so it wins
+/// even over a store nobody surveyed.
+#[test]
+fn an_unknown_flag_is_refused_as_a_flag_not_looked_up_as_a_name() {
+    let dir = repo();
+    for args in [
+        vec!["resolve", "--bogus-flag", "pkg.util.helper"],
+        vec!["uses", "--bogus-flag", "pkg.util.helper"],
+        vec!["scope", "--bogus-flag", "pkg.util.helper"],
+        vec!["log", "--bogus-flag", "pkg.util.helper"],
+        vec!["bisect", "--bogus-flag", "test_x"],
+    ] {
+        let out = grid(dir.path(), &args);
+        assert_eq!(code(&out), 2, "{args:?}:\n{out:?}");
+        let hint = stderr(&out);
+        assert!(
+            hint.contains("unknown flag `--bogus-flag`") && hint.contains("usage: grid"),
+            "{args:?} must refuse the flag and show the verb's usage:\n{hint}"
+        );
+        assert!(
+            !hint.contains("nothing is called") && !hint.contains("no snapshot published"),
+            "{args:?} looked the flag up instead of refusing it:\n{hint}"
+        );
+    }
+}
