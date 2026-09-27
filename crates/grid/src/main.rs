@@ -131,7 +131,7 @@ fn main() -> ExitCode {
         return ExitCode::from(exit::OK);
     }
 
-    let code = match rest.split_first() {
+    let code = usage::unknown_flag(&rest).unwrap_or_else(|| match rest.split_first() {
         // Bare `grid` is the everyday verb: what changed (CLI plan §4). It
         // still teaches — the banner goes to stderr, so a machine reading
         // stdout gets records and a human gets both.
@@ -177,7 +177,7 @@ fn main() -> ExitCode {
             ));
             exit::BAD_INPUT
         }
-    };
+    });
     ExitCode::from(code)
 }
 
@@ -973,7 +973,7 @@ fn emit_event(session: &mut watch::Session, batch: &[String], json: bool) -> u8 
 /// list is what makes the next command typeable.
 fn resolve(args: &[&str], json: bool) -> u8 {
     let Some(name) = args.first() else {
-        hint("usage: grid resolve <callsign|name@prefix>");
+        hint(usage::RESOLVE_USAGE);
         return exit::BAD_INPUT;
     };
     // `path:line` jumps from a location to the definitions containing it;
@@ -1136,8 +1136,7 @@ fn miss(name: &str) -> String {
 /// `--bodies` or `--sigs` alongside a preset is what the caller actually
 /// asked for and wins, whichever order they were typed in.
 fn scope(args: &[&str], json: bool) -> u8 {
-    const USAGE: &str =
-        "usage: grid scope <pattern>... [--orient|--edit] [--depth N] [--bodies N] [--sigs M] [--budget T] [--since <snapshot|rev>]";
+    const USAGE: &str = usage::SCOPE_USAGE;
     let mut patterns = Vec::new();
     let (mut depth, mut bodies, mut sigs, mut budget) = (None, None, None, None);
     let mut preset: Option<(u64, u64)> = None;
@@ -1388,7 +1387,7 @@ fn uses(args: &[&str], json: bool) -> u8 {
         }
     }
     let Some(name) = positional.first() else {
-        hint("usage: grid uses <name|name@prefix> [--relation <r>]");
+        hint(usage::USES_USAGE);
         return exit::BAD_INPUT;
     };
     let locator = if name.contains('@') {
@@ -1548,7 +1547,7 @@ fn record_edit_legs(outcome: &edit::Outcome) {
 /// edits chain datums, not names.
 fn log(args: &[&str], json: bool) -> u8 {
     let Some(name) = args.first() else {
-        hint("usage: grid log <name|name@prefix>");
+        hint(usage::LOG_USAGE);
         return exit::BAD_INPUT;
     };
     let params = grid_wire::methods::ResolveParams {
@@ -1633,7 +1632,7 @@ fn hotspots(args: &[&str], json: bool) -> u8 {
 /// retained chain, by the outcomes recorded against datum versions.
 fn bisect_verb(args: &[&str], json: bool) -> u8 {
     let Some(test) = args.first() else {
-        hint("usage: grid bisect <test> [<good> <bad>]");
+        hint(usage::BISECT_USAGE);
         return exit::BAD_INPUT;
     };
     let params = grid_wire::methods::BisectParams {

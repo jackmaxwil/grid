@@ -97,3 +97,37 @@ pub fn relation_named(name: &str) -> Option<grid_wire::Relation> {
 
 pub const ORPHANS_USAGE: &str =
     "usage: grid orphans [--lang <py|rs|ts|js>] [--under <path>] [--traced]";
+
+pub const RESOLVE_USAGE: &str = "usage: grid resolve <callsign|name@prefix>";
+pub const USES_USAGE: &str = "usage: grid uses <name|name@prefix> [--relation <r>]";
+pub const LOG_USAGE: &str = "usage: grid log <name|name@prefix>";
+pub const BISECT_USAGE: &str = "usage: grid bisect <test> [<good> <bad>]";
+pub const SCOPE_USAGE: &str =
+    "usage: grid scope <pattern>... [--orient|--edit] [--depth N] [--bodies N] [--sigs M] [--budget T] [--since <snapshot|rev>]";
+
+/// The verbs that take a name, with the flags each accepts. An unknown `--flag`
+/// was looked up as the name: `grid uses --bogus-flag X` answered "nothing is
+/// called `--bogus-flag`" (#61). It is refused as a flag, before any lookup.
+const NAMED: [(&str, &[&str], &str); 5] = [
+    ("resolve", &[], RESOLVE_USAGE),
+    ("uses", &["--relation"], USES_USAGE),
+    (
+        "scope",
+        &[
+            "--orient", "--edit", "--depth", "--bodies", "--sigs", "--budget", "--since",
+        ],
+        SCOPE_USAGE,
+    ),
+    ("log", &[], LOG_USAGE),
+    ("bisect", &[], BISECT_USAGE),
+];
+
+pub fn unknown_flag(args: &[&str]) -> Option<u8> {
+    let (verb, rest) = args.split_first()?;
+    let (_, known, usage) = NAMED.iter().find(|(name, _, _)| name == verb)?;
+    let flag = rest
+        .iter()
+        .find(|a| a.starts_with("--") && !known.contains(a))?;
+    hint(&format!("grid: unknown flag `{flag}`\n{usage}"));
+    Some(crate::exit::BAD_INPUT)
+}
