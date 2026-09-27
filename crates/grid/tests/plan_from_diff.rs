@@ -164,3 +164,56 @@ fn a_draft_from_the_working_diff_lints_clean_and_names_what_changed() {
     let piped: serde_json::Value = serde_json::from_str(&piped).expect("stdout is the plan");
     assert_eq!(piped["delta"], drafted["delta"]);
 }
+
+/// A rev survey reads blobs through `git cat-file --batch`. Asked with `-z`,
+/// which git before 2.43 rejects, the child exited on its first request and
+/// the survey read "git cat-file: answers ran out" — every rev survey on
+/// Ubuntu 22.04's git 2.34, CI's included. A `git` that refuses `-z` there
+/// stands in for the old one.
+#[cfg(unix)]
+#[test]
+fn a_rev_survey_works_with_a_git_that_has_no_batch_z() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("repo");
+    std::fs::create_dir_all(&root).expect("mkdir");
+    git(&root, &["init", "-q", "-b", "main"]);
+    write(&root, "pkg/core.py", "def a():\n    return 1\n");
+    git(&root, &["add", "-A"]);
+    git(&root, &["commit", "-q", "-m", "base"]);
+    write(&root, "pkg/core.py", "def a():\n    return 2\n");
+
+    let real = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .expect("find git");
+    let real = String::from_utf8_lossy(&real.stdout).trim().to_owned();
+    let shims = dir.path().join("shims");
+    std::fs::create_dir_all(&shims).expect("mkdir");
+    let shim = shims.join("git");
+    std::fs::write(
+        &shim,
+        format!(
+            "#!/bin/sh\ncase \" $* \" in *\" cat-file \"*\" -z \"*) echo \"error: unknown switch \\`z'\" >&2; exit 129;; esac\nexec '{real}' \"$@\"\n"
+        ),
+    )
+    .expect("write shim");
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let path = format!(
+        "{}:{}",
+        shims.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_grid"))
+        .args(["plan", "new", "--from-diff", "HEAD"])
+        .current_dir(&root)
+        .env("PATH", path)
+        .output()
+        .expect("spawn grid");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
