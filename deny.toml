@@ -29,17 +29,15 @@ ignore = [
 ]
 
 [licenses]
-# `exclude-dev = true` narrows the graph past some workspace members, so three allowed
-# licences — BSD-2-Clause, Zlib and grid's own LicenseRef-Proprietary — are never
+# `exclude-dev = true` narrows the graph past some workspace members, so allowed
+# licences such as BSD-2-Clause and Zlib are never
 # encountered and each printed a `license-not-encountered` warning on every gate run. The
 # allowlist is the policy, not a census of what today's lockfile happens to contain, so the
 # warning class goes rather than the entries.
 unused-allowed-license = "allow"
 # CC0-1.0 is a public-domain dedication: no conditions on use, permissive in
 # the only sense that matters here (tiny-keccak, parser build-time dep).
-# LicenseRef-Proprietary is the workspace's own crates: proprietary is a
-# license, not an absence of one.
-allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "CC0-1.0", "ISC", "Unicode-3.0", "Zlib", "Unicode-DFS-2016", "LicenseRef-Proprietary"]
+allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "CC0-1.0", "ISC", "Unicode-3.0", "Zlib", "Unicode-DFS-2016"]
 
 [bans]
 wildcards = "deny"

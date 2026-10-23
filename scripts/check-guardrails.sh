@@ -34,6 +34,8 @@ run "$PY" scripts/check_pr_metadata.py --selfcheck
 run "$PY" scripts/forge_tracking.py --selfcheck
 run "$PY" scripts/guardrails/check_hygiene.py
 run "$PY" scripts/guardrails/check_blob_size.py
+run "$PY" scripts/guardrails/check_public_surface.py
+run "$PY" scripts/guardrails/check_public_surface.py --selfcheck
 run scripts/check-unsafe-confined.sh
 run scripts/check-assurance-links.sh
 # Prose is not exempt: grid's comments and design docs are most of what a reader gets.

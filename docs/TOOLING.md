@@ -76,6 +76,7 @@ grid too, with `_common.py` ported as-is.
 | `cargo doc --workspace --no-deps --document-private-items` in the aggregator | the rustdoc lint above is actually run | **adopt.** |
 | `cargo machete` | declared-but-unused dependencies | **adopt** where installed, announced-skip where not — the same optional-tool shape yi uses for codespell. It flagged `rustpython-ast` in `grid-lang-py`, which is reached through `rustpython_parser::ast` and exists to turn on the `fold` and `visitor` features; recorded in that manifest's `[package.metadata.cargo-machete]` with the reason. |
 | `cargo deny check` in the aggregator | the supply chain, once per gate run | **adopt.** |
+| `check_public_surface.py` + `scripts/mirror/` | after the mirror's own exclusions and substitutions, no tracked file and no commit of the published history matches `scripts/mirror/deny.txt` | **adopt** when grid gained its public mirror (CI below). Grid plants no fake secrets and vendors nothing, so yi's `.gitguardian.yaml` skip list has no equivalent and every path is scanned. |
 
 ## Local CI and hooks
 
@@ -144,6 +145,19 @@ checks quietly stop running.
 
 `self-gate` shares the test lane's cache (`shared-key: test`) rather than
 warming a fourth cold debug build of its own.
+
+### The public mirror
+
+`github.com/jackmaxwil/grid` is derived from the forge's `main`, the way yi's
+mirror is: `.forgejo/workflows/mirror.yml` runs `scripts/mirror/sync.sh` on
+every push to `main`, which rewrites the history with `git filter-repo`
+(paths in `exclude.txt` dropped, literals in `replace.txt` substituted,
+identities through `mailmap.txt`), scans every blob, message and identity
+against `deny.txt`, and force-pushes. The push needs the `MIRROR_TOKEN` secret,
+a fine-grained GitHub token with contents write on that one repository; with no
+secret the job scans and pushes nothing. The same rules gate the tree through
+`check_public_surface.py`, so a file that would leak fails locally before it
+can reach the mirror. Grid is MIT-licensed, as yi is.
 
 ### Reading the forge's CI results from a session
 

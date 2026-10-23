@@ -3,7 +3,7 @@ name = "grid-fuzz"
 version = "0.0.0"
 edition = "2021"
 publish = false
-license = "Proprietary"
+license = "MIT"
 
 [package.metadata]
 cargo-fuzz = true
